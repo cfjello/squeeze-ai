@@ -1,0 +1,114 @@
+(* V10 - read ./00_directives.sqg for Parser Instructions *)
+
+include "./04_objects.sqg";
+
+(* ============================================================
+   JSONPath Grammar — based on RFC 9535
+   ============================================================
+   Entry point: append .$ to any ident_ref to start a JSONPath
+   query from the root of the JSON value at that reference.
+
+   Examples:
+     store.$                               whole store object
+     store.$.book[0].title                 first book's title
+     store.$.book[*].author                all authors
+     store.$.book[?(@.price < 10)]         books cheaper than 10
+     store.$.book[?(@.price < maxPrice)]   limit from Squeeze var
+     catalog.$..[?(@.rating >= 4)].title   recursive: all titles
+   ============================================================ *)
+
+
+(* ------------------------------------------------------------
+   Name primitives
+   ------------------------------------------------------------ *)
+
+(* A JSONPath key: unquoted identifier or quoted string *)
+jp_name          = ident_name | string;
+
+(* Wildcard: selects all children / array elements *)
+jp_wildcard      = "*";
+
+
+(* ------------------------------------------------------------
+   Selectors
+   ------------------------------------------------------------ *)
+
+(* Integer index into an array — positive (from start) or negative (from end) *)
+jp_index         = integer;
+
+(* Slice selector: all three parts optional, but ':' is mandatory.
+   jp_slice is tried before jp_index; if no ':' follows the integer,
+   the parser backtracks and jp_index matches instead.
+   Examples: [1:5]  [:3]  [::2]  [1:10:2]  [-3:]              *)
+jp_slice         = [ integer ] ":" [ integer ] [ ":" [ integer ] ];
+
+
+(* ------------------------------------------------------------
+   Filter expression — used inside ?(...)
+   @ refers to the current array element being tested.
+   ------------------------------------------------------------ *)
+
+(* Current-node path: @ optionally followed by further segments.
+   Forward reference to jp_segment, defined below.              *)
+jp_current_path  = "@" { jp_segment };
+
+(* A filter value is a literal constant, a current-node path,
+   or a Squeeze variable reference (allows ?(@.price < myLimit)) *)
+jp_filter_value  = constant | jp_current_path | ident_ref;
+
+(* Filter comparison operators (RFC 9535 — '==' for equality) *)
+jp_filter_oper   = "==" | "!=" | ">=" | "<=" | ">" | "<" | "=~";
+
+jp_filter_cmp    = jp_filter_value jp_filter_oper jp_filter_value;
+
+(* Filter logical operators *)
+jp_filter_not    = "!";
+jp_filter_logic  = "&&" | "||";
+
+(* Precedence: negation > comparison/existence > grouping > logic *)
+jp_filter_atom   = jp_filter_cmp | jp_current_path | "(" jp_filter_expr ")";
+jp_filter_unary  = [ jp_filter_not ] jp_filter_atom;
+jp_filter_expr   = jp_filter_unary { jp_filter_logic jp_filter_unary };
+
+(* Filter selector: ?(expr) *)
+jp_filter        = "?" "(" jp_filter_expr ")";
+
+
+(* ------------------------------------------------------------
+   Segments
+   ------------------------------------------------------------ *)
+
+(* A single selector — order matters: filter and slice tried before index and name *)
+jp_selector      = jp_filter | jp_slice | jp_index | jp_name | jp_wildcard;
+
+(* Bracket notation: [selector] or union [sel, sel, ...] *)
+jp_selector_list = jp_selector { "," jp_selector };
+jp_bracket_seg   = "[" jp_selector_list "]";
+
+(* Dot notation child step: .name or .* — no space allowed after dot *)
+jp_dot_seg       = "." !WS! ( jp_name | jp_wildcard );
+
+(* Child segment: bracket or dot notation *)
+jp_child_seg     = jp_bracket_seg | jp_dot_seg;
+
+(* Recursive-descent segment: ..name  ..*  ..[selectors]
+   Descends into all nested structures before applying the selector. *)
+jp_desc_seg      = ".." !WS! ( jp_name | jp_wildcard | jp_bracket_seg );
+
+(* A path segment: recursive descent takes priority over child step *)
+jp_segment       = jp_desc_seg | jp_child_seg;
+
+
+(* ------------------------------------------------------------
+   JSONPath entry point
+   ------------------------------------------------------------ *)
+
+(* The json_path token: starts with .$ (dot + dollar, no space),
+   followed by zero or more path segments.
+   '.$' alone is valid and yields the root of the JSON value.  *)
+json_path        = "." !WS! "$" { jp_segment };
+
+(* Extend ident_ref so that any reference may be followed by a
+   JSONPath query. '.$' must follow the dotted name with no space.
+   Without '.$' the rule reduces to a plain ident_ref as before.  *)
+EXTEND<ident_ref> = [ json_path ];

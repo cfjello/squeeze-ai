@@ -1,0 +1,226 @@
+(* ============================================================
+   00_directives.sqg  —  Squeeze Grammar Directive Reference
+   ============================================================
+   This file is the canonical reference for all Squeeze grammar
+   parser directives.  It is intentionally non-executable:
+   it documents directives only.
+   ============================================================ *)
+
+
+(* ------------------------------------------------------------
+   SECTION 1 — IMPLICIT PARSER BEHAVIOUR
+   Behaviours that apply automatically without explicit syntax.
+   ------------------------------------------------------------ *)
+
+(*
+   1.1  Whitespace skipping
+        ' ' and '\t' are silently consumed between any two items.
+        Exception: "!WS!" placed between two items disables this
+        skipping for that specific adjacency — no space is allowed.
+        Example:     ident_name !WS! "(" ...
+
+   1.2  Newline tokenisation
+        Newline sequences matching /([ \t]*[\r\n]+)+/ are
+        automatically tokenised as the terminal 'NL'.
+        NL and its extensions appear in 'EOL'.
+
+   1.3  No comma separators
+        RHS items in this grammar are NOT separated by commas.
+        Items are juxtaposed directly.
+
+   1.4  Comment skipping
+        Comment blocks (* ... *) — including nested ones —
+        are treated as whitespace and consumed wherever EOL is valid.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 2 — ANGLE-BRACKET DIRECTIVES
+   Syntax:  DIRECTIVE<  expression  >
+   The angle-bracket group is always preceded by a directive keyword.
+   The parser acts on the result of the enclosed expression.
+   ------------------------------------------------------------ *)
+
+(*
+   2.1  UNIQUE
+        UNIQUE< item { "," item } >
+        Guards against repeated tokens in the enclosed result.
+        If the same token appears more than once, the AST node fails.
+        Example:  assign_lhs = UNIQUE<ident_name { "," ident_name }>;
+
+   2.2  RANGE
+        RANGE min..max< expression >
+        Checks that the value returned by the expression falls within
+        [min, max] inclusive. Fails the AST node if out of range.
+        Example:  date_month = RANGE 1..12<digits2>;
+
+   2.3  TYPE_OF
+        TYPE_OF token< expression >
+        Checks that the result of expression is of the named type.
+        The token parameter may be replaced by "INFER" —
+        the parser then deduces the type automatically.
+        Example:  numeric_stmt = TYPE_OF numeric_const<ident_ref>;
+
+   2.4  VALUE_OF
+        VALUE_OF< expression >
+        Instructs the parser to return the VALUE of the enclosed
+        expression (rather than a reference or address).
+
+   2.5  ADDRESS_OF
+        ADDRESS_OF< expression >
+        Instructs the parser to return a REFERENCE (address) to the
+        enclosed expression, if the expression is addressable.
+
+   2.6  RETURN
+        RETURN assign_token< expression >
+        Combines VALUE_OF and ADDRESS_OF via the assignment operator:
+          - assign_immutable ":"  → returns VALUE_OF expression
+          - assign_mutable   "~"  → returns ADDRESS_OF expression
+
+   2.7  UNIFORM
+        UNIFORM token< expression >  |  UNIFORM INFER< expression >
+        Used with array expressions: asserts that all elements in the
+        result are of the same type (the named token or inferred type).
+
+   2.8  INFER
+        Used as the type parameter inside TYPE_OF or UNIFORM instead
+        of a concrete grammar token. The parser infers the type:
+          - from ident_name.@type
+          - from VALUE_OF<ident_ref>.@type
+          - from VALUE_OF<ident_ref[1]>.@type  (for arrays)
+
+   2.9  EXTEND
+        EXTEND< existing_rule > = | new_alternatives ;
+        LHS directive. Finds the named existing rule and appends the
+        given alternatives to it. The modified rule is then used for
+        all subsequent parsing, as well as used for for all earlier parsing
+        where the rule is referenced. 
+        Example:  EXTEND<func_stmt> = | this_ref;
+
+   2.10 CAST
+        CAST< source_type > = wider_type { | wider_type } ;
+        Defines a safe widening chain. When a value does not fit its
+        declared type, the parser automatically promotes it to the
+        first type in the CAST chain that can hold the value.
+        Widening is always lossless. Narrowing is never implicit.
+        Overflow of the widest type in the chain is a hard parse error.
+        Example:  CAST<int8> = int16 | int32 | int64 | int128;
+
+   2.11 HTTP_EXISTS
+        HTTP_EXISTS< http_url_expression >
+        Runtime directive. Checks that the URL produced by the
+        enclosed expression is reachable (HTTP/HTTPS GET succeeds).
+        Fails the AST node if the URL does not exist or is unreachable.
+
+   2.12 FILE_EXISTS
+        FILE_EXISTS< file_path_expression >
+        Runtime directive. Checks that the file path produced by the
+        enclosed expression exists and has read permission.
+        Fails the AST node if the file is absent or unreadable.
+
+   2.13 CODE
+        CODE<` squeeze_code `>
+        The text between "<`" and "`>" is Squeeze language source code.
+        The parser must parse and validate the embedded code block.
+        Used to define typed constructs (e.g. numeric types) inline.
+
+   2.14 SQZ
+        SQZ< ident_ref >
+        The enclosed ident_ref is a reference to a Squeeze code function
+        previously defined with CODE<`...`>.
+        The parser resolves it against the defined code symbol table.
+   
+   2.15 MERGE
+        MERGE< existing_rule > = | new_alternatives ;
+        LHS directive. Finds the named existing rule and merges the
+        given alternatives to it into a new existing_rule, if the 
+        alternative is not already present in the existing_rule. 
+        The modified rule is then used for all subsequent parsing, 
+        as well as used for for all earlier parsing where the rule 
+        is referenced. 
+        Example:  MERGE<func_stmt> = | this_ref;
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 3 — PREFIX / SYMBOL DIRECTIVES
+   Single-character tokens with special parser meaning.
+   ------------------------------------------------------------ *)
+
+(*
+   3.1  §  (section sign prefix)
+        §token
+        Placed directly before a grammar token name (no space).
+        Denotes a DIRECT REFERENCE to the token rule itself,
+        rather than to an instance matched by that rule.
+        Used in func_args to declare that a parameter must conform
+        to the shape of a grammar rule.
+        Example:  -> arg: §integer
+
+   3.2  $  (dollar sign — self reference)
+        Refers to the ident_ref (address) of the enclosing func_unit.
+        Equivalent to "this" in object-oriented languages.
+        Valid wherever func_stmt is valid.
+        Example:  @type: $
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 4 — PREDEFINED PARSER TOKENS
+   Boolean sentinels supplied by the parser, not by the input.
+   ------------------------------------------------------------ *)
+
+(*
+   4.1  BOF  — Beginning Of File
+        true  when positioned at the very first line of the input file.
+        false otherwise.
+
+   4.2  EOF  — End Of File
+        true  when positioned at the end of the input.
+        false otherwise.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 5 — STRUCTURAL DIRECTIVES
+   File-level grammar composition.
+   ------------------------------------------------------------ *)
+
+(*
+   5.1  include
+        include "./filename.sqg" ;
+        Reads and merges the grammar rules from the named file into
+        the including file's rule set. Rules are evaluated in
+        declaration order across all included files.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 6 — DIRECTIVE SUMMARY
+   Quick lookup: all directives and their kind.
+   ------------------------------------------------------------ *)
+
+(*
+   Directive        Kind
+   ──────────────────────────────────────────────
+   !WS!             Implicit / syntax token
+   BOF / EOF        Predefined boolean token
+   §  (section)     Prefix symbol
+   $  (self)        Symbol
+   include          Structural
+   UNIQUE           Angle-bracket
+   RANGE            Angle-bracket
+   TYPE_OF          Angle-bracket
+   INFER            Angle-bracket modifier
+   VALUE_OF         Angle-bracket
+   ADDRESS_OF       Angle-bracket
+   RETURN           Angle-bracket
+   UNIFORM          Angle-bracket
+   EXTEND           Angle-bracket (LHS)
+   CAST             Angle-bracket (LHS)
+   HTTP_EXISTS      Angle-bracket (runtime)
+   FILE_EXISTS      Angle-bracket (runtime)
+   CODE             Angle-bracket (embedded code)
+   SQZ              Angle-bracket (code reference)
+   ──────────────────────────────────────────────
+*)

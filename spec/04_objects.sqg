@@ -1,0 +1,72 @@
+(* V10 - read ./00_directives.sqg for Parser Instructions *)
+
+include "./03_assignment.sqg";
+
+(* ------------------------------------------------------------
+    Empty declarations 
+------------------------------------------------------------ *)
+empty_array_decl     = "[]" ;
+func_stream_decl     = ">>" ;
+func_regexp_decl     = "//" ;
+empty_scope_decl    = "{}";
+func_string_decl     = "\"\"" | "''" | "``";
+empty_decl           = empty_array_decl | func_stream_decl | func_regexp_decl | empty_scope_decl | func_string_decl;
+
+(* ------------------------------------------------------------
+    Data Arrays
+    Arrays and Nested Arrays containing values, but no functions 
+------------------------------------------------------------ *)
+array_value          = constant  | range | ident_ref | calc_unit | array_final | object_final ;
+array_begin          = "[";
+array_end            = "]";
+
+values_list          = array_value  { ","  array_value};
+array_uniform   =   array_begin 
+                        UNIFORM INFER<( values_list |  array_init )>
+                        [","] 
+                    array_end;    
+array_init      =   array_begin 
+                        ( values_list |  array_init ) 
+                        [","] 
+                    array_end;    
+array_list      =   array_uniform | array_init | empty_array_decl;
+
+array_merge_tail     = "+"  ( values_list | array_init) { "+" ( values_list | array_init) } ;
+array_omit_tail      = "-" integer { "," integer };
+array_final          = ( TYPE_OF array_list<ident_ref> | array_list ) { array_merge_tail | array_omit_tail };
+
+lookup_idx_expr      =  integer | numeric_expr | string | string_expr | TYPE_OF integer<ident_ref>|  TYPE_OF string<ident_ref>;
+
+array_lookup         = TYPE_OF array_final<ident_ref> "[" lookup_idx_expr "]";
+
+(* ------------------------------------------------------------
+     Data Objects - Associative Arrays. 
+     Objects containing values, but no functions 
+------------------------------------------------------------ *)
+
+object_init          =  array_begin 
+                            assign_lhs assign_oper array_value
+                            { "," assign_lhs assign_oper array_value }
+                            [","]  
+                        array_end; 
+
+object_merge_tail    = "+" ( TYPE_OF object_init<ident_ref> | object_init )  { "+" ( TYPE_OF object_init<ident_ref> | object_init ) };
+object_omit_tail     = "-" (ident_name | lookup_idx_expr) { "," (ident_name | lookup_idx_expr) }; 
+object_merge_or_omit = ( TYPE_OF object_init<ident_ref> | object_init )  ( object_merge_tail | object_omit_tail );
+
+object_final         = object_init | object_merge_or_omit | empty_array_decl;
+object_lookup        = TYPE_OF object_final<ident_ref> [ "[" lookup_idx_expr "]" ];
+
+(* ------------------------------------------------------------
+    Tables 
+    Tables containing values, but no functions
+------------------------------------------------------------ *)
+
+table_header         = UNIFORM string<( array_uniform | TYPE_OF array_uniform<ident_ref> )>;
+table_row            = array_final | object_final;
+table_objects        = UNIFORM INFER<table_row  { "," table_row }>; 
+table_init           = table_header table_objects | object_final; (* object_final deliver both the table_header names and the first table_row *)
+table_ins_tail       = "+" ( TYPE_OF table_row<ident_ref> | table_row )  { "+" ( TYPE_OF table_row<ident_ref> | table_row ) };
+table_final          = ( TYPE_OF table_init<ident_ref> | table_init ) table_ins_tail { table_ins_tail };
+
+EXTEND<assign_rhs>   = | array_final | object_final | table_final;

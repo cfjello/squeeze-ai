@@ -1,0 +1,136 @@
+(* V10 - read ./00_directives.sqg for Parser Instructions *)
+include "./06_scope.sqg";
+
+(* ------------------------------------------------------------
+   Build in variables 
+------------------------------------------------------------ *)
+
+(* @storeName - The string name to use when storing (using the => operator). The storeName defaults to @typeName, but can be assigned another sore name in the func_header_params. *)
+inspect_store_name  =  TYPE_OF string<ident_ref "." "@storeName">;
+
+(* @typeName = returns the immutable @typeName property of the ident_ref referencing the type, aka the type name. Assigned by the parser *)
+inspect_type_name   =  TYPE_OF string<ident_ref "." "@typeName">;
+
+(* @data -  a mutable reference to the data part of you func_unit *)
+inspect_data        =  ident_ref "." "@data" ;
+
+(* @type - returns the immutable @type reference of the ident_ref type.  Assigned by the parser *)
+inspect_type        =  ident_ref "." "@type" ;
+
+
+(* V3  declare or assign of the enclosed @data object *)
+data_assign                 =  ident_ref "." "@data" assign_mutable ( object_final | array_final | constant );
+store_name_assign           =  ident_ref "." "@storeName" assign_mutable string;
+func_header_buildin_params  = store_name_assign | data_assign;
+func_enclosure_params       = ( func_header_buildin_params | func_header_user_params ) { EOL ( func_header_buildin_params | func_header_user_params ) };
+
+
+(* ------------------------------------------------------------
+   Functions
+------------------------------------------------------------ *)
+assign_func_rhs             = constant | func_string_decl  | ( regexp | func_regexp_decl )| ident_ref | calc_unit | object_list | array_list;
+func_header_assign          = assign_lhs assign_oper assign_func_rhs | func_header_buildin_params;
+func_header_user_params     = func_header_assign { EOL func_header_assign};
+
+
+ident_static_store_name  =  "@storeName" ;
+ident_static_str     = "@name" | "@type" | ident_static_store_name;
+
+ident_static_boolean =  "ok";
+ident_static_error   =  "error" ;
+ident_static_deps    =  "deps" ;
+ident_static_func    =  "next" | "value" ;
+
+ident_static_fn      = ident_ref "." "@" ( ident_static_str | ident_static_boolean |  ident_static_error | ident_static_deps | ident_static_func ) ; 
+
+(* ------------------------------------------------------------
+   Function Arguments
+------------------------------------------------------------ *)
+func_args            = "->" [ assign_lhs  assign_oper ( empty_decl | ident_static_fn )  { "," assign_lhs  assign_oper ( empty_decl | ident_static_fn )  } ] ;
+func_stream_args     = ">>" assign_lhs  assign_oper ( empty_decl | ident_static_fn )  { "," assign_lhs assign_oper ( empty_decl | ident_static_fn )  } ;
+func_deps            = "=>" UNIQUE< ident_static_store_name  { "," ident_static_store_name  } > ;
+func_args_decl       =  [ func_args ] [ func_stream_args ] [ func_deps ]; 
+
+(* ------------------------------------------------------------
+   Function Ranges
+------------------------------------------------------------ *)
+func_fixed_num_range   = ( numeric_const |  TYPE_OF numeric_const<ident_ref> ) ".." ( numeric_const | TYPE_OF numeric_const<ident_ref> );
+func_fixed_str_range   = string | TYPE_OF string<ident_ref> ;
+func_fixed_list_range  = array_list | object_list ;
+func_range_args        = func_fixed_num_range | func_fixed_str_range | func_fixed_list_range;
+
+(* ------------------------------------------------------------
+   Function Calls / Streams
+------------------------------------------------------------ *)
+func_call_args         =  assign_func_rhs { "," assign_func_rhs } ;
+func_call              =  TYPE_OF func_unit<ident_ref> [ func_call_args ];
+
+(* This one relies on matching output of previous funtion to input of the next function *)
+func_call_chain        = func_call 
+                         [ 
+                            ( "->" | ">>" | logic_oper ) TYPE_OF func_unit<ident_ref> 
+                            { ( "->" | ">>" | logic_oper ) TYPE_OF func_unit<ident_ref>  } 
+                         ] ; 
+
+func_stream_loop       = ( func_range_args | ident_ref  | boolean_true ) 
+                         func_stream_decl 
+                         ( func_unit | func_call ); 
+
+func_call_final        = func_call_chain | func_stream_loop ;
+
+(* ------------------------------------------------------------
+   Function Statements
+------------------------------------------------------------ *)
+self_ref            = "$";
+func_stmt           =  regexp | ident_ref | object_list | array_list | func_call_mixed_chain | func_unit | calc_unit | self_ref;
+func_assign         =  assign_lhs assign_oper func_stmt;
+func_return_stmt    = "<-" func_stmt; 
+func_store_stmt     =  "=>" ( object_list | TYPE_OF object_list<ident_ref> ) { "," ( object_list | TYPE_OF object_list<ident_ref> ) };
+func_body_stmt      = func_assign | func_return_stmt | func_store_stmt | func_stream_loop | func_call_final;
+
+
+(* ------------------------------------------------------------
+   Function Definition
+------------------------------------------------------------ *)
+func_unit_header  = [ (func_enclosure_params func_args_decl) | func_args_decl ];
+
+func_unit  = scope_begin
+                func_unit_header 
+                func_body_stmt { EOL | func_body_stmt } 
+             scope_end  
+
+(* ------------------------------------------------------------
+   Assign a Function rather than the result of calling the function. 
+   TODO: For objects like object_init and array_init we should add static methods. 
+------------------------------------------------------------ *)
+return_func_unit     = "<-" func_unit; 
+EXTEND<func_stmt>    = | return_func_unit;
+update_func_unit     = TYPE_OF func_unit<ident_ref> equal_assign return_func_unit;
+
+(* ------------------------------------------------------------
+   Function Related Updates
+------------------------------------------------------------ *)
+
+(* Numeric Statements *)
+array_idx_recursive = "[" numeric_rhs "]" { "[" numeric_rhs "]" }; 
+EXTEND<ident_ref>   =  TYPE_OF array_list<ident_ref> [ array_idx_recursive ];
+
+numeric_stmt        = TYPE_OF numeric_const<ident_ref | func_call_mixed_chain | func_unit | calc_unit>;
+numeric_rhs         = numeric_const | numeric_stmt; 
+update_number       = TYPE_OF numeric<ident_ref> assign_oper numeric_rhs; 
+
+(* V4 - String Statements *)
+string_stmt         = TYPE_OF string<ident_ref | func_call_mixed_chain | func_unit | calc_unit>;
+string_rhs          = string | string_stmt; 
+
+string_append_immutable   = "+:";
+string_append_mutable     = "+~";
+string_update_oper        = string_append_immutable | string_append_mutable | equal_assign;
+update_string             = TYPE_OF string<ident_ref> string_update_oper string_rhs;
+
+(* V4  - Assignment of Object methods *)
+assign_obj_method    = ( get_type | get_data ) [ "."  ident_dotted ]  assign_immutable return_func_unit;
+
+ident_ref_update = ident_ref assign_oper assign_rhs;
+
+MERGE<assignment>   = | ident_ref_update | func_assign | update_func_unit | update_number | update_string | assign_obj_method;
