@@ -74,8 +74,8 @@
    2.6  RETURN
         RETURN assign_token< expression >
         Combines VALUE_OF and ADDRESS_OF via the assignment operator:
-          - assign_immutable ":"  → returns VALUE_OF expression
-          - assign_mutable   "~"  → returns ADDRESS_OF expression
+          - assign_immutable ":"  → returns VALUE_OF expression if expression is mutable, ADDRESS_OF if expression is unmutable
+          - assign_mutable   "="  → returns ADDRESS_OF expression
 
    2.7  UNIFORM
         UNIFORM token< expression >  |  UNIFORM INFER< expression >
@@ -85,9 +85,9 @@
    2.8  INFER
         Used as the type parameter inside TYPE_OF or UNIFORM instead
         of a concrete grammar token. The parser infers the type:
-          - from ident_name.@type
-          - from VALUE_OF<ident_ref>.@type
-          - from VALUE_OF<ident_ref[1]>.@type  (for arrays)
+          - from ident_name.type
+          - from VALUE_OF<ident_ref>.type
+          - from VALUE_OF<ident_ref[1]>.type  (for arrays)
 
    2.9  EXTEND
         EXTEND< existing_rule > = | new_alternatives ;
@@ -104,7 +104,7 @@
         first type in the CAST chain that can hold the value.
         Widening is always lossless. Narrowing is never implicit.
         Overflow of the widest type in the chain is a hard parse error.
-        Example:  CAST<int8> = int16 | int32 | int64 | int128;
+        Example:  CAST<uint8> = uint16 | uint32 | uint64 | uint128;
 
    2.11 HTTP_EXISTS
         HTTP_EXISTS< http_url_expression >
@@ -139,6 +139,24 @@
         as well as used for for all earlier parsing where the rule 
         is referenced. 
         Example:  MERGE<func_stmt> = | this_ref;
+
+    2.16 UNQUOTE
+        UNQUOTE< string_quoted | tmpl_quoted > 
+        Remove the outer quoted ( "'" | '"' | "`" ) from the quoted string
+
+   2.17 HAS_ONE
+        HAS_ONE< type_token >< expression >
+        Asserts that at least one element in the list produced by expression
+        is of (or resolves to) type_token. Parser fails the AST node if no
+        element satisfies the constraint.
+        Example:  table_columns = HAS_ONE<unique_key>< "[" table_col { "," table_col } "]" >;
+
+   2.18 SUBSET_OF
+        SUBSET_OF< rule_name >< expression >
+        Asserts that every element in the list produced by expression
+        also appears in (or resolves to a member of) the named rule's result.
+        Parser fails the AST node if any element is not present in rule_name.
+        Example:  key_columns = SUBSET_OF<table_columns>< "[" key_col { "," key_col } "]" >;
 *)
 
 
@@ -161,7 +179,12 @@
         Refers to the ident_ref (address) of the enclosing func_unit.
         Equivalent to "this" in object-oriented languages.
         Valid wherever func_stmt is valid.
-        Example:  @type: $
+        Example:  ident_ref.type: $
+   
+   3.3  @  ( at sign - reference reference to the type )
+        Refers to the ident_ref.type (address).
+        Equivalent to type_of in object-oriented languages.
+        Example:  @ident_ref refers to ident_ref.type
 *)
 
 
@@ -222,5 +245,7 @@
    FILE_EXISTS      Angle-bracket (runtime)
    CODE             Angle-bracket (embedded code)
    SQZ              Angle-bracket (code reference)
+   HAS_ONE          Angle-bracket (structural assertion)
+   SUBSET_OF        Angle-bracket (structural assertion)
    ──────────────────────────────────────────────
 *)

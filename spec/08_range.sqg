@@ -1,0 +1,22 @@
+(* V13 - read ./00_directives.sqg for Parser Instructions *)
+
+include "./07_types_scope.sqg";
+
+(* V13 added the ruless below *)
+range_oper        = "..";
+validate_oper     = "=~";
+
+num_range_valid   = TYPE_OF boolean<numeric_expr validate_oper func_fixed_num_range> ;
+
+date_range        = ( date |  TYPE_OF date<ident_ref> ) range_oper ( date | TYPE_OF date<ident_ref> );
+date_range_valid  = TYPE_OF boolean<date validate_oper date_range> ;
+
+time_range       = ( time |  TYPE_OF time<ident_ref> ) range_oper ( time | TYPE_OF time<ident_ref> );
+time_range_val   = TYPE_OF boolean<time validate_oper time_range> ;
+ 
+regexp_valid     = TYPE_OF boolean<string_quoted validate_oper regexp> ; (* use to match both a single values or multiple match groups *)
+
+
+array_default_range  = "0" range_oper "m";
+object_default_range = "0" range_oper "m"; 
+

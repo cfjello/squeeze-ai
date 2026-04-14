@@ -10,17 +10,11 @@ NL  = /([ \t]*[\r\n]+)+/ | BOF;
 EOL = NL | ";" | comment | EOF;
 
 (* Numeric *)
+sign_prefix     = [ "+" | "-" ]
 digits          = /[0-9]+/;
-integer         = [ "+" | "-" ] digits;
-decimal         = [ "+" | "-" ] digits "." digits;
+integer         = sign_prefix digits;
+decimal         = sign_prefix digits "." digits;
 numeric_const   = integer | decimal;
-
-(* Signed integer types *)
-int8   = RANGE -128..127<integer>;
-int16  = RANGE -32768..32767<integer>;
-int32  = RANGE -2147483648..2147483647<integer>;
-int64  = RANGE -9223372036854775808..9223372036854775807<integer>;
-int128 = RANGE -170141183460469231731687303715884105728..170141183460469231731687303715884105727<integer>;
 
 (* Unsigned integer types *)
 byte   = RANGE 0..255<digits>;              (* alias for uint8 — used in binary/IO/network contexts *)
@@ -49,20 +43,14 @@ float64      = TYPE_OF float64<decimal | nan | infinity>;
 CAST<float32> = float64;
 
 (* Decimal number types - whole part is range-constrained, fractional part is unconstrained digits *)
-decimal8   = TYPE_OF int8<integer>   "." digits;
-decimal16  = TYPE_OF int16<integer>  "." digits;
-decimal32  = TYPE_OF int32<integer>  "." digits;
-decimal64  = TYPE_OF int64<integer>  "." digits;
-decimal128 = TYPE_OF int128<integer> "." digits;
+decimal8   = RANGE -128..127<integer>                                                                        "." digits;
+decimal16  = RANGE -32768..32767<integer>                                                                    "." digits;
+decimal32  = RANGE -2147483648..2147483647<integer>                                                          "." digits;
+decimal64  = RANGE -9223372036854775808..9223372036854775807<integer>                                        "." digits;
+decimal128 = RANGE -170141183460469231731687303715884105728..170141183460469231731687303715884105727<integer> "." digits;
 
 (* Convenience rule: auto-selects narrowest fitting decimal type *)
 decimal_num = decimal8 | decimal16 | decimal32 | decimal64 | decimal128;
-
-(* CAST widening chains for integers - parser promotes when value does not fit *)
-CAST<int8>   = int16  | int32  | int64  | int128;
-CAST<int16>  = int32  | int64  | int128;
-CAST<int32>  = int64  | int128;
-CAST<int64>  = int128;
 
 (* CAST widening chains for decimals - parser promotes when value does not fit *)
 CAST<decimal8>   = decimal16 | decimal32 | decimal64 | decimal128;
@@ -71,10 +59,6 @@ CAST<decimal32>  = decimal64 | decimal128;
 CAST<decimal64>  = decimal128;
 
 
-(* Strings *)
-single_quoted    = "'" /(?<value>(\\'|[^'])+)/  "'" ;
-double_quoted    = "\"" /(?<value>(\\"|[^"])+)/ "\"" ;
-tmpl_quoted      = "`" /(?:(?!\$\(|`)[\s\S])*)/ "`";
 
 (* char: a single Unicode code point, written as a single-quoted single character *)
 char = "'" /(?<value>[\s\S])/ "'";
@@ -120,11 +104,16 @@ duration      = digits duration_unit { digits duration_unit };
 (* V1 strings *)
 single_quoted    = "'" /(?<value>(\\'|[^'])+)/  "'" ;
 double_quoted    = "\"" /(?<value>(\\"|[^"])+)/ "\"" ;
+string_quoted    = single_quoted | double_quoted;
+(* V13 added new rule *)
+string_unquoted  = UNQUOTE<string_quoted>;
 
 tmpl_stmt        = constant;
 tmpl_expr        = "$(" tmpl_stmt ")";
 tmpl_text        = /(?:(?!\$\(|`)[\s\S])*)/
 tmpl_quoted      = "`" ( tmpl_text | tmpl_expr )  { ( tmpl_text | tmpl_expr ) } "`";
+(* V13 added new rule *)
+tmpl_unquoted    = UNQUOTE<tmpl_quoted>;
 
 (* Regexp *)
 (* XRegExp flags:
@@ -148,6 +137,9 @@ boolean_false = "false";
 
 (* null: absence of a value *)
 null = "null";
+(* removed any = "?"; *) 
+(* Added any_type *) 
+any_type = "@?";
 
 (* cardinality and range: integer span used in array sizing, RANGE directives, and iteration *)
 cardinality = digits ".." ( digits | "m" | "M" | "many" | "Many" );
@@ -169,6 +161,71 @@ uuid = hex_seg8 "-" hex_seg4 "-" hex_seg4 "-" hex_seg4 "-" hex_seg12;
 uuid_v7_ver = /7[0-9a-fA-F]{3}/;         (* 4 hex digits, first must be '7' *)
 uuid_v7_var = /[89aAbB][0-9a-fA-F]{3}/;  (* 4 hex digits, first must be 8, 9, a, or b *)
 uuid_v7 = hex_seg8 "-" hex_seg4 "-" uuid_v7_ver "-" uuid_v7_var "-" hex_seg12;
+
+
+(* V13 - Keys *)
+
+(* --- Hex segment extensions (reuse existing hex_seg primitives) --- *)
+hex_seg32  = /[0-9a-fA-F]{32}/;   (* MD5  length *)
+hex_seg40  = /[0-9a-fA-F]{40}/;   (* SHA1 length *)
+hex_seg64  = /[0-9a-fA-F]{64}/;   (* SHA256 length *)
+hex_seg128 = /[0-9a-fA-F]{128}/;  (* SHA512 length *)
+
+(* --- Hash keys — fixed-length hex digests, case-insensitive ---
+   Uniqueness and collision resistance are runtime/semantic concerns.
+*)
+hash_md5    = TYPE_OF hash_md5<hex_seg32>;
+hash_sha1   = TYPE_OF hash_sha1<hex_seg40>;
+hash_sha256 = TYPE_OF hash_sha256<hex_seg64>;
+hash_sha512 = TYPE_OF hash_sha512<hex_seg128>;
+hash_key    = hash_md5 | hash_sha1 | hash_sha256 | hash_sha512;
+
+(* --- ULID: Universally Unique Lexicographically Sortable Identifier (spec.uniqid.io)
+   26-char Crockford base32, time-sortable and URL-safe.
+   Format: TTTTTTTTTT EEEEEEEEEEEEEEEE (10 time chars + 16 random chars)
+   Time part encodes 48-bit millisecond timestamp — sortable up to year 10895.
+   Preferred over uuid_v7 when a compact, URL-safe string key is needed. *)
+ulid = /[0-7][0-9A-HJKMNP-TV-Z]{9}[0-9A-HJKMNP-TV-Z]{16}/i;
+
+(* --- Nano ID: URL-safe random identifier, default 21 characters
+   Alphabet: A-Z a-z 0-9 _ -  (64 symbols → ~126 bits of entropy at 21 chars)
+   Length is configurable at generation time; grammar fixes the default. *)
+nano_id = /[A-Za-z0-9_-]{21}/;
+
+(* --- Snowflake ID: distributed 64-bit sortable integer key
+   Layout: 41-bit ms timestamp | 10-bit machine ID | 12-bit sequence
+   Epoch is application-defined (Twitter uses 2006-01-01).
+   Grammar treats it as uint64; structure is a runtime/generation concern. *)
+snowflake_id = TYPE_OF snowflake_id<uint64>;
+
+(* --- Integer sequence IDs: monotonically increasing numeric keys
+   seq_id auto-selects the narrowest fitting unsigned integer type.
+   Generation (AUTO_INCREMENT, DB sequences, etc.) is a runtime concern. *)
+seq_id16 = TYPE_OF seq_id16<uint16>;
+seq_id32 = TYPE_OF seq_id32<uint32>;
+seq_id64 = TYPE_OF seq_id64<uint64>;
+seq_id   = seq_id16 | seq_id32 | seq_id64;
+
+(* --- Composite key: two or more values forming a unique compound key
+   Parenthesised tuple syntax distinguishes it from array_final.
+   Uniqueness across the tuple is a runtime/schema concern. *)
+composite_key = "(" array_value "," array_value { "," array_value } ")";
+
+(* --- Union of all unique key types --- *)
+unique_key = uuid | uuid_v7 | ulid | snowflake_id | nano_id | hash_key | seq_id | composite_key;
+
+(* --- Hashable types: deterministic, equality-comparable values suitable as hash inputs.
+   Excludes float32/float64 (inexact arithmetic makes them non-deterministic as hash inputs),
+   and also excludes null, regexp, tmpl_quoted. *)
+hashable = string_quoted | integer | boolean
+         | date | time | date_time | time_stamp | duration
+         | unique_key;
+
+(* --- Sortable types: types with a deterministic total ordering.
+   Subset of hashable. Excludes uuid (v4), nano_id, hash_key — no meaningful order.
+   Used for sorted/indexed tree keys and ordered comparisons. *)
+sortable = integer | string_quoted | date | time | date_time | time_stamp
+         | uuid_v7 | ulid | snowflake_id | seq_id;
 
 (* URL and file path *)
 http_url  = /^https?:\/\/(?:[\w-]+\.)+[\w-]+(?::\d+)?(?:\/[^\s]*)?(?:\?[^\s]*)?(?:#[^\s]*)?$/;

@@ -1,6 +1,4 @@
 (* V10 - read ./00_directives.sqg for Parser Instructions *)
-
-include "./01_definitions.sqg";
 include "./02_operators.sqg";
 
 (* Assignment Operators *) 
@@ -13,7 +11,8 @@ assign_read_only_ref    = ":~";
 equal_assign            =  assign_mutable | assign_immutable | assign_read_only_ref;
 assign_oper             = incr_assign_immutable | incr_assign_mutable | equal_assign;
 
-assign_version = "v" digits { "." digits };
+(* V13 modified assign_version *) 
+assign_version = ["v"] digits "." digits ;
 assign_lhs     = UNIQUE<ident_name [","  ( ident_name |  cardinality | assign_version ) ] [ ","  ( ident_name |  cardinality | assign_version ) ]  [ "," ( ident_name |  cardinality | assign_version ) ]>;
 
 assign_rhs = constant | calc_unit;

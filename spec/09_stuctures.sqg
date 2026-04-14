@@ -1,0 +1,398 @@
+(* V13 - read ./00_directives.sqg for Parser Instructions *)
+
+include "./08_range.sqg";
+
+(* ------------------------------------------------------------
+    Tables
+    Tables containing values, but no functions
+
+    Example — named columns with explicit key_columns:
+        myTable : [ columns:     [ id@uuid_v7, name@string, age@uint8 ],
+                    key_columns: [ id@uuid_v7 ],
+                    rows:        [ [uuid_v7_val, "Alice", 30],
+                                   [uuid_v7_val, "Bob",   25] ] ]
+
+    Example — anonymous (type-only) columns:
+        myTable : [ columns:     [ @uuid_v7, @string, @uint8 ],
+                    key_columns: [ @uuid_v7 ],
+                    rows:        [ [uuid_v7_val, "Alice", 30] ] ]
+
+    Example — columns derived from object_final (hashable keys, at least one unique_key):
+        myTable : [ columns:     [ id: uuid_v7, name: "Alice", active: true ],
+                    key_columns: [ id@uuid_v7 ],
+                    rows:        [ [uuid_v7_val, "Bob", false] ] ]
+
+    Example — appending rows with +:
+        myTable + [uuid_v7_val, "Carol", 40]
+
+    Example — referencing an existing table by ident_ref:
+        myTable : anotherTable + [uuid_v7_val, "Dave", 35]
+------------------------------------------------------------ *)
+
+
+(* --- Table Column Definitions ---
+   A column is either:
+     - @TypeName or @?         (type-only shorthand, anonymous column)
+     - colName@TypeName        (named column with type annotation)
+*)
+
+table_col        = ident_ref inspect_type     (* colName@TypeName *)
+                 | inspect_type;              (* @TypeName or @? *);
+
+(* --- Hashable column: inspect_type must resolve to a hashable value type.
+   Used when columns are derived from an object_final's first-level keys.
+   All value types must be hashable; at least one must be a unique_key. *)
+
+table_col_hashable   = ident_ref TYPE_OF hashable<inspect_type>   (* colName@HashableType *)
+                     | TYPE_OF hashable<inspect_type>;             (* @HashableType *)
+
+(* Derive columns from an object_final's first-level ident_name keys.
+   Key → type is inferred from the object's value types at runtime.
+   HAS_ONE<unique_key> enforces that at least one column is a unique key. *)
+
+table_col_from_obj   = HAS_ONE<unique_key>< TYPE_OF table_col_hashable<object_final> >;
+
+(* table_columns: explicit bracketed list; at least one column must be unique_key-typed *)
+
+table_columns    = HAS_ONE<unique_key><
+                       "[" table_col { "," table_col } [","] "]"
+                   >;
+
+(* --- Key Columns ---
+   key_col:      a single column whose type must be a unique_key
+   key_columns:  non-empty subset of table_columns; all entries must appear in table_columns
+*)
+
+key_col      = ident_ref TYPE_OF unique_key<inspect_type>   (* colName@UniqueKeyType *)
+             | TYPE_OF unique_key<inspect_type>;             (* @UniqueKeyType *)
+
+key_columns  = SUBSET_OF<table_columns><
+                   "[" key_col { "," key_col } [","] "]"
+               >;
+
+(* --- Table Rows ---
+   Each row is a positional array of values.
+   Column count and type conformance is a runtime/semantic concern.
+*)
+
+table_row        = "[" array_value { "," array_value } [","] "]";
+table_rows_list  = UNIFORM INFER<table_row { "," table_row } [","]>;
+
+(* --- Table ---
+   columns may be declared explicitly (table_columns) or derived from an object_final
+   key_columns is a required non-empty subset of the declared columns
+*)
+
+table_init       = "["
+                       "columns"     ":" ( table_columns | table_col_from_obj ) ","
+                       "key_columns" ":" key_columns ","
+                       "rows"        ":" table_rows_list [","]
+                   "]";
+
+table_ins_tail   = "+" ( TYPE_OF table_row<ident_ref> | table_row )
+                       { "+" ( TYPE_OF table_row<ident_ref> | table_row ) };
+
+table_final      = ( TYPE_OF table_init<ident_ref> | table_init ) { table_ins_tail };
+
+EXTEND<assign_rhs> = | table_final;
+
+
+(* ------------------------------------------------------------
+    Trees
+    Directed trees containing values, but no functions.
+    NOTE: type-homogeneity is a runtime contract, not grammar-enforced.
+    The grammar provides structural shape only; the runtime must verify
+    that all tree_value instances conform to the declared type.
+
+    Example — string tree:
+        myTree : [ type: @string,
+                   root: [ "Alice", children: [
+                              [ "Bob" ],
+                              [ "Carol", children: [
+                                  [ "Dave" ]
+                              ] ]
+                          ] ] ]
+
+    Example — appending a child to root with +:
+        myTree + [ "Eve" ]
+
+    Example — untyped tree using @?:
+        anyTree : [ type: @?,
+                    root: [ 42, children: [ ["hello"], [true] ] ] ]
+
+    Example — referencing an existing tree by ident_ref:
+        myTree : anotherTree + [ "Frank" ]
+------------------------------------------------------------ *)
+
+(* --- Tree Node (general, heterogeneous) ---
+   A node holds any tree_value and zero or more child nodes.
+   tree_node is recursive: children contain further tree_nodes.
+   The bracket wrapper keeps each node syntactically self-contained,
+   consistent with table_row.
+   Value type conformance across nodes is a runtime/semantic concern.
+*)
+tree_value    = constant | ident_ref | calc_unit | object_final;
+
+tree_children = "[" tree_node { "," tree_node } [","] "]";
+
+tree_node     = "[" tree_value [ "," "children" ":" tree_children ] [","] "]";
+
+(* --- Tree (general) ---
+   type:  runtime homogeneity contract — parser records the annotation but
+          does not enforce it; the runtime must verify all node values conform.
+          Use @? to explicitly allow any type.
+   root:  the single root tree_node; all other nodes are reachable from it.
+*)
+tree_init     = "["
+                    "type" ":" inspect_type ","
+                    "root" ":" tree_node    [","]
+                "]";
+
+(* + appends additional children to the root node *)
+tree_ins_tail = "+" ( TYPE_OF tree_node<ident_ref> | tree_node )
+                    { "+" ( TYPE_OF tree_node<ident_ref> | tree_node ) };
+
+tree_final    = ( TYPE_OF tree_init<ident_ref> | tree_init ) { tree_ins_tail };
+
+EXTEND<assign_rhs> = | tree_final;
+
+
+(* ------------------------------------------------------------
+    String Tree (simple, grammar-enforced)
+    Every node value is a string literal or string-typed ident_ref.
+    No type annotation needed — the grammar enforces it.
+    Use for menus, file paths, org charts, and other label trees.
+
+    Example:
+        menu : [ root: [ "File", children: [
+                             [ "New" ],
+                             [ "Open" ],
+                             [ "Save", children: [ ["Save As"] ] ]
+                         ] ] ]
+------------------------------------------------------------ *)
+string_tree_value    = string_quoted | TYPE_OF string<ident_ref>;
+
+string_tree_children = "[" string_tree_node { "," string_tree_node } [","] "]";
+
+string_tree_node     = "[" string_tree_value [ "," "children" ":" string_tree_children ] [","] "]";
+
+string_tree_init     = "[" "root" ":" string_tree_node [","] "]";
+
+string_tree_ins_tail = "+" ( TYPE_OF string_tree_node<ident_ref> | string_tree_node )
+                           { "+" ( TYPE_OF string_tree_node<ident_ref> | string_tree_node ) };
+
+string_tree_final    = ( TYPE_OF string_tree_init<ident_ref> | string_tree_init ) { string_tree_ins_tail };
+
+EXTEND<assign_rhs> = | string_tree_final;
+
+
+(* ------------------------------------------------------------
+    Keyed Tree
+    Each node carries a unique_key — nodes are addressable and mergeable.
+    Type conformance is a runtime contract (same as tree_final).
+    Use for lookup-by-key, tree merging, and cross-tree node references.
+
+    Example:
+        org : [ type: @string,
+                root: [ key: ulid_val, value: "CEO", children: [
+                            [ key: ulid_val, value: "CTO" ],
+                            [ key: ulid_val, value: "CFO" ]
+                        ] ] ]
+------------------------------------------------------------ *)
+tree_node_keyed     = "[" "key"   ":" unique_key ","
+                          "value" ":" tree_value
+                          [ "," "children" ":" tree_children_keyed ] [","]
+                      "]";
+
+tree_children_keyed = "[" tree_node_keyed { "," tree_node_keyed } [","] "]";
+
+keyed_tree_init     = "["
+                          "type" ":" inspect_type ","
+                          "root" ":" tree_node_keyed [","]
+                      "]";
+
+keyed_tree_ins_tail = "+" ( TYPE_OF tree_node_keyed<ident_ref> | tree_node_keyed )
+                          { "+" ( TYPE_OF tree_node_keyed<ident_ref> | tree_node_keyed ) };
+
+keyed_tree_final    = ( TYPE_OF keyed_tree_init<ident_ref> | keyed_tree_init ) { keyed_tree_ins_tail };
+
+EXTEND<assign_rhs> = | keyed_tree_final;
+
+
+(* ------------------------------------------------------------
+    Sorted Tree
+    Each node carries a sortable key — siblings are ordered ascending by key.
+    sortable ⊂ unique_key: uuid (v4), nano_id, hash_key excluded (no total order).
+    Type conformance is a runtime contract.
+    Use for B-trees, binary search trees, ordered indexes, priority queues.
+
+    Example:
+        index : [ type: @string,
+                  root: [ key: 1, value: "root", children: [
+                              [ key: 2, value: "left"  ],
+                              [ key: 3, value: "right" ]
+                          ] ] ]
+------------------------------------------------------------ *)
+tree_node_sorted     = "[" "key"   ":" sortable ","
+                           "value" ":" tree_value
+                           [ "," "children" ":" tree_children_sorted ] [","]
+                       "]";
+
+tree_children_sorted = UNIFORM INFER<  (* runtime enforces ascending key order among siblings *)
+                           "[" tree_node_sorted { "," tree_node_sorted } [","] "]"
+                       >;
+
+sorted_tree_init     = "["
+                           "type" ":" inspect_type ","
+                           "root" ":" tree_node_sorted [","]
+                       "]";
+
+sorted_tree_ins_tail = "+" ( TYPE_OF tree_node_sorted<ident_ref> | tree_node_sorted )
+                           { "+" ( TYPE_OF tree_node_sorted<ident_ref> | tree_node_sorted ) };
+
+sorted_tree_final    = ( TYPE_OF sorted_tree_init<ident_ref> | sorted_tree_init ) { sorted_tree_ins_tail };
+
+EXTEND<assign_rhs> = | sorted_tree_final;
+
+
+(* ------------------------------------------------------------
+    Set
+    Unordered collection of unique hashable values.
+    Distinct from array_uniform: sets disallow duplicates and have no index.
+    Uses braces { } to visually distinguish from arrays [ ] and objects [ k: v ].
+    UNIQUE enforces no duplicate values at parse time.
+    Use for membership testing, tags, roles, union/intersect operations.
+
+    Example — string set:
+        roles   : { "admin", "editor", "viewer" }
+
+    Example — integer set:
+        primes  : { 2, 3, 5, 7, 11 }
+
+    Example — typed set via ident_ref:
+        allowed : { TYPE_OF string<roleA>, TYPE_OF string<roleB> }
+
+    Example — appending members with +:
+        roles + { "auditor" }
+------------------------------------------------------------ *)
+set_value  = hashable;
+
+set_init   = "{" UNIQUE< set_value { "," set_value } [","] > "}";
+
+set_add_tail = "+" ( TYPE_OF set_init<ident_ref> | set_init )
+                   { "+" ( TYPE_OF set_init<ident_ref> | set_init ) };
+
+set_omit_tail = "-" set_value { "," set_value };
+
+set_final  = ( TYPE_OF set_init<ident_ref> | set_init ) { set_add_tail | set_omit_tail };
+
+EXTEND<assign_rhs> = | set_final;
+
+
+(* ------------------------------------------------------------
+    Enum
+    Named domain of constants — a type declaration, not a data value.
+    Defines the valid members of a named type for use in column types,
+    function signatures, and inspect_type annotations.
+    Members must be unique string literals or integers.
+    UNIQUE enforces no duplicate members at parse time.
+    Use for state machines, config domains, column type constraints.
+
+    Example — string enum:
+        Status : ENUM [ "active", "inactive", "pending" ]
+
+    Example — integer enum:
+        ErrorCode : ENUM [ 400, 401, 403, 404, 500 ]
+
+    Example — extending an enum:
+        Status EXTEND [ "archived" ]
+------------------------------------------------------------ *)
+enum_member   = string_quoted | integer;
+
+enum_members  = "[" UNIQUE< enum_member { "," enum_member } [","] > "]";
+
+enum_decl     = "ENUM" enum_members;
+
+enum_extend   = "EXTEND" enum_members;
+
+enum_final    = ( TYPE_OF enum_decl<ident_ref> | enum_decl ) { enum_extend };
+
+EXTEND<assign_rhs> = | enum_final;
+
+
+(* ------------------------------------------------------------
+    Graph
+    Directed graph of uniquely-keyed nodes and labelled edges.
+    Cannot be expressed as any tree: supports cycles, multiple parents,
+    and cross-references between nodes.
+    node keys must be unique_key; edge from/to must reference node keys.
+    Edge label is optional — omit for unlabelled graphs.
+    Key/label conformance across nodes and edges is a runtime concern.
+    Use for dependency graphs, routing, state machines, knowledge graphs.
+
+    Example — labelled dependency graph:
+        deps : [ nodes: [ [ key: ulid_a, value: "parser"  ],
+                          [ key: ulid_b, value: "lexer"   ],
+                          [ key: ulid_c, value: "runtime" ] ],
+                 edges: [ [ from: ulid_a, to: ulid_b ],
+                          [ from: ulid_a, to: ulid_c, label: "depends_on" ] ] ]
+
+    Example — appending nodes and edges with +:
+        deps + [ nodes: [ [key: ulid_d, value: "codegen"] ],
+                 edges: [ [from: ulid_d, to: ulid_a] ] ]
+------------------------------------------------------------ *)
+graph_node     = "[" "key"   ":" unique_key ","
+                     "value" ":" tree_value [","]
+                "]";
+
+graph_nodes    = HAS_ONE<unique_key>< "[" graph_node { "," graph_node } [","] "]" >;
+
+graph_edge     = "[" "from" ":" unique_key ","
+                     "to"   ":" unique_key
+                     [ "," "label" ":" string_quoted ] [","]
+                "]";
+
+graph_edges    = "[" graph_edge { "," graph_edge } [","] "]";
+
+graph_init     = "["
+                     "nodes" ":" graph_nodes ","
+                     "edges" ":" graph_edges [","]
+                 "]";
+
+graph_add_tail = "+" ( TYPE_OF graph_init<ident_ref> | graph_init )
+                    { "+" ( TYPE_OF graph_init<ident_ref> | graph_init ) };
+
+graph_final    = ( TYPE_OF graph_init<ident_ref> | graph_init ) { graph_add_tail };
+
+EXTEND<assign_rhs> = | graph_final;
+
+
+(* ------------------------------------------------------------
+    Bitfield
+    Fixed-width binary flags over an unsigned integer base type.
+    Each named flag occupies one bit at a specific zero-based bit position.
+    Base type determines the maximum number of flags:
+      uint8→8, uint16→16, uint32→32, uint64→64.
+    UNIQUE enforces no duplicate flag names or bit positions at parse time.
+    Use for permissions, feature flags, protocol headers, packed booleans.
+
+    Example — permission flags:
+        Perms : BITFIELD uint8 [ read: 0, write: 1, exec: 2 ]
+
+    Example — protocol header flags (uint16):
+        TcpFlags : BITFIELD uint16 [ fin: 0, syn: 1, rst: 2, psh: 3, ack: 4, urg: 5 ]
+
+    Example — combining flags at runtime (expression, not grammar):
+        myPerms : Perms.read | Perms.write
+------------------------------------------------------------ *)
+bitfield_base  = "uint8" | "uint16" | "uint32" | "uint64";
+
+bitfield_flag  = ident_name ":" uint8;   (* flag name : zero-based bit position *)
+
+bitfield_flags = "[" UNIQUE< bitfield_flag { "," bitfield_flag } [","] > "]";
+
+bitfield_decl  = "BITFIELD" bitfield_base bitfield_flags;
+
+bitfield_final = TYPE_OF bitfield_decl<ident_ref> | bitfield_decl;
+
+EXTEND<assign_rhs> = | bitfield_final;

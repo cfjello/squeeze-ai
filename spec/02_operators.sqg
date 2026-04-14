@@ -2,8 +2,8 @@
 
 include "./01_definitions.sqg";
 
-(* V1 identifiers with space allowed *) 
-ident_name       = /(?<value>[\p{L}][\p{L}0-9_ ]*)/;
+(* V11 Identifiers can no longer have spaces within *) 
+ident_name       = /(?<value>[\p{L}][\p{L}0-9_]*)/;
 
 (* V1 Identifier References *)
 
@@ -30,9 +30,15 @@ string_expr          = string_expr_list | string_grouping;
 (* V1 Compare Expression *)
 compare_oper        = "!=" |  "==" | ">" | ">=" | "<"  | "<=" ;
 num_compare         = TYPE_OF boolean<numeric_expr compare_oper numeric_expr>;
-string_compare      = TYPE_OF boolean<string_expr compare_oper string_expr>;
-string_regexp_comp  = TYPE_OF boolean<string_expr "=~" regexp> ;
-compare_expr        = num_compare | string_compare | string_regexp_comp; 
+(* V13 modified string_compare *)
+string_compare      = TYPE_OF boolean<string_expr compare_oper ( string_expr | regexp ) >;
+
+(* V13 removed string_regexp_comp  = TYPE_OF boolean<string_expr "=~" regexp> ; *) 
+
+(* V13 modified compare_expr *)
+compare_expr        = num_compare | string_compare; 
+
+
                
 not_oper            = "!";
 logic_oper          = "&" | "|" | "^" ; 
@@ -41,5 +47,8 @@ logic_expr_list     = single_logic_expr { logic_oper single_logic_expr };
 logic_grouping      = "(" ( logic_expr_list | logic_grouping )  { logic_oper ( logic_expr_list | logic_grouping ) } ")";
 logic_expr          = logic_expr_list | logic_grouping;
 
+
 calc_unit           = numeric_expr | string_expr  |  logic_expr ;
+
+
 

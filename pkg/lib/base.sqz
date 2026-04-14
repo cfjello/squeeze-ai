@@ -1,0 +1,82 @@
+
+base : {
+
+    (* string type with defaults *)
+    string, string_quoted: {
+        name: "string"
+        data: [
+            type: $
+            data: ""
+        ]
+
+          
+        stingFac: <- (
+            -> s = §string_quoted
+            s =~  trim_quotes
+            <- [ type: $, quote: quote, data: s ]
+        )
+
+        trim_space: <- (
+            -> s: @string
+            /^[ \t]+|[ \t]+$/gm
+        ) 
+
+        trim_quotes: ( 
+            -> s = §string
+            s =~ /^(['"])([\s\S]*)\1$/s
+            <- s
+        )
+      
+
+        trim: <- (
+            -> s: @string
+            s =~ trimQuotes 
+            s =~ trimSpace
+            <- s 
+        )
+
+        quote: <- (
+            -> s = @string
+            <- s.quote + s + s.quote 
+        )
+
+        length: <- ( )
+
+        substr: <- ( 
+            -> s = @string, start: integer , end: integer
+            (* Check range *) 
+        )
+    }
+
+    
+    integer, unsigned_int: { 
+        [
+        name: "integer"
+        type: $
+        data: [ sign: §sign_prefix '+', value: §uint8  0 ]
+    ]
+
+    ( int: integer )  validate: <- (
+            -> a §integer                                 (* This is a string as seen from the parser *) 
+            sign: §char '+'
+            ( a < 0 ) & sign: §char '-'
+
+            (* 2. Compute magnitude (absolute value) *)
+            mag: a
+            ( a < 0 ) & mag: 0 - a
+    
+            
+            (* 3. CAST magnitude to narrowest fitting unsigned type and return *)
+            ( mag <= 255 )                   & <- [ type: $, sign: sign, value: uint8  mag ]
+            ( mag <= 65535 )                 & <- [ type: $, sign: sign, value: uint16 mag ]
+            ( mag <= 4294967295 )            & <- [ type: $, sign: sign, value: uint32 mag ]
+            ( mag <= 18446744073709551615 )  & <- [ type: $, sign: sign, value: uint64 mag ]
+            <- [ type: $, sign: sign, value: uint128 mag ]
+
+
+        )
+
+       
+    }
+
+}

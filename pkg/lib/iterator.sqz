@@ -1,0 +1,231 @@
+
+(*
+table_header         = UNIFORM string<( array_uniform | TYPE_OF array_uniform<ident_ref> )>;
+table_row            = array_final | object_final;
+table_objects        = UNIFORM INFER<table_row  { "," table_row }>; 
+table_init           = table_header table_objects | object_final; (* object_final deliver both the table_header names and the first table_row *)
+table_ins_tail       = "+" ( TYPE_OF table_row<ident_ref> | table_row )  { "+" ( TYPE_OF table_row<ident_ref> | table_row ) };
+table_final          = ( TYPE_OF table_init<ident_ref> | table_init ) table_ins_tail { table_ins_tail };
+*)
+
+
+days_ahead: <- {
+    idx, 1..1000 = int8 0
+    starting_date = date "20260404"
+    get: ( 
+        idx++ >> (
+            dt += 1 & <- [
+                idx: idx++
+                value: dt
+            ]
+        )
+    )
+}
+
+
+
+output, print, show: {
+
+
+}
+
+fetch_01: {
+    list : string[]
+    fn_stream = <- (   
+         response << https://.....
+        << ( response.next & <- { next: true, value: response.value } ^  { next: false, value: null } )
+    )
+
+    fn_stream >> ( -> item ;  item.next & response.value )
+}
+
+
+iterarate_01: {
+    input : infer [ 1,2,3,4,5,6,7]  (* Type is int8[])
+    sum = 0 
+    input >> inp ( inp.next & sum += inp ^ <- sum )
+    fn_stream = {  
+        response << https://..... 
+        << response.next & { next: true, value: response.value }
+    }
+}
+
+
+read_input 
+
+type_definition, td {
+    init: { 
+        -> identifier, idtf:  §ident_ref
+        idtf.@type != null 
+        & <- idtf.@type
+        ^ <- { 
+            name, n: §ident_ref.@name
+            type, t: $
+            version, v: "0.0"
+        }
+
+    }
+    set: { 
+        ->  type_ref  §ident_ref
+
+
+
+        <- {
+           
+
+
+}
+int8, signed_byte: <- {  
+        @data : [
+            @typeName : "int8"
+            @type, t: $
+        ]
+
+            -> a §digits 
+        set: ( a >= -128 &  a <= 127 ) 
+        & <- [ 
+            name, n: "int8"
+            type, t: $
+            version, v: "0.0"
+        ]
+}
+
+    (* Add methods *) 
+    ( t @int8@type[] ) sum: <- {
+        r = 0; i = 0 
+        >> t ( r += t[i++] ) 
+    }
+}
+
+Squeeze Basic Types, sbt: {
+    type_enum: [  "@type" , "@typeName", @version, "@value"  ]
+
+    infer: { -> val any 
+             <- val.@type 
+           }
+
+
+}
+
+(sbt) squeeze_array = {
+    type_enum: [  "@type" , "@typeName", @version, "@init", "@parent"  ]
+
+    (*
+        we need:
+            values: we can infer the type
+            parent: any kind of collection, could be object or array, we have a reference. 
+
+            - a column header and a object to represent the type - be aware that each column value also have types.
+              The real type: collection type -> entry_type
+
+    
+    *)
+    array_t = [ ref:$, name:"array", ver = "v0", init = [] ]
+
+    
+
+    ( array_t) set: { -> Input Values, v , 1..m: §array_final
+
+                      
+                      <- [
+                        parent_type: §array_final
+                        type: v[1].@type
+
+                      ]}
+    
+    
+
+
+
+
+
+
+}
+
+array: <- {
+    -> init §array_final 
+    array_type = 
+
+}
+
+
+
+}
+type_table: {
+
+    get_type_obj: {
+        -> header §string[].@type, rows §object_final.@type
+
+        row_entry  ( rows.@type == §object_final.@type )
+
+        <- [
+            h: header,
+            r:  & [ ]
+        ]
+    }
+
+}
+    
+
+
+
+  
+
+
+    symb_enum: [ "@type" , "@typeName", "@value" ]
+    sym_table: <- {
+
+
+    }
+
+
+t_rec: {
+    enum: [ "@type" , "@typeName", "@value" ]
+
+    (arr §array_final) init: <- {
+        -> val ?
+        <- [ 
+            val.@type,
+            val.@typeName,
+            val.value,
+        ] 
+    }
+}
+
+t_obj = {
+
+            
+        -> cols §string[], rows §array_final 
+        <- {
+
+        }
+
+    }
+
+
+    }
+
+}
+
+
+
+
+
+
+int_types: { 
+
+
+    symbol_table = {
+        header:  
+
+    }
+
+
+(* ------------------------------------------------------------
+    Type function int8
+    1. takes an input argument of digits, §digits references the parser "digits" rule 
+    2. checks the range for the min and max allowed
+    3. and returns a int8 typed array  
+*)
+
+

@@ -1,0 +1,137 @@
+(* V10 - read ./00_directives.sqg for Parser Instructions *)
+
+include "./06_functions.sqg";
+
+
+
+(* Type object static fields with return values 
+
+inst_version = TYPE_OF string_unquoted<inspect_type "." ("version" | "v" )>;
+type_parents = TYPE_OF array_final<"parents" | "p">;
+
+*)
+
+
+
+
+
+(* ------------------------------------------------------------
+      Some scope examples: 
+------------------------------------------------------------ *)
+extend_scope_oper = "+=" ;
+
+scope_inject      = "(" assign_lhs assign_immutable ident_ref  { ","  assign_lhs assign_immutable ident_ref  } ")";
+
+import_assign     = assign_lhs assign_immutable ( http_url | file_path );
+
+scope_assign      = [ scope_inject ] assign_lhs ( equal_assign | extend_scope_oper ) 
+                    scope_begin  
+                         ( import_assign | assignment | scope_assign ) { ( EOL | "," ) ( import_assign | assignment | scope_assign ) }
+                    scope_end;
+
+parser_root       = import_assign | scope_assign; (* Grammer entry point *)
+
+(* ------------------------------------------------------------
+      func_scope_assign — function definition with explicit outer-scope
+      closure capture, mirroring scope_assign injection semantics.
+      The scope_inject binds outer-scope ident_refs as immutable
+      closure variables visible inside the func_unit body.
+
+      Examples:
+        (db := myDB, log := logger) processRow = {
+            -> row: object
+            db.insert(row)
+            log("inserted")
+            <- ok
+        }
+
+        (cfg := appConfig) buildURL = {
+            -> path: string
+            <- cfg.baseURL + path
+        }
+------------------------------------------------------------ *)
+func_scope_assign = [ scope_inject ] assign_lhs assign_oper func_unit;
+
+MERGE<func_body_stmt> = | func_scope_assign;
+MERGE<assignment>     = | func_scope_assign;
+
+
+(* ------------------------------------------------------------
+      Some scope examples: 
+   ------------------------------------------------------------ 
+
+my_scope = {
+  dg, dgraph: "https://...dgraph.lib" 
+  pg, postgres: "https://...postgresql.lib" 
+}
+
+
+new_scope = {
+
+   self: $
+
+   (* import my_scope *)
+   -> ../my_scope
+
+   (* import the elements of my_scope *)
+   -> ../my_scope.[*]
+   
+   my_data: [
+        name: "Eddy" + " Reimer",
+        age: uint8 24,  
+   ]
+   my_table = [
+        header: [ "a", "b" , "c" ],
+        rows =   [
+            [ "row 1 col 1", "row 1 col 2", "row 1 col 3"  ],
+            [ "row 2 col 1", "row 2 col 2", "row 2 col 3"  ],
+            [ "row 3 col 1", "row 3 col 2", "row 3 col 3"  ],
+        ]
+   ]
+
+
+   int_values: uint8 [ 1,2,3,4,5,6,7,8,9,10 ]
+
+   my_func: { 
+        (* enclosure variable sum *)
+        sum = uint8 0
+        -> ints: uint8 [], str: ""
+        ints >> { 
+            sum += ints.@current
+            sum == 9 & next = false 
+        }
+        <- sum
+   }
+   
+   (* Add a static my_data method *) 
+   (md my_data.@type) johnny, check and get: { 
+        ( name == "Eddy Reimer" & age == 24 ) & <-"Johnny Reimer"
+        ^  ( name == "Eddy Reimer" & age == 24 ) & <- name
+   }
+
+    (* build in vars for arrays:
+       
+       uint8.@type  - type object reference 
+       uint8.@data  - type of data object reference
+    *)
+
+   ( uint8.@type[] ) int_sum: {
+        (* @data implicit declared as:  @data: uint8.@type[] )
+        (* >> data: uint8.@type [] is not needed *)
+
+        sum = uint8 0
+        @data >> { sum += uint8.@current }
+        <- sum
+   }
+
+   (my_table.rows.@type) row3, Get Row Three: {
+        >> data: my_table.rows.@data  (* references the injected table *)
+        data >> { data.@current["a"] =~ /^row3/ & <- my_data.@data.@current }
+   }
+
+}
+
+------------------------------------------------------------ *) 
+
+
+  
