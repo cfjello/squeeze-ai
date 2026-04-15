@@ -1,24 +1,8 @@
 
+array, array_final =  {
 
-(* Generic Array *)
+    
 
-
-array =  {
-
-
-    check: <-  ( 
-        -> a $array_list
-   
-
-    )
-    new:  <- (
-        -> a: §array_list  (* Type resolution is deferred until this is instanciated *)
-
-        <- [
-            @t = a.@type
-            @v = 
-        ]
-    ) 
 }
 
 

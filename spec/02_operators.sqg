@@ -41,7 +41,11 @@ compare_expr        = num_compare | string_compare;
 
                
 not_oper            = "!";
-logic_oper          = "&" | "|" | "^" ; 
+logic_and           = "&";
+logic_or            = "|";
+logic_exclusive_or  = "^";
+(* Modified *)
+logic_oper          = logic_and | logic_or | logic_exclusive_or ; 
 single_logic_expr   = [ not_oper ] ( ident_dotted | TYPE_OF boolean<ident_ref> | compare_expr ) | numeric_expr | string_expr;
 logic_expr_list     = single_logic_expr { logic_oper single_logic_expr };
 logic_grouping      = "(" ( logic_expr_list | logic_grouping )  { logic_oper ( logic_expr_list | logic_grouping ) } ")";

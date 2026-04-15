@@ -66,8 +66,37 @@ ident_static_fn      = ident_ref "." "@" ( ident_static_str | ident_static_boole
 args_decl            =  assign_lhs [ assign_immutable | assign_read_only_ref ] inspect_type { "," args_decl };
 func_args            = "->" args_decl; 
 func_stream_args     = ">>" args_decl;
-func_deps            = "=>" UNIQUE< ident_static_store_name  { "," ident_static_store_name  } > ;
+func_deps            = dependency_oper UNIQUE< ident_static_store_name  { "," ident_static_store_name  } > ;
 func_args_decl       =  [ func_args ] [ func_stream_args ] [ func_deps ]; 
+
+(* ------------------------------------------------------------
+   Dependency chain "main" re-entry convention
+   ------------------------------------------------------------ *)
+
+(*
+   Every scope declared as a => dependency chain MUST contain a
+   function named "main".  "main" is the reserved re-entry point
+   used by the Global Error Handler's mode-3 resumption
+   (re-execute the dependency chain — see spec/10_error_handler.sqg Section 14.3).
+
+   Calling "main" produces a new iteration of the chain's data;
+   the chain UUID is regenerated at each invocation, enabling
+   dirty-data detection across the dependency graph.
+
+   A => chain scope that does not declare "main" is a compile error.
+   "main" is a reserved identifier within a => chain scope.
+
+   Example:
+     my_chain => {
+       main: <- (
+         ...                   (* generates a new iteration of the chain data *)
+       )
+       process: <- (
+         >> data
+         ...
+       )
+     }
+*)
 
 (* ------------------------------------------------------------
    Function Ranges
@@ -100,12 +129,15 @@ func_call_final        = func_call_chain | func_stream_loop ;
    Function Statements
 ------------------------------------------------------------ *)
 self_ref            = "$";
+(* V13 Added *)
+dependency_oper     = "=>";
 (* V11 modified func_inject *)
 func_inject         = "(" [ ( assign_lhs inspect_type [ empty_array_decl] ) | ( [ assign_lhs ( assign_immutable | assign_read_only_ref) ] ident_ref ) ] { ","  assign_lhs ( assign_immutable | assign_read_only_ref) ident_ref  } ")";
 func_stmt           =  regexp | ident_ref | object_final | array_final | func_call_chain | func_unit | calc_unit | self_ref;
 func_assign         =  [ func_inject ] assign_lhs assign_oper func_stmt;
 func_return_stmt    = "<-" func_stmt; 
-func_store_stmt     =  "=>" ( object_final | TYPE_OF object_final<ident_ref> ) { "," ( object_final | TYPE_OF object_final<ident_ref> ) };
+(* V13 Modified: uses dependency_oper; publishes a new UUIDv7-stamped version of a named data object *) 
+func_store_stmt     =  dependency_oper ( object_final | TYPE_OF object_final<ident_ref> ) { "," ( object_final | TYPE_OF object_final<ident_ref> ) };
 func_body_stmt      = func_assign | func_return_stmt | func_store_stmt | func_stream_loop | func_call_final;
 
 

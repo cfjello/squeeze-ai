@@ -1,45 +1,55 @@
-(* V13 - read ../spec/00_directives.sqg for Parser Instructions *)
 
+string, string_quoted: { 
+        names, n, 1..m : [ "string", "string_quoted"]
+        card,  c       : 1..1
+        type,  t       : $ 
+        data,  d       : ""
+        ver,   v       : "v0.0"
+        quote, q:      '"'
 
-(* This is "squeeze" code, for scope "string" *)
+        init: <- (
+            -> q_str: §string_quoted                               
+            quote= q_str[1]                             
+            char_array, 1..m: ... q_str
+            end: LENGTH<char_array> - 1
+            sub_range: 2..end
+            stringIt =  CAST string<SUB_RANGE sub_range<char_array>>           
+            <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: stringIt ]
+        )
 
-string, string_quoted: {
-    name: "string"
-    
-    (* Parser helper functions *)
-    trim_quotes: ( 
-        -> s = §string
-        s =~ /^(['"])([\s\S]*)\1$/s
-        <- s
-    )
+        (s @string) copy: <- (
+            <- [ type: $, quote: s.quote, data: s.data, card: s.card]
+        )
 
-    init: <- (
-        -> s = §string_quoted        (* Parser Directive this is a string representation that matches the string_quoted rule * )
-        s =~  trim_quotes
-        <- [ type: $, quote: quote, data: s ]
-    )
+        (s @string) trim: <- (
+            trimIt = s.data
+            trimIt =~ /^[ \t]+|[ \t]+$/gm
+            <- trimIt
+        ) 
 
-   (* string library functions *) 
-    trim: <- (
-        -> s: @string
-        /^[ \t]+|[ \t]+$/gm
-    ) 
+        (s @string) quote: <- (
+            -> quote_char: §char
+            <- quote_char + s.data + quote_char 
+        )
 
-    trim: <- (
-        -> s: @string
-        s =~ trimSpace
-        <- s 
-    )
+        (s @string) length: <- ( 
+            char_array, 1..m: ... s.data
+            <-  LENGTH<char_array>
+        )
 
-    quote: <- (
-        -> s = @string
-        <- s.quote + s + s.quote 
-    )
+        (s @string) substr: <- ( 
+            -> start = integer , end = integer 
+            char_array, 1..m: ... s.data
+            length: LENGTH<char_array>
 
-    length: <- ( )
+            start <= 0 & start = length + start
+            end <= 0 & end = length + end
 
-    substr: <- ( 
-        -> s = @string, start: integer , end: integer
-        (* Check range *) 
-    )
-}
+            s_range: 1..length
+
+            start >< s_range & end >< s_range  & (
+                sub_range: start <= end & start..end ^ end..start 
+                <-  CAST string<SUB_RANGE sub_range<char_array>>
+            )
+        )
+    }

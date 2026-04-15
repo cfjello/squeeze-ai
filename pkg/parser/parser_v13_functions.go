@@ -4,6 +4,7 @@
 // V13 changes vs V12:
 //   - inspect_type includes any_type (@?) as a valid type reference
 //   - string_append_mutable is "+=" only (V12 had "+~" as an additional form)
+//   - dependency_oper / func_store_stmt formalised as V13 (were inline "=>" in V12)
 //   - ParseFuncUnit and ParseReturnFuncUnit are forward-referenced by assignment.go
 //
 // Covered rules:
@@ -11,6 +12,7 @@
 //	type_prefix, inspect_type, inspect_type_name, type_declare
 //	assign_func_rhs, func_header_assign, func_header_user_params
 //	ident_static_store_name
+//	dependency_oper
 //	func_args, func_stream_args, func_deps, func_args_decl
 //	func_fixed_num_range, func_fixed_list_range, func_range_args
 //	func_call_args, func_call, func_call_chain
@@ -101,7 +103,8 @@ type V13FuncStreamArgsNode struct {
 	Entries []*V13ArgsDeclNode
 }
 
-// V13FuncDepsNode  func_deps = "=>" UNIQUE< ident_static_store_name { "," ... } >
+// V13FuncDepsNode  func_deps = dependency_oper UNIQUE< ident_static_store_name { "," ident_static_store_name } >
+// dependency_oper = "=>" (V13_STORE token)
 type V13FuncDepsNode struct {
 	V13BaseNode
 	StoreNames []string
@@ -219,7 +222,8 @@ type V13CondReturnStmtNode struct {
 	Return *V13FuncReturnStmtNode
 }
 
-// V13FuncStoreStmtNode  func_store_stmt = "=>" ( object_final | TYPE_OF object_final<ident_ref> ) { "," ... }
+// V13FuncStoreStmtNode  func_store_stmt = dependency_oper ( object_final | TYPE_OF object_final<ident_ref> ) { "," ... }
+// dependency_oper = "=>" (V13_STORE); publishes a new UUIDv7-stamped version of a named data object.
 type V13FuncStoreStmtNode struct {
 	V13BaseNode
 	Items []V13Node

@@ -1,54 +1,4 @@
 
-base : {
-
-    (* string type with defaults *)
-    string, string_quoted: {
-        name: "string"
-        data: [
-            type: $
-            data: ""
-        ]
-
-          
-        stingFac: <- (
-            -> s = §string_quoted
-            s =~  trim_quotes
-            <- [ type: $, quote: quote, data: s ]
-        )
-
-        trim_space: <- (
-            -> s: @string
-            /^[ \t]+|[ \t]+$/gm
-        ) 
-
-        trim_quotes: ( 
-            -> s = §string
-            s =~ /^(['"])([\s\S]*)\1$/s
-            <- s
-        )
-      
-
-        trim: <- (
-            -> s: @string
-            s =~ trimQuotes 
-            s =~ trimSpace
-            <- s 
-        )
-
-        quote: <- (
-            -> s = @string
-            <- s.quote + s + s.quote 
-        )
-
-        length: <- ( )
-
-        substr: <- ( 
-            -> s = @string, start: integer , end: integer
-            (* Check range *) 
-        )
-    }
-
-    
     integer, unsigned_int: { 
         [
         name: "integer"
@@ -78,5 +28,3 @@ base : {
 
        
     }
-
-}

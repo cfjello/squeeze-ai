@@ -91,6 +91,7 @@ const (
 
 	// ---- Multi-character operators (max-munch) ----
 	V13_DOTDOT        // ..
+	V13_ELLIPSIS      // ...
 	V13_DOTDOLLAR     // .$
 	V13_ARROW         // ->
 	V13_STREAM        // >>
@@ -117,6 +118,7 @@ const (
 	V13_NEQ           // !=
 	V13_EQEQ          // ==
 	V13_MATCH_OP      // =~
+	V13_VALIDATE_OP   // ><
 	V13_AMP_AMP       // &&
 	V13_PIPE_PIPE     // ||
 	V13_EMPTY_ARR     // []
@@ -172,14 +174,14 @@ var V13tokenNames = map[V13TokenType]string{
 	V13_SQZ: "SQZ", V13_CODE: "CODE",
 	V13_HAS_ONE: "HAS_ONE", V13_SUBSET_OF: "SUBSET_OF", V13_UNQUOTE: "UNQUOTE",
 	V13_ENUM: "ENUM", V13_BITFIELD: "BITFIELD",
-	V13_DOTDOT: "..", V13_DOTDOLLAR: ".$", V13_ARROW: "->", V13_STREAM: ">>",
+	V13_DOTDOT: "..", V13_ELLIPSIS: "...", V13_DOTDOLLAR: ".$", V13_ARROW: "->", V13_STREAM: ">>",
 	V13_STORE: "=>", V13_RETURN_STMT: "<-",
 	V13_INC: "++", V13_DEC: "--", V13_POW: "**",
 	V13_IADD_IMM: "+:", V13_ISUB_IMM: "-:", V13_IMUL_IMM: "*:", V13_IDIV_IMM: "/:",
 	V13_IADD_MUT: "+~", V13_ISUB_MUT: "-~", V13_IMUL_MUT: "*~", V13_IDIV_MUT: "/~",
 	V13_READONLY: ":~", V13_EXTEND_ASSIGN: "+=", V13_ISUB_ASSIGN: "-=",
 	V13_IMUL_ASSIGN: "*=", V13_IDIV_ASSIGN: "/=",
-	V13_GEQ: ">=", V13_LEQ: "<=", V13_NEQ: "!=", V13_EQEQ: "==", V13_MATCH_OP: "=~",
+	V13_GEQ: ">=", V13_LEQ: "<=", V13_NEQ: "!=", V13_EQEQ: "==", V13_MATCH_OP: "=~", V13_VALIDATE_OP: "><",
 	V13_AMP_AMP: "&&", V13_PIPE_PIPE: "||",
 	V13_EMPTY_ARR: "[]", V13_EMPTY_OBJ: "{}", V13_EMPTY_STR_D: `""`,
 	V13_EMPTY_STR_S: "''", V13_EMPTY_STR_T: "``", V13_REGEXP_DECL: "//",
@@ -334,6 +336,13 @@ func (l *V13Lexer) V13peek2() rune {
 		return 0
 	}
 	return l.input[l.pos+1]
+}
+
+func (l *V13Lexer) V13peek3() rune {
+	if l.pos+2 >= len(l.input) {
+		return 0
+	}
+	return l.input[l.pos+2]
 }
 
 func (l *V13Lexer) V13advance() rune {
@@ -681,6 +690,12 @@ func (l *V13Lexer) V13scanOperator(line, col int) (V13Token, error) {
 
 	switch ch {
 	case '.':
+		if ch2 == '.' && l.V13peek3() == '.' {
+			l.V13advance()
+			l.V13advance()
+			l.V13advance()
+			return l.V13makeTok(V13_ELLIPSIS, "...", line, col), nil
+		}
 		if ch2 == '.' {
 			l.V13advance()
 			l.V13advance()
@@ -730,6 +745,10 @@ func (l *V13Lexer) V13scanOperator(line, col int) (V13Token, error) {
 			l.V13advance()
 			l.V13advance()
 			return l.V13makeTok(V13_GEQ, ">=", line, col), nil
+		case '<':
+			l.V13advance()
+			l.V13advance()
+			return l.V13makeTok(V13_VALIDATE_OP, "><", line, col), nil
 		}
 		l.V13advance()
 		return l.V13makeTok(V13_GT, ">", line, col), nil

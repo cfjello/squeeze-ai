@@ -4,6 +4,8 @@
 // V13 changes vs V12:
 //   - string_compare accepts regexp as the RHS when the operator is "=~"
 //     (promoting string_regexp_comp as an alternative inside string_compare)
+//   - logic_exclusive_or "^" formalised as a logic_oper alongside "&" and "|"
+//     (logic_oper = logic_and | logic_or | logic_exclusive_or)
 //
 // Covered rules:
 //
@@ -11,7 +13,8 @@
 //	numeric_oper, inline_incr, single_num_expr, num_expr_list, num_grouping, numeric_expr
 //	string_oper, string_expr_list, string_grouping, string_expr
 //	compare_oper, num_compare, string_compare, string_regexp_comp, compare_expr
-//	not_oper, logic_oper, single_logic_expr, logic_expr_list, logic_grouping, logic_expr
+//	not_oper, logic_and, logic_or, logic_exclusive_or, logic_oper,
+//	single_logic_expr, logic_expr_list, logic_grouping, logic_expr
 //	calc_unit
 package parser
 

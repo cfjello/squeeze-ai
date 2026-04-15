@@ -1,0 +1,256 @@
+(* ============================================================
+   10_error_handler.sqg  —  Squeeze Error Handling
+   ============================================================
+   Canonical reference for the Squeeze error handling strategy:
+   event model, severity tiers, policy matching, resumption modes,
+   inline recovery, and the Go code generator contract.
+
+   This file is intentionally non-executable — it documents
+   directives and conventions only.
+   The executable error_event type is defined in lib/error.sqz.
+   ============================================================ *)
+
+
+(* ------------------------------------------------------------
+   SECTION 10 — CATCH-ALL EVENT-DRIVEN ERROR MODEL
+   ------------------------------------------------------------ *)
+
+(*
+   10.1  Every run-time error emits an error_event (defined in lib/error.sqz)
+         containing:
+           program_pointer — runtime location "module.function:line"
+           chain_uuid      — runtime UUID of the depedency chain execution; "" for standalone functions
+           value           — the affected variable/data (any_type @?)
+           error_type      — categorical string identifier (e.g. "timeout", "overflow", "type_mismatch", "bad_data")
+           severity        — one of: "recoverable" | "error" | "fatal"  (see Section 11)
+           timestamp       — ISO-8601 timestamp
+           context         — structured object with input args and call stack fragment
+
+   10.2  Squeeze source code does NOT contain explicit error checks.
+         The run-time system (Go-generated code) is responsible for
+         detecting and wrapping all errors as error_event instances.
+         AI-assisted analysis of logged error_events is used to
+         suggest and refine policies over time.
+
+   10.3  The Global Error Handler catches all error_event instances
+         using 1..m async on_error handlers (see Section 13 for ordering).
+         Handlers are tried in registration order; the first matching
+         policy wins and acts on the event.
+
+   10.4  All error_events are logged asynchronously in JSON for
+         monitoring and AI-assisted policy improvement.
+
+   10.5  Bad data (error_type "bad_data") is additionally logged to a
+         separate repair queue in JSON for data repair and retry.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 11 — SEVERITY TIERS
+   ------------------------------------------------------------ *)
+
+(*
+   Three formal severity tiers, each with defined Go runtime mappings:
+
+   11.1  "recoverable"
+         Cause:   Type mismatch, range violation (><), validation failure,
+                  bad or malformed data.
+         Action:  Policies may repair data and retry.
+         Go map:  Typed error returns, failed type assertions,
+                  failed range checks.
+
+   11.2  "error"
+         Cause:   Integer/float overflow, failed I/O, dependency chain
+                  function failure, context.DeadlineExceeded,
+                  context.Canceled, recoverable Go panic (caught via defer/recover).
+         Action:  Policies may retry the function or re-execute the chain.
+         Go map:  Recoverable panic, context errors, I/O errors.
+
+   11.3  "fatal"
+         Cause:   OOM, non-recoverable Go panic (runtime.throw),
+                  corrupted state, stack overflow.
+         Action:  Log the full error_event and terminate cleanly.
+                  No retry or resume is attempted.
+         Go map:  runtime.throw, out-of-memory — cannot be caught
+                  by defer/recover; the process terminates after
+                  flushing the async log buffer.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 12 — POLICY MATCHING SYNTAX
+   ------------------------------------------------------------ *)
+
+(*
+   12.1  A policy is a logic_expr chain using & (and) and ^ (else).
+         Conditions match on error_event fields:
+
+           error_type == "timeout"     & <policy_action> ^
+           error_type == "overflow"    & <policy_action> ^
+           severity   == "recoverable" & <policy_action> ^
+           <default_action>
+
+   12.2  Evaluation is top-to-bottom; the first branch whose condition
+         is true executes and evaluation stops (^ is else, not XOR here).
+
+   12.3  If all ^ branches are exhausted without a truthy condition,
+         the no-match fallback (Section 13.1) applies.
+
+   12.4  Policy actions reference error_event fields via the bound
+         event variable, e.g.:
+           ev.error_type == "timeout" & retry_count += 1 & recall ^
+           ev.severity   == "fatal"   & log_and_halt
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 13 — NO-MATCH FALLBACK AND HANDLER ORDERING
+   ------------------------------------------------------------ *)
+
+(*
+   13.1  No-match fallback
+         If no registered on_error handler matches the error_event,
+         the runtime:
+           a) Promotes severity to "fatal" (via error_event.promote_fatal)
+           b) Logs the full error_event to the structured JSON log
+           c) Terminates the executing chain or function cleanly
+         This is the guaranteed last-resort behaviour.
+
+   13.2  Handler registration order
+         Handlers are tried in registration order, defined by the
+         textual order of on_error declarations in the source file.
+         First-registered is first-tried.
+
+   13.3  Mutual exclusion
+         Each error_event is processed by exactly one handler.
+         Once a handler accepts and acts on an event, no further
+         handlers are invoked for that event.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 14 — RESUMPTION MODES
+   ------------------------------------------------------------ *)
+
+(*
+   Resumption mode is declared by the policy after acting.
+   Three modes, constrained by function type (standalone vs. chain):
+
+   14.1  Resume from prior program_pointer   [all functions]
+         Execution continues from the statement immediately before
+         the failing statement.
+         - Immutable (:) bindings are always safe (write-once).
+         - Mutable (=) bindings are NOT automatically rolled back;
+           the policy is responsible for correcting them before resume.
+
+   14.2  Retry the failing function   [all functions]
+         The function is recalled.
+         - The policy may supply corrected input arguments sourced from
+           error_event.context.
+         - If no corrected arguments are supplied, the original
+           arguments are reused.
+
+   14.3  Re-execute the dependency chain   [chain functions only]
+         Applies only to functions declared in a => dependency chain.
+         The runtime re-executes the full directed graph from its
+         entry point by calling the chain's "main" function
+         (see Section 15.2), which produces a new iteration of the data.
+         Standalone functions (not in any => chain) CANNOT use this mode.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 15 — DEPENDENCY CHAIN UUID AND RE-ENTRY CONVENTION
+   ------------------------------------------------------------ *)
+
+(*
+   15.1  Chain UUID (runtime-generated)
+         Each execution of a => dependency chain is assigned a UUID
+         at RUNTIME (not compile time).  Concurrent executions of the
+         same chain have distinct UUIDs.  The UUID is used to detect
+         "dirty" dependency data — a node whose UUID is older than any
+         upstream node is considered stale and will be regenerated when
+         the chain is re-executed.
+
+   15.2  "main" re-entry function (required, reserved name)
+         Every => dependency chain scope MUST declare a function named
+         "main".  "main" is the canonical re-entry point for mode-3
+         resumption (Section 14.3).  Calling "main" produces a new
+         iteration of the chain's data; therefore retry inputs differ
+         from the failing invocation's inputs.
+         "main" is a RESERVED NAME within a => chain scope.
+         A chain scope that does not declare "main" is a compile error.
+
+   15.3  Dirty-data detection
+         The runtime compares chain_uuid timestamps across the
+         dependency graph.  Any node older than an upstream dependency
+         is dirty and is regenerated on the next chain execution.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 16 — INLINE ^ RECOVERY vs GLOBAL HANDLER BOUNDARY
+   ------------------------------------------------------------ *)
+
+(*
+   16.1  Inline recovery — local, immediate, no error_event emitted:
+
+           result ^ fallback
+
+         Used for expected, locally recoverable conditions.
+         The fallback expression is evaluated immediately at the call site.
+         Examples:
+           s.substr 2, -1    ^ ""
+           map.get   key     ^ default_value
+           parse_int str     ^ 0
+
+   16.2  Global Handler — async, for unexpected errors:
+         Any error that is NOT caught by an inline ^ reaches the
+         Global Handler as an error_event.  The two mechanisms are
+         mutually exclusive: an event handled inline never reaches
+         the Global Handler.
+
+   16.3  Nesting
+         A policy action inside the Global Handler may itself use
+         inline ^ for its own local fallbacks.  This does not
+         re-enter the Global Handler.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 17 — GO CODE GENERATOR CONTRACT
+   ------------------------------------------------------------ *)
+
+(*
+   17.1  defer/recover wrapper
+         The code generator emits a defer/recover block at every
+         Squeeze function boundary.  Panics caught by recover() are
+         wrapped as error_event with severity "error" and dispatched
+         to the Global Handler.
+         Non-recoverable panics (runtime.throw, OOM) cannot be caught;
+         the runtime process terminates after flushing the async log buffer.
+
+   17.2  Go error → error_event severity mapping
+
+         Go typed error return value          → "recoverable" or "error"
+                                                (resolved via error_type registry, Section 17.4)
+         Recoverable Go panic (recover())     → "error"
+         context.DeadlineExceeded             → "error"   (error_type "timeout")
+         context.Canceled                     → "error"   (error_type "cancelled")
+         Integer overflow (detected at codegen boundary) → "error"   (error_type "overflow")
+         runtime.throw / OOM                  → "fatal"   (logged only, no recovery)
+
+   17.3  Structured log format
+         All error_events are logged asynchronously in JSON.
+         Bad-data events (error_type "bad_data", severity "recoverable")
+         are additionally appended to a separate repair queue in JSON
+         for later data repair and retry workflows.
+
+   17.4  error_type registry
+         A static registry generated at compile time maps known Go error
+         values and panic message prefixes to canonical error_type strings.
+         Unknown or unmapped errors default to:
+           error_type "unknown", severity "error".
+         The registry is extensible: user code may register additional
+         mappings before the Global Handler is initialised.
+*)

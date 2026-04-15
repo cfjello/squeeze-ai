@@ -2,17 +2,20 @@
 // the Squeeze V13 grammar rule set defined in spec/08_range.sqg.
 //
 // New in V13 (no V12 equivalent rules):
-//   - range_oper        ".."
-//   - validate_oper     "=~"
-//   - num_range_valid   TYPE_OF boolean<numeric_expr =~ func_fixed_num_range>
-//   - date_range        ( date | TYPE_OF date<ident_ref> ) ".." ( date | TYPE_OF date<ident_ref> )
-//   - date_range_valid  TYPE_OF boolean<date =~ date_range>
-//   - time_range        ( time | TYPE_OF time<ident_ref> ) ".." ( time | TYPE_OF time<ident_ref> )
-//   - time_range_val    TYPE_OF boolean<time =~ time_range>
-//   - regexp_valid      TYPE_OF boolean<string_quoted =~ regexp>
+//   - range_oper          ".."
+//   - validate_oper        "><"  (Modified: was "=~")
+//   - regexp_assign_oper   "=~"  (Added)
+//   - num_range_valid      TYPE_OF boolean<numeric_expr >< func_fixed_num_range>
+//   - date_range           ( date | TYPE_OF date<ident_ref> ) ".." ( date | TYPE_OF date<ident_ref> )
+//   - date_range_valid     TYPE_OF boolean<date >< date_range>
+//   - time_range           ( time | TYPE_OF time<ident_ref> ) ".." ( time | TYPE_OF time<ident_ref> )
+//   - time_range_val       TYPE_OF boolean<time >< time_range>
+//   - regexp_assign        TYPE_OF string< ( string_quoted | string_unquoted ) =~ regexp >  (Added)
+//   - array_default_range  "0" ".." "m"  (Added)
+//   - object_default_range "0" ".." "m"  (Added)
 //
-// NOTE: range_oper and validate_oper map to existing tokens V13_DOTDOT and
-// V13_MATCH_OP respectively — no new token types are required.
+// NOTE: range_oper maps to V13_DOTDOT; validate_oper maps to V13_VALIDATE_OP (><);
+// regexp_assign_oper maps to V13_MATCH_OP (=~).
 package parser
 
 import "fmt"
@@ -68,11 +71,22 @@ type V13TimeRangeValidNode struct {
 	Range *V13TimeRangeNode
 }
 
-// V13RegexpValidNode  regexp_valid = TYPE_OF boolean< string_quoted =~ regexp >
-type V13RegexpValidNode struct {
+// V13RegexpAssignNode  regexp_assign = TYPE_OF string< ( string_quoted | string_unquoted ) [ ":" | "=" ] "~" regexp >
+type V13RegexpAssignNode struct {
 	V13BaseNode
-	Str    *V13StringQuotedNode
+	Str    interface{}  // *V13StringQuotedNode or *V13StringUnquotedNode
+	Oper   V13TokenType // V13_READONLY (":~"), V13_MATCH_OP ("=~"), or V13_TILDE ("~")
 	Regexp *V13RegexpNode
+}
+
+// V13ArrayDefaultRangeNode  array_default_range = "0" ".." "m"
+type V13ArrayDefaultRangeNode struct {
+	V13BaseNode
+}
+
+// V13ObjectDefaultRangeNode  object_default_range = "0" ".." "m"
+type V13ObjectDefaultRangeNode struct {
+	V13BaseNode
 }
 
 // =============================================================================
@@ -163,7 +177,7 @@ func (p *V13Parser) ParseNumRangeValid() (*V13NumRangeValidNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := p.expect(V13_MATCH_OP); err != nil {
+	if _, err := p.expect(V13_VALIDATE_OP); err != nil {
 		return nil, err
 	}
 	rangeRef, err := p.ParseIdentRef()
@@ -201,7 +215,7 @@ func (p *V13Parser) ParseDateRange() (*V13DateRangeNode, error) {
 
 // ParseDateRangeValid parses:
 //
-//	date_range_valid = TYPE_OF boolean< date =~ date_range >
+//	date_range_valid = TYPE_OF boolean< date >< date_range >
 func (p *V13Parser) ParseDateRangeValid() (*V13DateRangeValidNode, error) {
 	line, col := p.cur().Line, p.cur().Col
 	if _, err := p.expect(V13_TYPE_OF); err != nil {
@@ -217,7 +231,7 @@ func (p *V13Parser) ParseDateRangeValid() (*V13DateRangeValidNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := p.expect(V13_MATCH_OP); err != nil {
+	if _, err := p.expect(V13_VALIDATE_OP); err != nil {
 		return nil, err
 	}
 	rng, err := p.ParseDateRange()
@@ -255,7 +269,7 @@ func (p *V13Parser) ParseTimeRange() (*V13TimeRangeNode, error) {
 
 // ParseTimeRangeValid parses:
 //
-//	time_range_val = TYPE_OF boolean< time =~ time_range >
+//	time_range_val = TYPE_OF boolean< time >< time_range >
 func (p *V13Parser) ParseTimeRangeValid() (*V13TimeRangeValidNode, error) {
 	line, col := p.cur().Line, p.cur().Col
 	if _, err := p.expect(V13_TYPE_OF); err != nil {
@@ -271,7 +285,7 @@ func (p *V13Parser) ParseTimeRangeValid() (*V13TimeRangeValidNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := p.expect(V13_MATCH_OP); err != nil {
+	if _, err := p.expect(V13_VALIDATE_OP); err != nil {
 		return nil, err
 	}
 	rng, err := p.ParseTimeRange()
@@ -288,26 +302,39 @@ func (p *V13Parser) ParseTimeRangeValid() (*V13TimeRangeValidNode, error) {
 	}, nil
 }
 
-// ParseRegexpValid parses:
+// ParseRegexpAssign parses:
 //
-//	regexp_valid = TYPE_OF boolean< string_quoted =~ regexp >
-func (p *V13Parser) ParseRegexpValid() (*V13RegexpValidNode, error) {
+//	regexp_assign = TYPE_OF string< ( string_quoted | string_unquoted ) [ ":" | "=" ] "~" regexp >
+//
+// regexp_assign_oper accepts: ":~" (V13_READONLY), "=~" (V13_MATCH_OP), or "~" (V13_TILDE).
+func (p *V13Parser) ParseRegexpAssign() (*V13RegexpAssignNode, error) {
 	line, col := p.cur().Line, p.cur().Col
 	if _, err := p.expect(V13_TYPE_OF); err != nil {
 		return nil, err
 	}
-	if _, err := p.expectLit("boolean"); err != nil {
+	if _, err := p.expectLit("string"); err != nil {
 		return nil, err
 	}
 	if _, err := p.expect(V13_LT); err != nil {
 		return nil, err
 	}
-	s, err := p.ParseStringQuoted()
-	if err != nil {
-		return nil, err
+	var str interface{}
+	if sq, err := p.ParseStringQuoted(); err == nil {
+		str = sq
+	} else if su, err := p.ParseStringUnquoted(); err == nil {
+		str = su
+	} else {
+		return nil, fmt.Errorf("%d:%d: expected string_quoted or string_unquoted", line, col)
 	}
-	if _, err := p.expect(V13_MATCH_OP); err != nil {
-		return nil, err
+	// regexp_assign_oper = [ ":" | "=" ] "~"  →  :~  |  =~  |  ~
+	var oper V13TokenType
+	switch p.cur().Type {
+	case V13_READONLY, V13_MATCH_OP, V13_TILDE:
+		oper = p.cur().Type
+		p.advance()
+	default:
+		return nil, fmt.Errorf("%d:%d: expected regexp_assign_oper (:~, =~, or ~), got %s",
+			p.cur().Line, p.cur().Col, p.cur().Type)
 	}
 	r, err := p.ParseRegexp()
 	if err != nil {
@@ -316,11 +343,46 @@ func (p *V13Parser) ParseRegexpValid() (*V13RegexpValidNode, error) {
 	if _, err := p.expect(V13_GT); err != nil {
 		return nil, err
 	}
-	return &V13RegexpValidNode{
+	return &V13RegexpAssignNode{
 		V13BaseNode: V13BaseNode{Line: line, Col: col},
-		Str:         s,
+		Str:         str,
+		Oper:        oper,
 		Regexp:      r,
 	}, nil
+}
+
+// ParseArrayDefaultRange parses:
+//
+//	array_default_range = "0" ".." "m"
+func (p *V13Parser) ParseArrayDefaultRange() (*V13ArrayDefaultRangeNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	if _, err := p.expectLit("0"); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(V13_DOTDOT); err != nil {
+		return nil, err
+	}
+	if _, err := p.expectLit("m"); err != nil {
+		return nil, err
+	}
+	return &V13ArrayDefaultRangeNode{V13BaseNode: V13BaseNode{Line: line, Col: col}}, nil
+}
+
+// ParseObjectDefaultRange parses:
+//
+//	object_default_range = "0" ".." "m"
+func (p *V13Parser) ParseObjectDefaultRange() (*V13ObjectDefaultRangeNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	if _, err := p.expectLit("0"); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(V13_DOTDOT); err != nil {
+		return nil, err
+	}
+	if _, err := p.expectLit("m"); err != nil {
+		return nil, err
+	}
+	return &V13ObjectDefaultRangeNode{V13BaseNode: V13BaseNode{Line: line, Col: col}}, nil
 }
 
 var _ = fmt.Sprintf

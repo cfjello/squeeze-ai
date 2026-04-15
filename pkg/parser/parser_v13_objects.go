@@ -1,7 +1,9 @@
 // parser_v13_objects.go — Phase 2 AST nodes and Phase 3 parse methods for
 // the Squeeze V13 grammar rule set defined in spec/04_objects.sqg.
 //
-// V13 changes vs V12:  none (all rules carry forward unchanged).
+// V13 changes vs V12:
+//   - split_oper  "..."  (Added)
+//   - split_array split_oper ( string | digets | integer | date | date_time | time | time_stamp )  (Added)
 //
 // Covered rules:
 //
@@ -10,6 +12,7 @@
 //	empty_array_typed (V12)
 //	array_value, values_list, array_uniform, array_list,
 //	array_append_tail, array_omit_tail, array_final,
+//	split_oper, split_array
 //	lookup_idx_expr, array_lookup
 //	object_init, object_merge_tail, object_omit_tail,
 //	object_merge_or_omit, object_final, object_lookup
@@ -181,6 +184,13 @@ type V13TableFinalSimpleNode struct {
 	V13BaseNode
 	Base  V13Node // *V13TypeOfRefNode | *V13TableInitSimpleNode
 	Tails []*V13TableInsTailNode
+}
+
+// V13SplitArrayNode  split_array = "..." ( string | digets | integer | date | date_time | time | time_stamp )
+// split_oper is the fixed token "..." (V13_ELLIPSIS); Separator holds the constant following it.
+type V13SplitArrayNode struct {
+	V13BaseNode
+	Separator *V13ConstantNode
 }
 
 // =============================================================================
@@ -1038,5 +1048,29 @@ func (p *V13Parser) ParseTableFinalSimple() (*V13TableFinalSimpleNode, error) {
 		V13BaseNode: V13BaseNode{Line: line, Col: col},
 		Base:        base,
 		Tails:       tails,
+	}, nil
+}
+
+// ---------- split_array ----------
+
+// ParseSplitArray parses:
+//
+//	split_array = "..." ( string | digets | integer | date | date_time | time | time_stamp )
+//
+// The separator is any constant whose type is one of the above;
+// digets (unsigned digit sequence) is treated as integer here.
+func (p *V13Parser) ParseSplitArray() (*V13SplitArrayNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	if _, err := p.expect(V13_ELLIPSIS); err != nil {
+		return nil, err
+	}
+	sep, err := p.ParseConstant()
+	if err != nil {
+		return nil, fmt.Errorf("%d:%d: split_array: expected separator (string|digits|integer|date|date_time|time|time_stamp): %w",
+			line, col, err)
+	}
+	return &V13SplitArrayNode{
+		V13BaseNode: V13BaseNode{Line: line, Col: col},
+		Separator:   sep,
 	}, nil
 }

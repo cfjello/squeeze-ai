@@ -35,6 +35,9 @@ array_append_tail     = "+" array_uniform { "+" array_uniform } ;
 array_omit_tail      = "-" integer { "," integer };
 array_final          = ( TYPE_OF array_list<ident_ref> | array_list ) { array_append_tail | array_omit_tail };
 
+split_oper           = "...";
+split_array          = split_oper ( string | digets | integer | date | date_time | time | time_stamp );           
+
 lookup_idx_expr      =  integer | numeric_expr | string | string_expr | TYPE_OF integer<ident_ref>|  TYPE_OF string<ident_ref>;
 
 array_lookup         = TYPE_OF array_final<ident_ref> "[" lookup_idx_expr "]";

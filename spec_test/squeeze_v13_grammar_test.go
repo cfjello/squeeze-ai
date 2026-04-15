@@ -111,6 +111,33 @@ func TestV13_Operators_IdentRef(t *testing.T) {
 	}
 }
 
+func TestV13_Operators_LogicExclusive(t *testing.T) {
+	// logic_exclusive_or "^" formalised in logic_oper = logic_and | logic_or | logic_exclusive_or
+	cases := []struct {
+		label string
+		src   string
+		valid bool
+	}{
+		{"and", "a & b", true},
+		{"or", "a | b", true},
+		{"exclusive_or", "a ^ b", true},
+		{"chained xor", "a ^ b ^ c", true},
+		{"mixed", "a & b ^ c", true},
+	}
+	for _, tc := range cases {
+		lex := parser.NewV13Lexer(tc.src)
+		toks, _ := lex.V13Tokenize()
+		p := parser.NewV13Parser(toks)
+		_, err := p.ParseLogicExpr()
+		if tc.valid && err != nil {
+			t.Errorf("logic_oper %s: unexpected error for %q: %v", tc.label, tc.src, err)
+		}
+		if !tc.valid && err == nil {
+			t.Errorf("logic_oper %s: expected failure for %q", tc.label, tc.src)
+		}
+	}
+}
+
 func TestV13_Operators_InspectType(t *testing.T) {
 	// V13 adds @? as a valid type annotation
 	cases := []struct {
@@ -197,6 +224,32 @@ func TestV13_Objects_ObjectFinal(t *testing.T) {
 	}
 	for _, src := range cases {
 		mustParseRHS(t, "object_final", src)
+	}
+}
+
+func TestV13_Objects_SplitArray(t *testing.T) {
+	// split_array = "..." ( string | digets | integer | date | date_time | time | time_stamp )
+	cases := []struct {
+		label string
+		src   string
+		valid bool
+	}{
+		{"string separator", `... ","`, true},
+		{"integer separator", `... 42`, true},
+		{"digits separator", `... 0`, true},
+		{"no separator", `...`, false},
+	}
+	for _, tc := range cases {
+		lex := parser.NewV13Lexer(tc.src)
+		toks, _ := lex.V13Tokenize()
+		p := parser.NewV13Parser(toks)
+		_, err := p.ParseSplitArray()
+		if tc.valid && err != nil {
+			t.Errorf("split_array %s: unexpected error: %v", tc.label, err)
+		}
+		if !tc.valid && err == nil {
+			t.Errorf("split_array %s: expected failure for %q", tc.label, tc.src)
+		}
 	}
 }
 
@@ -385,13 +438,23 @@ func TestV13_Scope_ImportAssign_FilePath(t *testing.T) {
 // Range (08_range.sqg)
 // ===========================================================================
 
-func TestV13_Range_RegexpValid(t *testing.T) {
-	src := `TYPE_OF boolean<"hello" =~ /^hello$/>`
-	lex := parser.NewV13Lexer(src)
-	toks, _ := lex.V13Tokenize()
-	p := parser.NewV13Parser(toks)
-	_, err := p.ParseRegexpValid()
-	if err != nil {
-		t.Errorf("regexp_valid: unexpected error: %v", err)
+func TestV13_Range_RegexpAssign(t *testing.T) {
+	// regexp_assign_oper = [ ":" | "=" ] "~"  →  :~  |  =~  |  ~
+	cases := []struct {
+		label string
+		src   string
+	}{
+		{"match_op (=~)", `TYPE_OF string<"hello" =~ /^hello$/>`},
+		{"readonly (:~)", `TYPE_OF string<"hello" :~ /^hello$/>`},
+		{"tilde (~)", `TYPE_OF string<"hello" ~ /^hello$/>`},
+	}
+	for _, tc := range cases {
+		lex := parser.NewV13Lexer(tc.src)
+		toks, _ := lex.V13Tokenize()
+		p := parser.NewV13Parser(toks)
+		_, err := p.ParseRegexpAssign()
+		if err != nil {
+			t.Errorf("regexp_assign %s: unexpected error: %v", tc.label, err)
+		}
 	}
 }

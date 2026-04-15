@@ -1,0 +1,45 @@
+
+(* ============================================================
+   20_bootstrap.sqg  —  Squeeze Grammar Directive Reference
+   ============================================================
+   This file is the canonical reference for all Squeeze grammar
+   parser directives.  It is intentionally non-executable:
+   it documents directives only.
+   ============================================================ *)
+
+(* ------------------------------------------------------------
+   SECTION 20 — IMPLICIT PARSER BEHAVIOUR
+   Behaviours that apply automatically without explicit syntax.
+   ------------------------------------------------------------ *)
+
+(*
+   20.1  Array Indexing
+        Indexing of arrays starts with 1 in the Squeeze language 
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 21 — SQUEEZE Bootstarp ANGLE-BRACKET DIRECTIVES 
+   Syntax:  DIRECTIVE<  expression  >
+   The angle-bracket group is always preceded by a directive keyword.
+   The parser acts on the result of the enclosed expression.
+   ------------------------------------------------------------ *)
+
+(*
+   21.1 LENGTH<array_final>
+        Instructs the parser to return the LENGTH of the enclosed array.
+
+   21.2 LHS_CALLER<§assign_lhs.ident_name>
+        Instructs the parser to do a Look Behind to find the one or more ident_name(s) that this assigment is made to.
+        if the expression has no LHS the use the name "unknown" 
+
+   21.2 LHS_CALLER<§assign_lhs.cardinality>
+        Instructs the parser to do a Look Behind to find the cardinality of the named variable that this assigment is made to.
+        if the expression has no LHS the default to "1..1"
+
+   21.3  SUB_RANGE
+        RANGE start..end<§array_final>
+        Returns the sub-range of the array that falls within the 
+        start..end range, both inclusive. Be aware that start and/or end are integers and can have sign negative to indicate backwards indexing.
+        Fails if out of range.
+*)

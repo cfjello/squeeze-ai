@@ -1,0 +1,95 @@
+
+error_event, err_ev: {
+    names, n, 1..m : ["error_event", "err_ev"]
+    card,  c       : 1..1
+    type,  t       : $
+    ver,   v       : "v0.0"
+
+    (* Static default field values *)
+    program_pointer, pp  : ""       (* runtime location: "module.function:line" *)
+    chain_uuid,      uid : ""       (* runtime UUID of the dependency chain instance; "" for standalone functions *)
+    value,           val : @?       (* the affected variable/data — any_type *)
+    error_type,      et  : "unknown" (* categorical identifier, e.g. "timeout", "overflow", "type_mismatch", "bad_data" *)
+    severity,        sev : "error"  (* "recoverable" | "error" | "fatal" — see spec/10_error_handler.sqg Section 11 *)
+    timestamp,       ts  : ""       (* ISO-8601 timestamp of the event *)
+    context,         ctx : {}       (* structured data: input args, call stack fragment, etc. *)
+
+    init: <- (
+        -> pp:  §string_quoted,
+           uid: §string_quoted,
+           val: §any_type,
+           et:  §string_quoted,
+           sev: §string_quoted,
+           ts:  §string_quoted,
+           ctx: §object_final
+        sev >< ["recoverable", "error", "fatal"]    (* severity must be one of the three tiers *)
+        <- [
+            names:           LHS_CALLER<§assign_lhs.ident_name>,
+            card:            LHS_CALLER<§assign_lhs.cardinality>,
+            type:            $,
+            program_pointer: pp,
+            chain_uuid:      uid,
+            value:           val,
+            error_type:      et,
+            severity:        sev,
+            timestamp:       ts,
+            context:         ctx
+        ]
+    )
+
+    (* Returns true if the error can be recovered from by a policy *)
+    (e @error_event) is_recoverable: <- (
+        <- e.severity == "recoverable"
+    )
+
+    (* Returns true if the error is fatal — log and terminate only *)
+    (e @error_event) is_fatal: <- (
+        <- e.severity == "fatal"
+    )
+
+    (* Returns a copy of this error_event with severity promoted to "fatal" *)
+    (e @error_event) promote_fatal: <- (
+        <- [
+            type:            $,
+            program_pointer: e.program_pointer,
+            chain_uuid:      e.chain_uuid,
+            value:           e.value,
+            error_type:      e.error_type,
+            severity:        "fatal",
+            timestamp:       e.timestamp,
+            context:         e.context
+        ]
+    )
+
+    (* Dispatch this error_event asynchronously to all targets in l.
+       Severity → log level mapping:
+         "recoverable" → l.warn  (structured fields only — no error_ref attachment)
+         "error"       → l.error (structured fields + this event as error_ref)
+         "fatal"       → l.error (structured fields + this event as error_ref)
+       l must be an initialised @logger — see pkg/lib/logger.sqz.
+       The call never blocks: the logger's buffered channel absorbs the entry. *)
+    (e @error_event) log_to: <- (
+        -> l: @logger
+        fld: [
+            program_pointer: e.program_pointer,
+            chain_uuid:      e.chain_uuid,
+            error_type:      e.error_type,
+            timestamp:       e.timestamp,
+            context:         e.context
+        ]
+        e.severity == "recoverable"        & l.warn[  e.error_type, fld ]
+        e.severity >< ["error", "fatal"]   & l.error[ e.error_type, fld, e ]
+    )
+
+    (* Log this error_event through l, then return a copy promoted to "fatal".
+       Intended as a terminal step in a chain error handler:
+
+           err.log_and_promote[ app_log ] => fatal_result
+
+       Go codegen: calls log_to then returns promote_fatal — two non-blocking ops. *)
+    (e @error_event) log_and_promote: <- (
+        -> l: @logger
+        e.log_to[ l ]
+        <- e.promote_fatal
+    )
+}

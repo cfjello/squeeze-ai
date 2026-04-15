@@ -1,0 +1,200 @@
+(* ============================================================
+   11_dependencies.sqg  —  Squeeze V13 Dependencies
+   ============================================================
+
+   This file is intentionally non-executable — it documents
+   directives and conventions only.
+   Grammar rules referenced here are defined in 06_functions.sqg.
+   Runtime graph structures use graph_final (spec/09_stuctures.sqg).
+   Error handling delegates to the Global Error Handler (spec/10_error_handler.sqg).
+   ============================================================ *)
+
+
+(* ------------------------------------------------------------
+   SECTION 11 — DEPENDENCIES
+   ------------------------------------------------------------ *)
+
+(*
+   11.1  dependency_oper = "=>"  (V13 — defined in spec/06_functions.sqg)
+
+         The "=>" operator has two distinct roles determined by context:
+
+   11.2  DECLARATION CONTEXT — func_deps:
+           func_deps = dependency_oper UNIQUE< ident_static_store_name { "," ident_static_store_name } >
+
+         "=>" in func_args_decl declares which named data objects this function
+         depends on.  The names must be globally unique (UNIQUE<>) and must
+         correspond to nodes already registered in the dependency graph.
+
+         Example:
+           process_orders => orders, customers, inventory
+
+   11.3  PUBLISH CONTEXT — func_store_stmt:
+           func_store_stmt = dependency_oper ( object_final | TYPE_OF object_final<ident_ref> )
+                             { "," ( object_final | TYPE_OF object_final<ident_ref> ) }
+
+         "=>" inside a func_unit body publishes a new, UUIDv7-stamped version of a
+         named data object to the dependency graph.  The published object is:
+           - An object_final or a typed reference.  Function entries are NOT allowed.
+           - Stamped with a freshly generated UUIDv7 at publish time.
+           - Immediately immutable: existing consumers receive a read-only pointer.
+           - Stored as a versioned entry inside the named graph node (see Section 12).
+
+         Example:
+           processed_orders, proc_ord: {
+               main: <- (
+                   => [ orders: incoming.data, processed_at: NOW_ISO8601 ]
+               )
+           }
+
+   11.4  PARSER RESPONSIBILITY
+         After parsing all scope_assign / func_scope_assign declarations the parser
+         builds a compile-time dependency graph (graph_final — see
+         spec/09_stuctures.sqg) representing the static directed edges declared via
+         func_deps.  Cycle detection is performed at this stage — a dependency cycle
+         is a compile error.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 12 — VERSIONED STORAGE MODEL
+   ------------------------------------------------------------ *)
+
+(*
+   12.1  Each named data object in the runtime graph node holds a sorted map of
+         published versions keyed by UUIDv7:
+
+             node.versions : sorted_map( key: uuid_v7, value: object_final )
+             node.current  : uuid_v7   (* key of the most recently published version *)
+
+         UUIDv7 (RFC 9562) is mandatory: it is globally unique AND time-sortable.
+         Later versions always sort after earlier ones, making "is newer" a direct
+         key comparison.  ULID is an acceptable alternative (also time-sortable,
+         also in unique_key — see spec/01_definitions.sqg).
+
+   12.2  A published version is referenced by its UUIDv7 key.  An execution
+         chain that depends on a node receives a read-only pointer to the version
+         that was "current" at the moment the chain was created.  Subsequent
+         publishes do not affect in-flight chains.
+
+   12.3  Version retention — async GC:
+         When a newer version is published, older versions become eligible for
+         deletion once no active execution chain holds a reference to them.
+         Reference counting is maintained per version entry inside the graph node:
+
+             node.versions[uuid_v7].ref_count   (* increment when a chain binds the version *)
+                                                (* decrement when the chain terminates      *)
+
+         A version with ref_count == 0 and uuid_v7 < node.current may be deleted
+         asynchronously.  Deletion is deferred until the chain that published
+         node.current completes, guaranteeing no cleanup hang-up can block an
+         executing chain.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 13 — DIRTY DETECTION
+   ------------------------------------------------------------ *)
+
+(*
+   13.1  A node is "dirty" when at least one of its immediate dependencies has a
+         current UUIDv7 that is newer (greater) than the UUIDv7 of the version
+         this node last used when it executed.
+
+   13.2  Dirty detection is a RUNTIME check performed immediately before each
+         node's main function is called.  It is NOT a compile-time concern.
+
+   13.3  Algorithm for node N before calling N.main():
+           for each dep D in N's immediate dependencies:
+               if D.current > N.last_executed_with[D]:
+                   N is dirty → must re-execute
+           if not dirty → skip N (return cached current version)
+
+   13.4  A node that has never executed has no last_executed_with entry for any
+         dependency — it is always considered dirty on first invocation.
+
+   13.5  set_static flag:
+         A node marked set_static is executed ONCE on first request and then
+         treated as permanently clean regardless of dependency UUIDv7 changes.
+         set_static is appropriate for data that is stable by definition:
+         configuration files, postal codes, country lists, lookup tables.
+         set_static does NOT mean compile-time constant — the data is still
+         fetched/computed lazily on first access.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 14 — EXECUTION MODEL  (update_dependency)
+   ------------------------------------------------------------ *)
+
+(*
+   14.1  Triggering:
+         update_dependency( target ) is called when:
+           - A func_store_stmt publishes a new version of a named object, OR
+           - An external invocation requests a named object that is dirty.
+
+   14.2  Chain creation:
+         A new UUIDv7-stamped execution chain is created for the target.
+         The chain describes which nodes need to (re-)execute and in what order,
+         derived from the compile-time dependency graph.
+
+         If a previous chain for the same target is still executing, the new
+         chain queues behind it.  Once the previous chain finishes the new
+         chain starts.
+
+   14.3  Execution order — leaf-first, async:
+         Execution proceeds in dependency order: leaf nodes first.
+         Each node waits asynchronously for all its dependencies to complete
+         before calling its own main function.
+         Nodes that are not dirty (Section 13) or are set_static (and already
+         executed) are skipped — their cached version is used directly.
+
+   14.4  Published data immutability:
+         When a node's main function calls func_store_stmt, the published version
+         is immediately immutable.  Dependent nodes that received a pointer to the
+         previous version are not affected.
+
+   14.5  Completion:
+         The chain is complete once the target node itself has published a new
+         version (or confirmed its cached version is still valid).
+
+   14.6  Error handling:
+         Any error during execution emits an error_event routed to the Global
+         Error Handler (spec/10_error_handler.sqg).  Applicable resumption modes:
+           - retry_function:   re-run the failing node's main function
+           - re_execute_chain: re-run the entire dependency chain from scratch
+                               using the "main" re-entry convention
+                               (spec/06_functions.sqg — "Dependency chain main convention")
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 15 — pkg/lib/dependencies.sqz  (API summary)
+   ------------------------------------------------------------ *)
+
+(*
+   15.1  get_depends_on( name: §string )
+         Returns the list of ident_static_store_name values that the named node
+         declared as dependencies (the func_deps list from compile time).
+
+   15.2  set_depends_on( name: §string, deps: §array )
+         Adds runtime dependencies to an existing named node.
+         Prefer compile-time func_deps declarations; use this only when
+         dependency structure must be determined dynamically.
+
+   15.3  get_dependency_graph()
+         Returns a graph_final representation of the full runtime dependency
+         graph including all node version maps and their current UUIDv7 keys.
+         Suitable for diagnostics, visualisation, and AI-assisted analysis.
+
+   15.4  set_static( name: §string )
+         Marks the named node as permanently clean after its first execution.
+         See Section 13.5 for semantics.
+
+   15.5  update_dependency( target: §string )
+         Creates and executes a UUIDv7-stamped execution chain for the named
+         target as described in Section 14.
+         Returns the UUIDv7 of the new version published by the target, or
+         the UUIDv7 of the existing valid version if the target was not dirty.
+*)
+
