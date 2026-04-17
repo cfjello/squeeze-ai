@@ -415,6 +415,25 @@ func (p *V13Parser) ParseAssignRHS() (*V13AssignRHSNode, error) {
 
 	// Function forms.
 	case V13_RETURN_STMT:
+		// Mode-3 deferred template: "<-" tmpl_quoted (spec 14.2)
+		// Try this before ParseReturnFuncUnit because "<-" followed by a
+		// backtick string never matches a func_unit.
+		// We peek at the token AFTER "<-" by saving, advancing past "<-",
+		// checking cur(), then restoring — avoid peek(n) which is BOF-sensitive.
+		{
+			peeked := p.savePos()
+			p.advance() // step past "<-"
+			nextTok := p.cur()
+			p.restorePos(peeked)
+			if (nextTok.Type == V13_STRING && strings.HasPrefix(nextTok.Value, "`")) ||
+				nextTok.Type == V13_EMPTY_STR_T {
+				saved := p.savePos()
+				if dt, err := p.ParseTmplDeferred(); err == nil {
+					return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: dt}, nil
+				}
+				p.restorePos(saved)
+			}
+		}
 		saved := p.savePos()
 		if rfu, err := p.ParseReturnFuncUnit(); err == nil {
 			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: rfu}, nil
@@ -425,6 +444,16 @@ func (p *V13Parser) ParseAssignRHS() (*V13AssignRHSNode, error) {
 		saved := p.savePos()
 		if fu, err := p.ParseFuncUnit(); err == nil {
 			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: fu}, nil
+		}
+		p.restorePos(saved)
+	}
+
+	// Pipeline call: col >>map(f) desugars to map(col, f).
+	// Tried before calc_unit so that >> is consumed by the pipeline parser, not left dangling.
+	{
+		saved := p.savePos()
+		if pc, err := p.ParsePipelineCall(); err == nil {
+			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: pc}, nil
 		}
 		p.restorePos(saved)
 	}

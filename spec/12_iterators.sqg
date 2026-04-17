@@ -1,0 +1,487 @@
+(* ============================================================
+   12_iterators.sqg  —  Squeeze V13 Iterator Specification
+   ============================================================
+
+   This file is intentionally non-executable — it documents
+   directives and conventions only.
+   Grammar rules referenced here are defined in 06_functions.sqg;
+   the grammar additions in Section 12.6 below are the canonical
+   source for the parser implementation.
+   Runtime library type: pkg/lib/iterators.sqz.
+   Error handling delegates to the Global Error Handler (spec/10_error_handler.sqg).
+   ============================================================ *)
+
+
+(* ------------------------------------------------------------
+   SECTION 12 — Iterators
+   ------------------------------------------------------------ *)
+
+(*
+   12.1  Tokens (V13)
+
+         iterator_oper = ">>"   (V13_STREAM — defined in spec/06_functions.sqg)
+
+         The ">>" operator serves three distinct roles distinguished by syntax position:
+
+           Role A  (prefix + colon):  >> rec: @T
+                   Appears inside a func_unit header to declare the stream-bound variable.
+                   "rec" receives one iterator_record per iteration; "rec.data" is @T.
+
+           Role B  (postfix + EOL):   result >>
+                   Appears as a standalone body statement to yield one value downstream.
+                   Does NOT exit the loop or func_unit.
+                   Contrast: Python's "yield", Go's chan send.
+
+           Role C  (infix):           source >> handler
+                   Binds an iterator_source to a func_unit or func_call body.
+                   Used in func_stream_loop and assign_iterator.
+
+         Disambiguation rule: after parsing the left-hand operand, peek at the next token:
+           – ">>" not present          → plain func_stmt or func_assign (no iteration)
+           – ">>" first token + ":…"   → Role A (header declare, inside func_unit header)
+           – ">>" + NL or EOF          → Role B (iterator_yield_stmt)
+           – ">>" + non-NL             → Role C (func_stream_loop or assign_iterator)
+
+         Semantic distinction:
+           "<-"      (func_return_stmt) — exits the enclosing func_unit entirely.
+           "result >>\" (Role B)         — yields one item to the downstream consumer
+                                          WITHOUT exiting the loop or func_unit.
+
+
+   12.2  iterator_source — What Can Be Iterated
+
+         An iterator_source is any expression that produces a uniform sequence
+         of values, one at a time, on demand (pull model):
+
+           iterator_source = array_final         (* static uniform array          *)
+                           | func_range_args     (* numeric, date, time ranges,
+                                                    fixed string/list ranges      *)
+                           | boolean_true        (* infinite loop — iterates until
+                                                    an explicit "break" or error  *)
+                           | ident_ref           (* reference to an in-scope array,
+                                                    object, or assign_iterator    *)
+                           | func_call_final ;   (* async call whose return type is
+                                                    a uniform collection          *)
+
+         "boolean_true" as a source creates an unconditional infinite loop.
+         The loop body must contain a "break" (or route a fatal error) to terminate it.
+         "break" is not yet defined in the grammar; it is reserved for a future addition.
+
+         The existing parser rule:
+           func_stream_loop = ( func_range_args | ident_ref | boolean_true )
+                              iterator_oper ( func_unit | func_call ) ;
+         must be updated to use iterator_source as the source production.
+         See Section 12.11 for the required change in 06_functions.sqg.
+
+
+   12.3  iterator_record — The Result Record Type
+
+         iterator_record is defined as a library type in pkg/lib/iterators.sqz:
+
+           iterator_record: {
+               ok    : boolean   (* true while the source has more values *)
+               index : integer   (* 0-based position in the sequence      *)
+               data  : @?        (* the current element, typed by context *)
+           }
+
+         The "data" field carries type @? (any_type) in the library declaration.
+         The compiler injects the concrete element type at the point of use:
+
+           a) LOOP CONTEXT  ( col >> rec )
+              "rec" is bound as iterator_record.  "rec.data" is typed to match
+              the element type of "col".  The compiler emits the type assertion
+              when generating Go code.
+
+           b) FUNCTION CONTEXT  ( >> row: @my_data_type )
+              Yes: @my_data_type is exactly the element type of the data the
+              function receives — the equivalent of iterator_record.data.
+              The "ok" and "index" fields of the underlying iterator_record
+              are NOT visible to the function; the compiler generates the
+              .ok check and the .next() call invisibly at the call site.
+              The function body sees only a single typed value per invocation,
+              as if the iterator framework did not exist.  This is the
+              idiomatic function form: the function is unaware it is being
+              driven by an iterator.
+
+         In both cases type compatibility between the source collection's element
+         type and the declared argument type is a compile-time error if violated.
+
+         The annotation syntax is IDENTICAL in both contexts: the stream-bound
+         variable is always declared with '>>' inside the func_unit header:
+
+           >> rec: @my_type
+
+         This is the single authoritative form — see Section 12.7.1 for examples.
+
+
+   12.3.1  Cases where element type cannot be resolved at compile time
+
+         Four situations prevent the compiler from narrowing "data" to a
+         concrete type without an explicit user annotation:
+
+         A) ident_ref source typed @?
+            The source arrives as an any_type parameter — the function or scope
+            that creates the iterator declared its collection argument as @?.
+
+         B) func_call_final source with @? return type
+            An async call (DB query, HTTP request) whose declared return type
+            is @? or a generic collection — the concrete element type is only
+            known at runtime.
+
+         C) Role-B ">>" yields of heterogeneous types within one loop body
+            Two or more "result >>" statements in the same loop body yield values
+            of different static types.  The downstream consumer's data type is
+            ambiguous.
+
+         D) boolean_true infinite loop with unannotated ">>" yield
+            No source collection exists, so the element type must come from
+            what is yielded via "result >>" (Role B) inside the body.  Without
+            an explicit '>>' annotation, the type defaults to @?.
+
+
+   12.3.2  Resolution strategy
+
+         Three strategies are applied in priority order:
+
+         1. EXPLICIT ANNOTATION — mandatory for cases A and D
+
+            The user annotates the stream-bound variable using the standard
+            '>>' declaration inside the func_unit header:
+
+              any_col >> {
+                  >> rec: @my_type       (* explicit — required when source is @? *)
+                  rec.ok && (
+                      (* body: rec.data is typed @my_type *)
+                  )
+              }
+
+            A source typed @? with no '>>' annotation on the bound variable
+            is a COMPILE ERROR.
+            A boolean_true source with no annotated '>>'-yield type is a
+            COMPILE ERROR.
+
+         2. TYPE UNIFICATION CHECK — applied to case C
+
+            All Role-B ">>" yields within a single loop body MUST resolve to
+            the same concrete type.  If they do, that type is inferred as the
+            element type for the downstream consumer.  If they do not match,
+            the compiler rejects the expression with a type mismatch error.
+            Yielding heterogeneous types from one loop is not permitted.
+
+         3. PROPAGATE @? — last resort for case B only
+
+            When a func_call_final source returns @? AND no '>>' annotation is
+            present, the compiler emits a WARNING and generates runtime type
+            assertions (Go: chan interface{} with type switch at the consumer).
+            This must never happen silently; the warning must name the
+            unresolved iterator and suggest the '>>' annotation form.
+
+
+   12.3.3  Type injection contract for iterators.sqz
+
+         The "data : @?" field in the library declaration is a codegen
+         PLACEHOLDER.  The code generator MUST substitute the concrete element
+         type at the iterator creation site — BEFORE the iterator is handed to
+         the consuming loop or function.  The substitution rules are:
+
+           - Type known at compile time (strategies 1 or 2):
+             The codegen emits a typed Go channel and slice (chan T, []T).
+             The iterator instance is strongly typed from creation.
+
+           - Type unknown at compile time (strategy 3, case B only):
+             The codegen emits chan interface{} and inserts a type assertion
+             at the first use of rec.data in the consumer body.
+
+         The iterator instance is NEVER created at runtime with a bare @? —
+         the placeholder is always resolved (to a concrete type or to
+         interface{}) during code generation, not during execution.
+         This guarantees that iterator_record.data has a deterministic Go type
+         for the entire lifetime of the iterator instance, which is the
+         precondition for the Performance Monitor's typed channel resizing
+         described in Section 12.5.
+
+
+   12.4  Iterator Looping Behaviour
+
+         1. An iterator loop continues as long as iterator_record.ok == true.
+            The compiler generates the .ok check and the call to iterator.next
+            at the end of each loop iteration — the user never writes this.
+
+         2. A static source (array_final, range) is synchronous: .next() returns
+            immediately.
+
+         3. An async source (func_call_final returning a collection, e.g. a
+            database query or HTTP request) delivers results lazily.  When the
+            current batch is exhausted, the iterator internally requests the
+            next batch until the source signals End-Of-Iterator.  See Section
+            12.9 for the prefetch / caching strategy.
+
+         4. Exiting a loop early requires "break" (not yet in the grammar).
+            Exiting will close a locally-defined iterator.
+            Shared iterators decrement their reader ref_count; see Section 12.8.
+
+         5. Multiple readers may share one iterator.  Reads are ref-counted;
+            the underlying source is not closed until both (a) the source signals
+            End-Of-Iterator AND (b) the ref_count reaches zero.
+
+
+   12.5  The Yield Operator ">>" (Role B — postfix)
+
+         iterator_yield_stmt = func_stmt iterator_oper ;
+
+         "result >>" (postfix form — ">>" at end of statement, followed by NL or EOF)
+         yields one value from the current loop body to the downstream consumer.
+         It does NOT exit the loop or the enclosing func_unit.
+         After the yield, the loop continues with the next iteration.
+
+         Parsed as: <any valid func_stmt> followed immediately by ">>" then NL/EOF.
+         Disambiguation: if ">>" is followed by a non-NL token, the parser treats
+         the whole expression as a func_stream_loop (Role C binding) instead.
+
+         A func_unit that contains "result >>" statements implicitly becomes an
+         iterator source itself and may be chained with ">>" downstream.
+
+         The pull model means the downstream consumer drives the pace:
+         the "<<" send blocks until the downstream pulls the next item
+         (i.e. it is equivalent to a Go channel send on an unbuffered channel
+         by default — see Section 12.9 for the async prefetch case).
+
+         The iterators.sqz library implementation MUST expose a hook that
+         allows the Performance Monitor (to be defined in a future spec) to
+         configure a buffered channel for any active iterator at runtime.
+         The hook takes the form of a method on the iterator scope object:
+
+           set_channel_cap: <- ( -> cap: integer )
+
+         When called with cap > 0, the underlying ITER_CHAN channel is
+         recreated with the given capacity, transparently replacing the
+         unbuffered default.  The Performance Monitor may call this after
+         observing throughput metrics (items/sec, consumer lag) to tune
+         the buffer depth without any change to user-written Squeeze code.
+         The default cap = 0 (unbuffered) is equivalent to cap = 1 in
+         Go channel semantics — precisely one item in flight at a time.
+
+
+   12.6  Grammar Rules
+
+         The following rules are to be added to the grammar.
+         They are grouped here as the canonical source for the parser.
+         No new token is required — all three roles use the existing V13_STREAM token.
+
+         (* Role A: stream arg declaration in func_unit header *)
+         iterator_recv_decl = iterator_oper ident_name ":" inspect_type ;
+
+         (* Role B: yield statement — postfix form, valid inside any func_body_stmt *)
+         (* Parsed when ">>" immediately follows func_stmt AND next is NL/EOF        *)
+         iterator_yield_stmt = func_stmt iterator_oper ;
+
+         (* Formalise the collection concept *)
+         iterator_source = array_final
+                         | func_range_args
+                         | boolean_true
+                         | ident_ref
+                         | func_call_final ;
+
+         (* Role C: lazy iterator binding — purely an alias for the source expression *)
+         assign_iterator = iterator_source iterator_oper EOL ;
+
+         (* Extend func_body_stmt to include the yield statement *)
+         MERGE<func_body_stmt> = | iterator_yield_stmt ;
+
+         (* Extend func_unit_header to include the stream arg declaration *)
+         MERGE<func_unit_header> = iterator_recv_decl ;
+
+
+   12.7  Iterator Syntax by Context
+
+   12.7.1  LOOP CONTEXT
+
+         The stream-bound variable is declared using '>>' inside the func_unit
+         header — the same syntax as the function context.  The element type
+         annotation is required whenever the source type is @? (see 12.3.2);
+         it is optional (and inferred) when the source is a concrete typed
+         collection.
+
+         Simple loop — type inferred from source:
+
+           any_collection >> (
+               >> rec: @my_type         (* stream arg declared in func_unit header *)
+               rec.ok && (* Do Stuff with rec.data *)
+           )
+
+         A loop that itself yields a stream uses "result >>" (Role B — postfix):
+
+           any_collection >> (
+               >> rec: @my_type
+               rec.ok && (
+                   mapped = rec.data     (* transform *)
+                   mapped >>             (* yield typed value downstream *)
+               )
+           )
+
+         A yielding loop can be chained directly; the downstream binding uses
+         a distinct name and its own '>>' declaration:
+
+           any_collection >> (
+               >> rec: @my_type
+               rec.ok && (
+                   mapped = rec.data
+                   mapped >>
+               )
+           ) >> (
+               >> mapped_rec: @my_type  (* same element type, distinct variable *)
+               mapped_rec.ok && (* next stage *)
+           )
+
+   12.7.2  FUNCTION CONTEXT
+
+         func_stream_args declares the stream argument directly as the element
+         type; iterator_record is implicit.  The function is re-invoked for
+         each item:
+
+           my_func: <- (
+               >> row: @my_data          (* typed directly as element type *)
+               (* Do Stuff with row *)
+           )
+
+           any_collection >> my_func
+
+         The types of any_collection's elements and "row" must match.
+         To forward a stream from a function, use "result >>" (Role B — postfix):
+
+           my_transform: <- (
+               >> row: @my_data
+               transformed = row
+               (* Modify transformed *)
+               transformed >>           (* yield postfix form *)
+           )
+
+           any_collection >> my_transform >> my_sink
+
+   12.7.3  ASSIGNMENT CONTEXT (lazy binding)
+
+         An iterator_source can be bound to a name without activating it.
+         The bound iterator is pulled lazily the first time it is consumed
+         by a ">>" expression:
+
+           assign_iterator = iterator_source iterator_oper EOL ;
+
+           Example:
+             my_iter = db_query >> EOL       (* lazy — not yet running *)
+             my_iter >> ( (* loop later *) ) (* activated here *)
+
+         Prefetch for async sources may begin when the iterator is assigned
+         if the runtime chooses to fill the initial buffer speculatively;
+         this is a codegen decision and is transparent to the user.
+
+
+   12.8  Shared Iterators and Ref-Counting
+
+         A shared iterator is an iterator_source referenced by more than one
+         ">>" consumer.  The runtime tracks active readers with an atomic
+         ref_count field (same pattern as dep_version in dependencies.sqz):
+
+           ref_count field — Go: int64 atomic
+             ATOMIC_INC<ref_count>  on each new consumer binding
+             ATOMIC_DEC<ref_count>  when a consumer finishes or breaks
+
+         The underlying source is closed only when BOTH conditions hold:
+           (a) the source has signalled End-Of-Iterator, AND
+           (b) ATOMIC_LOAD<ref_count> == 0
+
+         Reads from multiple goroutines are safe because the iterator's
+         internal .next() method acquires an exclusive lock per call
+         (Go: sync.Mutex embedded in the runtime iterator struct).
+         Readers receive distinct successive items; there is no broadcast.
+
+
+   12.9  Async Sources and Prefetch Caching
+
+         Iterators whose source is func_call_final (an async call) operate
+         via an internal prefetch buffer to decouple the producer goroutine
+         from the consumer loop and avoid stalling on every .next() call.
+
+         Go codegen intrinsic:
+           ITER_CHAN<source_fn, prefetch_cap>
+             Creates a Go buffered channel of capacity prefetch_cap.
+             A producer goroutine calls source_fn in a loop, sending results
+             onto the channel until source_fn signals End-Of-Iterator, then
+             closes the channel.
+             .next() is a receive from this channel (blocks only when empty).
+
+         Prefetch defaults (configurable per iterator_source assignment):
+           prefetch_cap  = 64       (* items buffered ahead of consumer *)
+           refill_point  = 16       (* not applicable — channel is self-refilling *)
+
+         Back-pressure: if the consumer is slow, the producer goroutine blocks
+         on the channel send once the buffer is full.  No items are dropped.
+
+         Synchronous sources (array_final, range) do NOT use ITER_CHAN;
+         .next() returns the next element directly from the in-memory slice
+         or range counter.
+
+
+   12.10 Error Handling
+
+         Errors raised inside an iterator loop body follow the standard
+         error_event model (spec/10_error_handler.sqg):
+
+           - The error_event.chain_uuid identifies the dependency chain
+             execution that owned the iterator, if any; "" for standalone.
+           - The error_event.program_pointer carries "module.function:line"
+             of the failing statement inside the loop body.
+
+         Severity policy:
+           "recoverable" — the iterator skips the current item (.index advances)
+                           and continues with the next iteration.
+           "error"       — the iterator is closed cleanly (ref_count decremented,
+                           source channel drained and discarded), and the error
+                           is forwarded to the Global Error Handler.
+           "fatal"       — same as "error" but the entire chain is terminated.
+
+         Errors from the async producer goroutine (e.g. DB timeout, HTTP failure)
+         are sent to the Global Error Handler with severity "error" and include
+         the partial batch context.  The consumer loop receives an iterator_record
+         with ok == false as the terminal item.
+
+
+   12.11 Required Changes in 06_functions.sqg
+
+         The following edits to 06_functions.sqg are needed once this
+         specification is ratified:
+
+         1. Replace the current func_stream_loop source production:
+              (* current *)
+              func_stream_loop = ( func_range_args | ident_ref | boolean_true )
+                                 iterator_oper ( func_unit | func_call ) ;
+              (* updated *)
+              func_stream_loop = iterator_source iterator_oper ( func_unit | func_call ) ;
+
+         2. Add iterator_yield_stmt to func_body_stmt via MERGE:
+              MERGE<func_body_stmt> = | iterator_yield_stmt ;
+
+         3. Add iterator_recv_decl to func_unit_header via MERGE:
+              MERGE<func_unit_header> = iterator_recv_decl ;
+
+         4. Add iterator_source and iterator_yield_stmt rules (from Section 12.6).
+
+
+   12.12 Implementation Plan
+
+   (* Completed work items:
+      1.  iterator_source, iterator_yield_stmt, assign_iterator rules
+          added to parser_v13_functions.go.
+          iterator_return_stmt ("<<") was superseded by postfix iterator_yield_stmt
+          ("result >>") as described in Sections 12.1 and 12.5; V13_ITER_RETURN
+          token was never published in a stable release and has been removed.
+      2.  ParseFuncStreamLoop updated to accept iterator_source as source.
+      3.  ParseFuncBodyStmt extended: postfix "result >>" detected via savePos/peek.
+          Disambiguation: ">>" + NL/EOF → iterator_yield_stmt (Role B);
+                          ">>" + non-NL  → func_stream_loop (Role C).
+      4.  06_functions.sqg updated: iterator_yield_stmt in func_body_stmt;
+          iterator_recv_decl in func_unit_header.
+      5.  pkg/lib/iterators.sqz written (iterator_record + iterator scope API).
+      6.  docs/AST_spec.md updated with V13IteratorYieldStmtNode.
+      7.  spec_test/squeeze_v13_iterators_test.go covers all three syntax contexts.
+   *)
+*)

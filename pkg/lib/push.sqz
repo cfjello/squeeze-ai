@@ -1,0 +1,60 @@
+
+(* ============================================================
+   push.sqz  —  Push-model standard library
+   Spec: spec/13_push_pull.sqg
+   ============================================================
+
+   push_record is the type received by every push handler
+   function via the ~> receive declaration (Role A).
+
+   The "data" field is typed @? here as a codegen PLACEHOLDER.
+   The code generator MUST substitute the concrete element type
+   before push source creation (see spec Section 13.3).
+   At runtime "data" is NEVER bare @? — it is always a concrete
+   type or interface{}.
+*)
+
+push_record: {
+    [
+        name: "push_record"
+        type: $
+        data: [
+            index : integer  0
+            data  : @?
+        ]
+    ]
+}
+
+(*
+   push scope — public API for push source instances.
+   The compiler creates one instance per assign_push binding.
+
+   Methods:
+     register     — register a handler function to receive emissions
+                    from this push source.  The handler signature must
+                    match the declared push_recv_decl type.
+     cancel       — unregister this push source; no further emissions
+                    after this call returns.
+     on_done      — register a zero-argument callback invoked once
+                    the push source has emitted its final record.
+     set_strategy — configure back-pressure strategy.
+                    strategy: "drop" | "block" | "sample"
+                    cap:      buffer capacity for "block" mode (0 = unbuffered)
+*)
+
+push: {
+
+    [
+        name: "push"
+        type: $
+        data: [
+            (* no public state fields — all state is internal to the runtime *)
+        ]
+        methods: [
+            register     : <- ( -> handler: @?        )
+            cancel       : <- (                       )
+            on_done      : <- ( -> callback: @?       )
+            set_strategy : <- ( -> strategy: string, -> cap: integer )
+        ]
+    ]
+}

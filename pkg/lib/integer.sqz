@@ -1,30 +1,115 @@
 
-    integer, unsigned_int: { 
-        [
-        name: "integer"
-        type: $
-        data: [ sign: §sign_prefix '+', value: §uint8  0 ]
-    ]
+(* ============================================================
+   pkg/lib/integer.sqz  --  Squeeze V13 Integer Type
+   ============================================================
 
-    ( int: integer )  validate: <- (
-            -> a §integer                                 (* This is a string as seen from the parser *) 
-            sign: §char '+'
-            ( a < 0 ) & sign: §char '-'
+   Defines the @integer type and its methods.
+   Integers are immutable value types.  Internally the sign and
+   the magnitude are stored separately so that the magnitude can
+   always be held in the narrowest fitting unsigned type
+   (uint8 → uint128).
 
-            (* 2. Compute magnitude (absolute value) *)
-            mag: a
-            ( a < 0 ) & mag: 0 - a
-    
-            
-            (* 3. CAST magnitude to narrowest fitting unsigned type and return *)
-            ( mag <= 255 )                   & <- [ type: $, sign: sign, value: uint8  mag ]
-            ( mag <= 65535 )                 & <- [ type: $, sign: sign, value: uint16 mag ]
-            ( mag <= 4294967295 )            & <- [ type: $, sign: sign, value: uint32 mag ]
-            ( mag <= 18446744073709551615 )  & <- [ type: $, sign: sign, value: uint64 mag ]
-            <- [ type: $, sign: sign, value: uint128 mag ]
+   Intrinsics used (UPPERCASE builtins):
+     CAST string<val>   — coerce any value to its decimal string
+     TO_JSON<val>       — JSON-serialise a single value
+     INT_TO_STRING<n, base> — convert magnitude to string in given base
+   *)
+
+integer, unsigned_int: {
+    names, n, 1..m: ["integer", "unsigned_int"]
+    card,  c:       1..1
+    type,  t:       $
+    data,  d:       [ sign: '+', value: 0 ]
+    ver,   v:       "v0.0"
+
+    (* init — parse a raw integer literal, record the sign separately,
+       and store the magnitude in the narrowest fitting unsigned type. *)
+    init: <- (
+        -> raw: §integer
+        sign: §char '+'
+        ( raw < 0 ) & sign: §char '-'
+
+        (* magnitude: absolute value *)
+        mag: raw
+        ( raw < 0 ) & mag: 0 - raw
+
+        (* select narrowest container *)
+        ( mag <= 255 )                                      & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint8   mag ] ]
+        ( mag <= 65535 )                                    & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint16  mag ] ]
+        ( mag <= 4294967295 )                               & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint32  mag ] ]
+        ( mag <= 18446744073709551615 )                     & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint64  mag ] ]
+        <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint128 mag ] ]
+    )
 
 
-        )
+    (* ---------------------------------------------------------------
+       Sign and magnitude
+       --------------------------------------------------------------- *)
 
-       
-    }
+    (* abs — magnitude as a non-negative integer. *)
+    (n @integer) abs: <- (
+        <- [ type: $, data: [ sign: '+', value: n.data.value ] ]
+    )
+
+    (* sign — returns "+" or "-" as a string. *)
+    (n @integer) sign: <- (
+        <- CAST string<n.data.sign>
+    )
+
+    (* is_zero — true when the value is exactly 0. *)
+    (n @integer) is_zero: <- (
+        <- n.data.value == 0
+    )
+
+    (* is_positive — true when value > 0. *)
+    (n @integer) is_positive: <- (
+        <- n.data.sign == '+' & n.data.value > 0
+    )
+
+    (* is_negative — true when value < 0. *)
+    (n @integer) is_negative: <- (
+        <- n.data.sign == '-'
+    )
+
+
+    (* ---------------------------------------------------------------
+       Range validation
+       --------------------------------------------------------------- *)
+
+    (* in_range — true when n falls within the given numeric range. *)
+    (n @integer) in_range: <- (
+        -> r: §func_fixed_num_range
+        <- n >< r
+    )
+
+
+    (* ---------------------------------------------------------------
+       String conversion
+       --------------------------------------------------------------- *)
+
+    (* to_string — decimal string representation.
+       Positive values are returned without a leading "+". *)
+    (n @integer) to_string: <- (
+        mag_str: CAST string<n.data.value>
+        ( n.data.sign == '-' ) & <- '-' + mag_str
+        <- mag_str
+    )
+
+    (* to_string_radix — convert to a string in the given base (2, 8, 10, or 16). *)
+    (n @integer) to_string_radix: <- (
+        -> base: integer
+        mag_str: INT_TO_STRING<n.data.value, base>
+        ( n.data.sign == '-' ) & <- '-' + mag_str
+        <- mag_str
+    )
+
+
+    (* ---------------------------------------------------------------
+       JSON serialisation
+       --------------------------------------------------------------- *)
+
+    (* to_json — JSON representation (unquoted integer literal). *)
+    (n @integer) to_json: <- (
+        <- n.to_string()
+    )
+}

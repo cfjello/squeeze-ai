@@ -1,0 +1,678 @@
+(* ============================================================
+   13_push_pull.sqg  —  Squeeze V13 Push-Model Specification
+   ============================================================
+
+   This file documents the PUSH model — the complement of the
+   PULL model defined in spec/12_iterators.sqg.  Both models
+   use the same concept of an ordered sequence of typed items,
+   but differ fundamentally in WHO drives item flow.
+
+   This file is intentionally non-executable — it documents
+   directives and conventions only.
+   Grammar rules in Section 13.6 are the canonical source for
+   the parser implementation.
+   Runtime library type: pkg/lib/push.sqz (to be written).
+   Error handling delegates to the Global Error Handler
+   (spec/10_error_handler.sqg).
+
+   ============================================================
+   CORE PRINCIPLE
+
+   Pull model (>>):  the CONSUMER requests items one at a time.
+                     The source is passive; it waits to be asked.
+                     Control flow moves RIGHT-TO-LEFT internally:
+                       consumer calls .next() → source produces.
+                     The loop is in USER code; ok-check is visible.
+
+   Push model (~>):  the PRODUCER delivers items when ready.
+                     The sink is passive; it registers a handler.
+                     Control flow moves LEFT-TO-RIGHT:
+                       source fires → handler receives.
+                     The loop is in the RUNTIME; the user writes
+                     a handler that sees one item at a time.
+
+   ============================================================ *)
+
+
+(* ------------------------------------------------------------
+   SECTION 13 — Push Streams
+   ------------------------------------------------------------ *)
+
+(*
+   13.1  New Tokens
+
+         push_oper = "~>"   (V13_PUSH)
+
+         This is the ONLY new token introduced by the push model.
+         All three syntactic roles of the push model are expressed
+         with this single operator — the role is determined by what
+         appears to the left and right of "~>" in each context.
+         See Section 13.1.2 for the full disambiguation table.
+
+
+   13.1.1  Token disambiguation with existing lexer
+
+         "~>" requires a one new case in V13scanOperator:
+
+           case '~':
+             if ch2 == '>'  →  emit V13_PUSH ("~>")   ADD BEFORE V13_TILDE fallthrough
+             else           →  emit V13_TILDE ("~")    existing
+
+         Currently case '~' has no multi-char lookahead — only V13_TILDE
+         is produced.  Adding the ">>" peek is non-breaking; no existing
+         token starts with "~>".
+
+         No other lexer change is needed.  The second token from the pull
+         model, V13_ITER_RETURN ("<<"), is unchanged.
+
+
+   13.1.2  Three syntactic roles of "~>"
+
+         "~>" is a directional operator meaning "flows FORWARD to".
+         Its role in each occurrence is determined entirely by what
+         surrounds it:
+
+         ROLE                  SYNTAX                     CONTEXT
+         ─────────────────────────────────────────────────────────────
+         (A) RECEIVE DECL      ~> ident_name : inspect_type
+                               "~>" is the FIRST token;    func_unit_header
+                               colon follows the name.     or func_stream_args
+
+         (B) EMIT FORWARD      func_stmt ~>
+                               func_stmt is on the LEFT;   func_body_stmt
+                               EOL follows "~>" (no RHS).
+
+         (C) PUSH BINDING      push_source ~> ( func_unit | func_call )
+                               push_source is on the LEFT;  statement /
+                               func_unit or func_call on    assignment
+                               the RIGHT.
+
+         Disambiguation rules for the parser:
+           • Current token is V13_PUSH and no prior expr on same line
+             → Role (A): parse push_recv_decl
+           • Current token is a push_source starter (ident_ref, etc.)
+             AND peek-ahead is V13_PUSH:
+               – If token after V13_PUSH is V13_NL | V13_EOF
+                 → Role (B): parse push_forward_stmt
+               – Otherwise
+                 → Role (C): parse push_stream_bind
+           These three cases are lexically non-overlapping because:
+             (A) has no LHS before "~>";
+             (B) has LHS and the "~>" is the last token on the line;
+             (C) has LHS and a handler RHS after "~>".
+
+         Comparison with the pull model (only for analogy):
+           Pull:  source >> handler          (binding, same as push role C)
+                  >> rec : @T                (header decl, same direction as role A)
+                  << value                   (yield from body, opposite of role B)
+           Push:  source ~> handler          (role C — binding)
+                  ~> item : @T               (role A — header decl, forward INTO func)
+                  result ~>                  (role B — emit forward OUT of func)
+
+         KEY DESIGN INSIGHT:
+           In the PULL model the header declaration ">>" points INTO the function
+           and the yield "<<" points OUT; they use OPPOSITE-direction tokens because
+           the consumer and the yield go in opposite directions relative to the
+           iterator's own viewpoint.
+
+           In the PUSH model ALL flow is in the SAME direction (~>): the item
+           arrives into the handler (~> as prefix) and is re-emitted forward
+           (result ~> as postfix).  A single token with two syntactic positions
+           is sufficient because the direction never reverses.
+
+
+   13.2  push_source — What Can Be Pushed
+
+         A push_source is any expression that can deliver a sequence of items
+         to registered sinks.  The definition mirrors iterator_source exactly:
+
+           push_source = array_final        (* immediately pushes all elements  *)
+                       | func_range_args    (* pushes items across the range    *)
+                       | boolean_true       (* infinite generator               *)
+                       | ident_ref          (* reference to an assign_push name *)
+                       | func_call_final ;  (* async call or event source       *)
+
+         The critical difference from iterator_source is EAGERNESS:
+
+           Pull:  nothing executes until the consumer calls .next().
+                  The source is completely idle between calls.
+
+           Push:  the source STARTS when the first "~>" sink binding is made.
+                  Once active, it fires at its own pace regardless of the
+                  consumer's readiness.  Back-pressure must be declared
+                  explicitly (see Section 13.5).
+
+         boolean_true as a push_source creates an infinite generator whose
+         body emits items with "result ~>".  The generator MUST eventually
+         cancel itself via PUSH_CANCEL or route a fatal error (Section 13.9).
+
+
+   13.3  push_record — The Item Record Type
+
+         The library type delivered to a push sink is simpler than
+         iterator_record because the sink is called ONLY when an item is
+         ready — there is no need for an ".ok" polling flag:
+
+           push_record: {
+               index: integer   (* 0-based position, tracked by the PRODUCER *)
+               data:  @?        (* the current item, typed by context        *)
+           }
+
+         Differences from iterator_record:
+           - NO "ok" field.  The handler is invoked only when data is present;
+             termination is signalled via a separate on_done mechanism
+             (Section 13.7.4) rather than by setting ok = false.
+           - "index" is owned by the PRODUCER and incremented once per item
+             dispatched, before calling any sink.  In the pull model each
+             consumer tracked its own position; here the index is shared
+             (monotonically increasing from the producer's perspective).
+
+         The receive variable in a push handler is declared with the Role (A)
+         syntax inside the func_unit header:
+
+           ~> item: @my_type
+
+         This is the single authoritative form for the push receive declaration
+         in both the inline func_unit (Section 13.7.1) and the function context
+         (Section 13.7.2).  Compare with pull's ">> rec: @T".
+
+         The "data" field carries @? in the library declaration as a codegen
+         PLACEHOLDER.  The same three-strategy type resolution hierarchy as
+         Section 12.3.2 applies (explicit annotation, type unification,
+         propagate @?) because the underlying Go codegen constraint is identical.
+
+
+   13.4  Push Behaviours — Key Differences from Pull
+
+         ASPECT              PULL (>>)                       PUSH (~>)
+         ──────────────────────────────────────────────────────────────────
+         Who drives          Consumer (.next())              Producer (fires events)
+         Activation          Lazy (first >>)                 Eager (first ~> binding)
+         Termination         rec.ok == false                 on_done callback
+         Cancellation        Stop calling .next()            PUSH_CANCEL<binding>
+         Back-pressure       Natural (producer blocks        Must be declared:
+                               on channel send)                block | buffer(n)
+                                                               | drop | latest(n)
+         Fan-out             DISTINCT items per reader       ALL sinks receive
+                               (partition, serialised)         EVERY item (broadcast)
+         Shared source       ref_count + read mutex          Independent sink
+                               (each reader gets next item)    registrations
+         Item position       Consumer-owned index            Single producer-owned
+                                                               global index counter
+         Header declaration  >> rec: @T                      ~> item: @T   (Role A)
+         Body emit           << value                        result ~>     (Role B)
+         Completion handler  rec.ok == false in loop         on_done callback
+         Cancel from sink    break (future grammar)          PUSH_CANCEL<binding>
+
+         The pull/push choice should be guided by:
+           Use PULL when:  the consumer controls the rate; lazy evaluation
+                           is needed; each reader needs its own position;
+                           natural back-pressure via .next() blocking suffices.
+           Use PUSH when:  items arrive asynchronously at the source;
+                           broadcast / fan-out to multiple sinks is needed;
+                           event-driven or reactive architecture; the producer
+                           cannot or should not pause between items.
+
+
+   13.5  Back-Pressure Strategies
+
+         Because the producer drives the pace in the push model, a slow sink
+         can be overwhelmed.  The back-pressure strategy MUST be declared on
+         the push binding object (a method call, not new syntax):
+
+           my_binding.set_strategy( "block" )
+               (* DEFAULT: producer goroutine blocks until the handler returns.
+                  One item in flight at a time.  Semantically equivalent to the
+                  pull model's .next() blocking behaviour.  Guarantees delivery. *)
+
+           my_binding.set_strategy( "buffer", n )
+               (* Buffered channel of capacity n.  Producer sends up to n items
+                  ahead of the consumer.  Producer blocks only when full.
+                  n = 0 is equivalent to "block". *)
+
+           my_binding.set_strategy( "drop" )
+               (* Producer never blocks: new items are discarded if the handler
+                  is still processing the previous one.  Useful for telemetry
+                  or UI refresh streams where stale items have no value. *)
+
+           my_binding.set_strategy( "latest", n )
+               (* Sliding window of n most-recent items.  Older items are evicted
+                  when new ones arrive while the handler is busy. *)
+
+         "block" is the default and the only strategy that guarantees every
+         item is delivered.
+
+         The Performance Monitor (future spec) may change a binding's strategy
+         at runtime via set_strategy after observing throughput metrics.
+         This is transparent to user code.
+
+         Go codegen intrinsic for buffered strategies:
+           PUSH_CHAN<source_fn, strategy, cap>
+             Creates a Go channel and producer goroutine implementing the
+             selected strategy.  "drop" and "latest" use a non-blocking select
+             with discard / overwrite logic in the producer goroutine.
+
+
+   13.6  Grammar Rules
+
+         The following rules are added to the grammar.
+         They are grouped here as the canonical source for the parser.
+
+         (* New token *)
+         push_oper = "~>" ;   (* V13_PUSH — the single new token *)
+
+         (* Same shape as iterator_source — mirrored exactly *)
+         push_source = array_final
+                     | func_range_args
+                     | boolean_true
+                     | ident_ref
+                     | func_call_final ;
+
+         (* Role (A) — receive declaration inside a func_unit header or
+                        func_stream_args.  The colon after ident_name is the
+                        mandatory disambiguator. *)
+         push_recv_decl = push_oper ident_name ":" inspect_type ;
+
+         (* Role (B) — emit forward: push the LHS value to all registered
+                        downstream sinks.  No RHS; EOL terminates the statement.
+                        Valid inside any func_body_stmt. *)
+         push_forward_stmt = func_stmt push_oper ;
+
+         (* Role (C) — push binding: connect a source to a handler.
+                        Each "~>" in a chain adds one stage. *)
+         push_stream_bind = push_source push_oper ( func_unit | func_call )
+                            { push_oper ( func_unit | func_call ) } ;
+
+         (* Cold push source descriptor — activates on first ~> sink bind *)
+         assign_push = push_source push_oper EOL ;
+
+         (* Extend func_body_stmt to include push operations *)
+         MERGE<func_body_stmt> = | push_forward_stmt
+                                 | push_stream_bind ;
+
+         (* Extend func_unit_header to accept the push receive declaration *)
+         MERGE<func_unit_header> = push_recv_decl ;
+
+         Grammar notes:
+           push_recv_decl (Role A) is unambiguous inside a func_unit_header because
+           "~>" can only appear there as the FIRST token of the header; no expr
+           can precede it at that position.
+
+           push_forward_stmt (Role B) and push_stream_bind (Role C) are disambiguated
+           by the token AFTER "~>":
+             V13_NL | V13_EOF after "~>"  →  push_forward_stmt
+             anything else after "~>"     →  push_stream_bind
+
+           assign_push vs push_forward_stmt:
+             Both are "func_stmt ~>" with no RHS.  The distinction is semantic:
+             assign_push is the RHS of an assignment and creates a cold source;
+             push_forward_stmt is a standalone statement in a handler body.
+             The parser uses the same production; the compiler resolves context.
+
+
+   13.7  Push Syntax by Context
+
+   13.7.1  SINK CONTEXT (primary push handling)
+
+         A push source connects to a handler func_unit.  Inside the func_unit
+         header, "~> item: @T" declares the receive variable (Role A).
+         Inside the body, "result ~>" emits to the next downstream stage (Role B).
+
+         Simple push sink — type inferred from source:
+
+           any_collection ~> (
+               ~> item: @my_type        (* Role A: receive declaration in header *)
+               (* process item *)
+           )
+
+         A push sink that re-emits transformed items downstream (transformer):
+
+           any_collection ~> (
+               ~> item: @my_type        (* Role A: receive *)
+               transformed = item       (* process *)
+               transformed ~>           (* Role B: push result to next stage *)
+           ) ~> (
+               ~> out: @my_type         (* Role A: next stage receives *)
+               (* final processing *)
+           )
+
+         The chain "...) ~> (...)" is Role (C), push_stream_bind, where the
+         implicit source is the emit stream produced by the preceding stage.
+         Each stage in the chain is driven by the preceding stage's "result ~>"
+         statements.
+
+         An ident_ref (named binding per Section 13.7.3) can also be the
+         source in a standalone push expression:
+
+           push_record ~> handler_fn
+               (* Role C: fan-out — push_record broadcasts to handler_fn *)
+
+
+   13.7.2  FUNCTION CONTEXT
+
+         func_stream_args in the push model declares the receive parameter with
+         "~>" (Role A) instead of ">>".  When called via a push binding the
+         function is re-invoked for each pushed item; the call is initiated by
+         the PRODUCER:
+
+           process_event: <- (
+               ~> event: @event_type    (* Role A: typed receive parameter *)
+               (* handle event *)
+           )
+
+           event_source ~> process_event    (* Role C: bind source to function *)
+
+         A push function that also re-emits (transformer function):
+
+           enrich_event: <- (
+               ~> event: @event_type
+               enriched = event
+               (* add fields to enriched *)
+               enriched ~>              (* Role B: emit to next stage *)
+           )
+
+           event_source ~> enrich_event ~> store_event
+
+         Type compatibility between the source element type and the "~>"
+         parameter type is a compile-time error if violated.
+
+   13.7.3  ASSIGNMENT CONTEXT (cold push source)
+
+         A push_source followed by "~>" with no RHS (EOL) creates a cold
+         push source.  The source does NOT activate until the first "~>"
+         sink binding is made against the assigned name.
+
+           assign_push = push_source push_oper EOL ;
+
+           db_events = event_feed ~>    (* cold — not yet active *)
+           db_events ~> process_event   (* Role C: ACTIVATES here, first sink *)
+           db_events ~> audit_log       (* Role C: fan-out — ALSO receives all items *)
+
+         All sinks registered against the same assign_push name receive
+         EVERY item (broadcast, Section 13.8).
+
+         The same "source ~>" postfix form appears in both assign_push and
+         push_forward_stmt (body emit).  The compiler resolves which applies
+         by context:
+           • RHS of an assignment  →  assign_push (cold source descriptor)
+           • Standalone statement in a handler body  →  push_forward_stmt
+
+         Per-binding back-pressure strategy:
+           process_bind = db_events ~> process_event
+           process_bind.set_strategy( "buffer", 128 )
+
+           audit_bind = db_events ~> audit_log
+           audit_bind.set_strategy( "drop" )
+
+   13.7.4  ON_DONE AND CANCELLATION
+
+         COMPLETION (on_done):
+           When a push_source is exhausted it calls all registered on_done
+           handlers.  Registered via a method on the push binding — not syntax:
+
+             my_bind = my_source ~> my_handler
+             my_bind.on_done( <- (
+                 (* called once when source has no more items *)
+             ))
+
+           There is no "ok" field to poll.  The handler stops being called;
+           the on_done callback fires once and the binding transitions to DONE.
+
+           Pull model equivalent: iterator_record.ok becomes false after
+           the last item.  Push replaces the polling loop exit condition
+           with a single terminal callback.
+
+         CANCELLATION:
+           A sink can cancel its subscription at any time.  In user code this
+           is expressed via a future "break" keyword (not yet in grammar);
+           the compiler generates:
+
+             PUSH_CANCEL<binding>
+
+           After cancellation the producer stops calling that sink's handler.
+           Other sinks remain active.  If the last sink cancels, the compiler
+           generates PUSH_SOURCE_CLOSE<source> to release the underlying resource
+           (analogous to the pull model's ref_count reaching zero).
+
+
+   13.8  Fan-Out and Broadcast
+
+         Fan-out is the major structural difference from the pull model.
+
+         PULL fan-out (shared iterator, Section 12.8):
+           Each reader gets DISTINCT successive items.  Reader A gets item 1,
+           reader B gets item 2, reader A gets item 3, and so on.  Readers
+           are serialised by a sync.Mutex inside the iterator; ref_count
+           tracks active readers.  This is a PARTITION model.
+
+         PUSH fan-out (broadcast):
+           Every sink receives EVERY item.  When the source produces item 1,
+           it dispatches to ALL registered sinks with item 1 before producing
+           item 2.  Each sink is independent; no coordination is needed between
+           them.  This is a BROADCAST model.
+
+           db_events = event_feed ~>
+           db_events ~> process_event   (* receives ALL items *)
+           db_events ~> audit_log       (* ALSO receives ALL items — broadcast *)
+
+         Broadcast implications:
+           - Side effects in one sink do not affect what another receives.
+           - Each sink has its own back-pressure strategy independently.
+           - The producer dispatches to sinks concurrently (for "block") or
+             puts the item on each sink's channel ("buffer" / "drop" / "latest")
+             before moving to the next item.
+
+         If PARTITION semantics are needed, the user must partition explicitly
+         in user code (e.g. examine item fields and route to separate sinks).
+
+
+   13.9  Push Source Lifecycle and Cancellation
+
+         Lifecycle states of a push binding:
+
+           INACTIVE   →  assign_push created but no sink bound yet.
+                         Source activation: first "~>" binding created.
+
+           ACTIVE     →  producer goroutine running; sinks receiving items.
+
+           DONE       →  source exhausted; on_done callbacks fired.
+
+           CANCELLED  →  last sink cancelled via PUSH_CANCEL.
+                         Source goroutine receives stop signal via done channel
+                         (generated by compiler as PUSH_DONE_CH<binding>).
+
+         The producer goroutine MUST select on PUSH_DONE_CH<binding> in any
+         blocking operation to remain responsive to cancellation.
+
+         Go codegen pattern:
+           for {
+               select {
+               case item := <-source_ch:
+                   for _, sink := range sinks {
+                       sink(item)
+                   }
+               case <-done_ch:
+                   return
+               }
+           }
+
+         This mirrors the pull model's ITER_CHAN intrinsic but adds the
+         done channel for cooperative cancellation from any sink.
+
+
+   13.10 Async Sources in the Push Model
+
+         An async push_source (func_call_final returning a stream — WebSocket,
+         DB change feed, SSE endpoint) naturally fits the push model because
+         the external source is itself pushing data.
+
+         Go codegen intrinsic:
+           PUSH_ASYNC<source_fn, strategy, cap, done_ch>
+             Creates a Go goroutine that reads from source_fn and dispatches
+             each item to all registered sinks.
+             Strategy and cap set by each binding's set_strategy call.
+             done_ch enables cooperative cancellation (Section 13.9).
+
+         Differences from the pull model's ITER_CHAN (Section 12.9):
+           ITER_CHAN  — single consumer; back-pressure is natural channel fill;
+                        cancellation by consumer stopping .next() calls.
+           PUSH_ASYNC — multiple sinks; per-sink back-pressure strategy;
+                        cancellation via done_ch from any sink.
+
+         boolean_true as a push_source (infinite generator):
+
+           event_ticker = true ~>       (* cold infinite generator *)
+           event_ticker ~> (
+               ~> tick: @tick_type      (* Role A: receive "tick" trigger *)
+               ev = tick_type {}        (* create new event from tick *)
+               ev ~>                    (* Role B: emit event to next stage *)
+           ) ~> (
+               ~> ev: @event_type       (* Role A: receive generated event *)
+               (* consume event *)
+           )
+
+         The generator body uses "ev ~>" (Role B) to emit each fabricated item.
+         A boolean_true push source MUST be terminated by one of:
+           a) PUSH_CANCEL<binding> internally once done, OR
+           b) Exposing the binding to the caller for external cancellation, OR
+           c) Routing a fatal error to the Global Error Handler.
+
+
+   13.11 Error Handling
+
+         Errors inside a push handler body follow the standard error_event model
+         (spec/10_error_handler.sqg).  The key difference is that errors occur
+         ASYNCHRONOUSLY from the producer's perspective.
+
+         Severity policy:
+           "recoverable" — the handler skips the current item; the producer
+                           continues sending subsequent items.  The producer-owned
+                           index still advances.
+           "error"       — the binding for this sink is cancelled
+                           (PUSH_CANCEL<binding>); other sinks remain active.
+                           Error forwarded to the Global Error Handler.
+           "fatal"       — same as "error" but ALL bindings on the source are
+                           cancelled and the entire dependency chain terminates.
+
+         Errors from the async producer goroutine (e.g. WebSocket disconnect,
+         DB stream failure) are sent to the Global Error Handler with severity
+         "error".  All sinks receive a synthetic on_done callback to signal
+         that no more items will arrive.
+
+         Contrast with pull model (Section 12.10):
+           In pull, a recoverable error causes the consumer to skip the item
+           by calling .next() again; the consumer drives recovery.
+           In push, the producer decides whether to skip or retry — the
+           handler has no say because it does not call .next().
+
+
+   13.12 Composing Push and Pull
+
+         The push model is the complement of the pull model.  They can be
+         composed at the boundary between consumer-controlled and
+         producer-controlled pipelines.
+
+           Pull ~> Push conversion (pull pipeline terminates in a push emit):
+
+             items >> (
+                 >> rec: @item_type
+                 rec.ok && (
+                     transformed = rec.data
+                     transformed ~>           (* Role B: emit into push subscribers *)
+                 )
+             )
+
+           Push ~> Pull conversion (push feeds lazy pull iteration):
+
+             The push side feeds items into an assign_iterator (via a bounded
+             channel); the pull consumer then iterates lazily.
+             Codegen intrinsic: PUSH_TO_ITER<push_source, cap>
+             This bridges the two models with a bounded channel and converts
+             the push broadcast into a pull partition (single consumer).
+
+         Use PULL for:  in-process transformation, range iteration, map/filter
+                        chains, lazy evaluation, single-consumer pipelines.
+         Use PUSH for:  event streams, WebSocket / SSE / ticker sources, timer
+                        ticks, database change feeds, fan-out / broadcast.
+
+
+   13.13 Required Changes in 06_functions.sqg
+
+         The following edits to 06_functions.sqg are needed once this
+         specification is ratified:
+
+         1. Add the new terminal operator rules:
+              push_oper         = "~>" ;
+              push_recv_decl    = push_oper ident_name ":" inspect_type ;
+              push_source       = array_final | func_range_args | boolean_true
+                                | ident_ref   | func_call_final ;
+              push_forward_stmt = func_stmt push_oper ;
+              push_stream_bind  = push_source push_oper ( func_unit | func_call )
+                                  { push_oper ( func_unit | func_call ) } ;
+              assign_push       = push_source push_oper EOL ;
+
+         2. Extend func_body_stmt via MERGE:
+              MERGE<func_body_stmt> = | push_forward_stmt | push_stream_bind ;
+
+         3. Extend func_unit_header via MERGE:
+              MERGE<func_unit_header> = push_recv_decl ;
+
+
+   13.14 Implementation Plan
+
+   (* TODO — work items in execution order:
+      1.  Add V13_PUSH ("~>") token to the V13 lexer (parser_v13.go):
+            In case '~': add ch2 == '>' branch before the V13_TILDE fallthrough.
+
+      2.  Add push AST nodes to parser_v13_functions.go:
+            V13PushOperNode      {}                                  (* token only *)
+            V13PushRecvDeclNode  { Name string; Type *V13InspectTypeNode }
+            V13PushSourceNode    { Value V13Node }
+            V13PushForwardStmtNode { Stmt *V13FuncStmtNode }
+            V13PushStreamBindNode  { Source *V13PushSourceNode
+                                     Stages []V13Node }             (* func_unit | func_call *)
+            V13AssignPushNode    { Source *V13PushSourceNode }
+
+      3.  Write ParsePushSource (mirrors ParseIteratorSource exactly).
+
+      4.  Write ParsePushRecvDecl:
+            expect V13_PUSH; expect IDENT (name); expect COLON; parse inspect_type.
+
+      5.  Write ParsePushForwardStmt:
+            parse func_stmt; expect V13_PUSH; expect NL.
+            NOTE: shares the same "func_stmt ~>" surface form as ParseAssignPush;
+            compiler resolves which applies by context (assignment RHS vs. body stmt).
+
+      6.  Write ParsePushStreamBind:
+            parse push_source; expect V13_PUSH;
+            loop: parse func_unit or func_call as one stage;
+              while current token is V13_PUSH: expect V13_PUSH, parse next stage.
+
+      7.  Update ParseFuncBodyStmt to handle push:
+            • current token is V13_PUSH                       → ParsePushRecvDecl
+              (ERROR: recv decl belongs in header, not body;
+               emit a descriptive compile error here)
+            • current token is push_source starter AND peek is V13_PUSH:
+                peek+1 is V13_NL | V13_EOF                    → ParsePushForwardStmt
+                otherwise                                     → ParsePushStreamBind
+
+      8.  Update ParseFuncUnitHeader:
+            After existing ArgsDecl attempt, if current token is V13_PUSH
+            → ParsePushRecvDecl and store on the header node.
+
+      9.  Apply all three edits listed in Section 13.13 to 06_functions.sqg.
+
+      10. Write pkg/lib/push.sqz:
+              push_record type (index: integer, data: @?)
+              push scope object (register, cancel, on_done, set_strategy)
+
+      11. Update docs/AST_spec.md with all new push nodes.
+
+      12. Write spec_test cases covering:
+              (a) lex: "~>" produces V13_PUSH, "~" still produces V13_TILDE
+              (b) ParsePushRecvDecl
+              (c) ParsePushForwardStmt
+              (d) ParsePushStreamBind: single stage, chained stages
+              (e) ParseAssignPush (cold source assignment)
+   *)
+*)

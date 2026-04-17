@@ -97,7 +97,8 @@ type V13FuncArgsNode struct {
 	Entries []*V13ArgsDeclNode
 }
 
-// V13FuncStreamArgsNode  func_stream_args = ">>" args_decl { "," args_decl }
+// V13FuncStreamArgsNode  func_stream_args = iterator_oper args_decl { "," args_decl }
+// iterator_oper = ">>" (V13_STREAM token)
 type V13FuncStreamArgsNode struct {
 	V13BaseNode
 	Entries []*V13ArgsDeclNode
@@ -110,12 +111,13 @@ type V13FuncDepsNode struct {
 	StoreNames []string
 }
 
-// V13FuncArgsDeclNode  func_args_decl = [ func_args ] [ func_stream_args ] [ func_deps ]
+// V13FuncArgsDeclNode  func_args_decl = [ func_args ] [ func_stream_args ] [ push_recv_decl ] [ func_deps ]
 type V13FuncArgsDeclNode struct {
 	V13BaseNode
-	Args       *V13FuncArgsNode
-	StreamArgs *V13FuncStreamArgsNode
-	Deps       *V13FuncDepsNode
+	Args         *V13FuncArgsNode
+	StreamArgs   *V13FuncStreamArgsNode
+	PushRecvDecl *V13PushRecvDeclNode
+	Deps         *V13FuncDepsNode
 }
 
 // V13FuncFixedNumRangeNode  numeric_const ".." numeric_const
@@ -145,14 +147,36 @@ type V13FuncCallChainStepNode struct {
 	Ref *V13TypeOfRefNode
 }
 
-// V13FuncCallChainNode  func_call_chain = func_call [ step { step } ]
+// V13FuncCallChainNode  func_call_chain = func_call [ ( "->" | iterator_oper | logic_oper ) step { step } ]
+// iterator_oper = ">>" (V13_STREAM token)
 type V13FuncCallChainNode struct {
 	V13BaseNode
 	Head  *V13FuncCallNode
 	Steps []V13FuncCallChainStepNode
 }
 
-// V13FuncStreamLoopNode  func_stream_loop = source ">>" body
+// V13IteratorSourceNode  iterator_source = array_final | func_range_args | boolean_true | ident_ref | func_call_final
+type V13IteratorSourceNode struct {
+	V13BaseNode
+	Value V13Node
+}
+
+// V13IteratorYieldStmtNode  iterator_yield_stmt = func_stmt iterator_oper
+// iterator_oper = ">>" (V13_STREAM token); postfix form — "result >>" followed by NL/EOF
+type V13IteratorYieldStmtNode struct {
+	V13BaseNode
+	Stmt *V13FuncStmtNode
+}
+
+// V13AssignIteratorNode  assign_iterator = iterator_source iterator_oper EOL
+// Lazy binding: the iterator is not yet active; first use drives execution.
+type V13AssignIteratorNode struct {
+	V13BaseNode
+	Source *V13IteratorSourceNode
+}
+
+// V13FuncStreamLoopNode  func_stream_loop = iterator_source iterator_oper body
+// iterator_oper = ">>" (V13_STREAM token)
 type V13FuncStreamLoopNode struct {
 	V13BaseNode
 	Source V13Node
@@ -163,6 +187,71 @@ type V13FuncStreamLoopNode struct {
 type V13FuncCallFinalNode struct {
 	V13BaseNode
 	Value V13Node
+}
+
+// V13PipelineDeclNode  PIPELINE<name> directive — registers a free function for >> syntax.
+// Appears only in library source files (collections.sqz); never in user code.
+type V13PipelineDeclNode struct {
+	V13BaseNode
+	Name string // function name, e.g. "map"
+}
+
+// V13PipelineCallNode  col >>pipeline_func(extra_args) desugared to pipeline_func(col, extra_args).
+// Produced by ParsePipelineCall.  Source may itself be a *V13PipelineCallNode for chaining.
+type V13PipelineCallNode struct {
+	V13BaseNode
+	FuncName  string                  // e.g. "map"
+	Source    V13Node                 // left-hand expression before >>
+	ExtraArgs []*V13AssignFuncRHSNode // args inside ( ) after the function name
+}
+
+// V13PipelineFuncs is the set of free functions eligible for the >> pipeline syntax.
+// Pre-seeded with the standard-library functions from collections.sqz.
+// Additional names are registered when PIPELINE<name> directives are parsed.
+var V13PipelineFuncs = map[string]bool{
+	"map":    true,
+	"filter": true,
+	"take":   true,
+	"drop":   true,
+	"zip":    true,
+	"join":   true,
+	"reduce": true,
+}
+
+// ---------- push model nodes (spec/13_push_pull.sqg) ----------
+
+// V13PushSourceNode  push_source = array_final | func_range_args | boolean_true | ident_ref | func_call_final
+type V13PushSourceNode struct {
+	V13BaseNode
+	Value V13Node
+}
+
+// V13PushRecvDeclNode  push_recv_decl = push_oper ident_name ":" inspect_type  (Role A — header)
+type V13PushRecvDeclNode struct {
+	V13BaseNode
+	Name string
+	Type *V13InspectTypeNode
+}
+
+// V13PushForwardStmtNode  push_forward_stmt = func_stmt push_oper  (Role B — body, postfix + NL)
+type V13PushForwardStmtNode struct {
+	V13BaseNode
+	Stmt *V13FuncStmtNode
+}
+
+// V13PushStreamBindNode  push_stream_bind = push_source push_oper ( func_unit | func_call ) { push_oper ... }
+// (Role C — body pipeline)
+type V13PushStreamBindNode struct {
+	V13BaseNode
+	Source *V13PushSourceNode
+	Stages []V13Node
+}
+
+// V13AssignPushNode  assign_push = push_source push_oper EOL
+// Cold push binding — source is registered but not yet active.
+type V13AssignPushNode struct {
+	V13BaseNode
+	Source *V13PushSourceNode
 }
 
 // V13FuncInjectBind  assign_lhs ( ":" | ":~" ) ident_ref
@@ -656,6 +745,13 @@ func (p *V13Parser) ParseFuncArgsDecl() (*V13FuncArgsDeclNode, error) {
 		}
 		node.StreamArgs = sa
 	}
+	if p.cur().Type == V13_PUSH {
+		pd, err := p.ParsePushRecvDecl()
+		if err != nil {
+			return nil, err
+		}
+		node.PushRecvDecl = pd
+	}
 	if p.cur().Type == V13_STORE {
 		saved := p.savePos()
 		deps, err := p.ParseFuncDeps()
@@ -808,37 +904,345 @@ func (p *V13Parser) ParseFuncCallChain() (*V13FuncCallChainNode, error) {
 	return node, nil
 }
 
-// ---------- func_stream_loop / func_call_final ----------
+// ---------- iterator_source / iterator_return_stmt / assign_iterator ----------
 
-func (p *V13Parser) ParseFuncStreamLoop() (*V13FuncStreamLoopNode, error) {
+// ParseIteratorSource parses:
+//
+//	iterator_source = array_final | func_range_args | boolean_true | ident_ref | func_call_final
+func (p *V13Parser) ParseIteratorSource() (*V13IteratorSourceNode, error) {
 	line, col := p.cur().Line, p.cur().Col
+	wrap := func(v V13Node) *V13IteratorSourceNode {
+		return &V13IteratorSourceNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: v}
+	}
 
-	var source V13Node
+	// boolean_true (infinite loop)
 	if p.cur().Type == V13_TRUE {
 		b, err := p.ParseBoolean()
 		if err != nil {
 			return nil, err
 		}
-		source = b
-	} else if p.cur().Type == V13_IDENT {
+		return wrap(b), nil
+	}
+
+	// func_call_final (covers func_call_chain and nested func_stream_loop)
+	if p.cur().Type == V13_TYPE_OF {
 		saved := p.savePos()
-		ref, err := p.ParseIdentRef()
-		if err == nil {
-			source = ref
-		} else {
-			p.restorePos(saved)
-			ra, err := p.ParseFuncRangeArgs()
-			if err != nil {
-				return nil, err
-			}
-			source = ra
+		if fc, err := p.ParseFuncCallFinal(); err == nil {
+			return wrap(fc), nil
 		}
-	} else {
-		ra, err := p.ParseFuncRangeArgs()
+		p.restorePos(saved)
+	}
+
+	// ident_ref (try first before range, since ident_ref is a prefix of func_range_args)
+	if p.cur().Type == V13_IDENT {
+		saved := p.savePos()
+		if ref, err := p.ParseIdentRef(); err == nil {
+			return wrap(ref), nil
+		}
+		p.restorePos(saved)
+	}
+
+	// array_final (try before func_range_args to catch [] literals)
+	{
+		saved := p.savePos()
+		if af, err := p.ParseArrayFinal(); err == nil {
+			return wrap(af), nil
+		}
+		p.restorePos(saved)
+	}
+
+	// func_range_args as last resort
+	ra, err := p.ParseFuncRangeArgs()
+	if err != nil {
+		return nil, err
+	}
+	return wrap(ra), nil
+}
+
+// ParseIteratorYieldStmt parses:  iterator_yield_stmt = func_stmt ">>"
+// The ">>" must be followed by NL or EOF (postfix yield form — Role B).
+func (p *V13Parser) ParseIteratorYieldStmt() (*V13IteratorYieldStmtNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	stmt, err := p.ParseFuncStmt()
+	if err != nil {
+		return nil, err
+	}
+	// Use curRaw to check what immediately follows the func_stmt (NL-sensitive check).
+	// We need >>, and after advancing past it there must be a NL or EOF (Role B).
+	// If >> is followed by non-NL, this is a stream loop (Role C), not a yield.
+	if p.curRaw().Type != V13_STREAM {
+		return nil, p.errAt(fmt.Sprintf("expected '>>' for yield, got %s", p.curRaw().Type))
+	}
+	p.advanceRaw() // consume >>
+	// Now curRaw must be NL or EOF to confirm this is a postfix yield.
+	if p.curRaw().Type != V13_NL && p.curRaw().Type != V13_EOF {
+		return nil, p.errAt(fmt.Sprintf("expected NL after yield '>>', got %s", p.curRaw().Type))
+	}
+	return &V13IteratorYieldStmtNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Stmt: stmt}, nil
+}
+
+// ParseAssignIterator parses:  assign_iterator = iterator_source ">>" EOL
+// Produces a lazy iterator binding — the source is not driven until first use.
+func (p *V13Parser) ParseAssignIterator() (*V13AssignIteratorNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	src, err := p.ParseIteratorSource()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(V13_STREAM); err != nil {
+		return nil, err
+	}
+	// The trailing EOL is consumed by the outer statement loop; we do not
+	// require it here since the parser is NL-transparent.
+	return &V13AssignIteratorNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Source: src}, nil
+}
+
+// ---------- push model parse methods (spec/13_push_pull.sqg) ----------
+
+// ParsePushSource parses:
+//
+//	push_source = array_final | func_range_args | boolean_true | ident_ref | func_call_final
+//
+// Mirrors ParseIteratorSource exactly, substituting PushSourceNode.
+func (p *V13Parser) ParsePushSource() (*V13PushSourceNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	wrap := func(v V13Node) *V13PushSourceNode {
+		return &V13PushSourceNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: v}
+	}
+
+	// boolean_true (infinite push loop)
+	if p.cur().Type == V13_TRUE {
+		b, err := p.ParseBoolean()
 		if err != nil {
 			return nil, err
 		}
-		source = ra
+		return wrap(b), nil
+	}
+
+	// func_call_final (covers func_call_chain and nested stream loop)
+	if p.cur().Type == V13_TYPE_OF {
+		saved := p.savePos()
+		if fc, err := p.ParseFuncCallFinal(); err == nil {
+			return wrap(fc), nil
+		}
+		p.restorePos(saved)
+	}
+
+	// ident_ref (try before range to avoid partial match)
+	if p.cur().Type == V13_IDENT {
+		saved := p.savePos()
+		if ref, err := p.ParseIdentRef(); err == nil {
+			return wrap(ref), nil
+		}
+		p.restorePos(saved)
+	}
+
+	// array_final
+	{
+		saved := p.savePos()
+		if af, err := p.ParseArrayFinal(); err == nil {
+			return wrap(af), nil
+		}
+		p.restorePos(saved)
+	}
+
+	// func_range_args as last resort
+	ra, err := p.ParseFuncRangeArgs()
+	if err != nil {
+		return nil, err
+	}
+	return wrap(ra), nil
+}
+
+// ParseAssignPush parses:  assign_push = push_source push_oper EOL
+// Cold push binding — the source is registered but not yet active.
+func (p *V13Parser) ParseAssignPush() (*V13AssignPushNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	src, err := p.ParsePushSource()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(V13_PUSH); err != nil {
+		return nil, err
+	}
+	return &V13AssignPushNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Source: src}, nil
+}
+
+// ParsePushRecvDecl parses:  push_recv_decl = push_oper ident_name ":" inspect_type  (Role A — header)
+func (p *V13Parser) ParsePushRecvDecl() (*V13PushRecvDeclNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	if _, err := p.expect(V13_PUSH); err != nil {
+		return nil, err
+	}
+	if p.cur().Type != V13_IDENT {
+		return nil, p.errAt(fmt.Sprintf("expected identifier after '~>' in push_recv_decl, got %s", p.cur().Type))
+	}
+	name := p.cur().Value
+	p.advance()
+	if _, err := p.expect(V13_COLON); err != nil {
+		return nil, err
+	}
+	typ, err := p.ParseInspectType()
+	if err != nil {
+		return nil, err
+	}
+	return &V13PushRecvDeclNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Name: name, Type: typ}, nil
+}
+
+// ParsePushForwardStmt parses:  push_forward_stmt = func_stmt push_oper  (Role B — body postfix)
+// The "~>" must be followed by NL or EOF (same NL-sensitive pattern as ParseIteratorYieldStmt).
+func (p *V13Parser) ParsePushForwardStmt() (*V13PushForwardStmtNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	stmt, err := p.ParseFuncStmt()
+	if err != nil {
+		return nil, err
+	}
+	// Use curRaw for NL-sensitive check — do not skip newlines.
+	if p.curRaw().Type != V13_PUSH {
+		return nil, p.errAt(fmt.Sprintf("expected '~>' for push_forward_stmt, got %s", p.curRaw().Type))
+	}
+	p.advanceRaw() // consume ~>
+	// Confirm postfix form: must be followed by NL or EOF (not a pipeline stage).
+	if p.curRaw().Type != V13_NL && p.curRaw().Type != V13_EOF {
+		return nil, p.errAt(fmt.Sprintf("expected NL after push forward '~>', got %s", p.curRaw().Type))
+	}
+	return &V13PushForwardStmtNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Stmt: stmt}, nil
+}
+
+// ParsePushStreamBind parses:  push_stream_bind = push_source push_oper ( func_unit | func_call ) { push_oper ... }
+// (Role C — body pipeline, zero or more extra stages chained with ~>)
+func (p *V13Parser) ParsePushStreamBind() (*V13PushStreamBindNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	src, err := p.ParsePushSource()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(V13_PUSH); err != nil {
+		return nil, err
+	}
+	var stages []V13Node
+	for {
+		var stage V13Node
+		if p.cur().Type == V13_LBRACE || p.cur().Type == V13_LPAREN {
+			fu, err := p.ParseFuncUnit()
+			if err != nil {
+				return nil, err
+			}
+			stage = fu
+		} else {
+			fc, err := p.ParseFuncCall()
+			if err != nil {
+				return nil, err
+			}
+			stage = fc
+		}
+		stages = append(stages, stage)
+		if p.cur().Type != V13_PUSH {
+			break
+		}
+		p.advance() // consume chained ~>
+	}
+	return &V13PushStreamBindNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Source: src, Stages: stages}, nil
+}
+
+// ---------- PIPELINE directive and pipeline call desugaring ----------
+
+// ParsePipelineDecl parses:  PIPELINE "<" ident_name ">"
+// Registers the given function name in V13PipelineFuncs and returns a node.
+func (p *V13Parser) ParsePipelineDecl() (*V13PipelineDeclNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	if _, err := p.expect(V13_PIPELINE); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(V13_LT); err != nil {
+		return nil, p.errAt("PIPELINE directive: expected '<'")
+	}
+	if p.cur().Type != V13_IDENT {
+		return nil, p.errAt("PIPELINE directive: expected function name")
+	}
+	name := p.cur().Value
+	p.advance()
+	if _, err := p.expect(V13_GT); err != nil {
+		return nil, p.errAt("PIPELINE directive: expected '>'")
+	}
+	V13PipelineFuncs[name] = true
+	return &V13PipelineDeclNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Name: name}, nil
+}
+
+// ParsePipelineCall parses:
+//
+//	iterator_source ">>" pipeline_name "(" args ")" { ">>" pipeline_name "(" args ")" }
+//
+// Each step desugars to pipeline_name(source, args).  Chains are represented
+// as nested V13PipelineCallNode where Source of the outer node is the inner node.
+// Returns error (and does NOT advance the position) when no >> pipeline step is present.
+func (p *V13Parser) ParsePipelineCall() (*V13PipelineCallNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+
+	src, err := p.ParseIteratorSource()
+	if err != nil {
+		return nil, err
+	}
+
+	var result *V13PipelineCallNode
+	var currentSrc V13Node = src
+
+	for p.cur().Type == V13_STREAM {
+		saved := p.savePos()
+		p.advance() // consume >>
+
+		if p.cur().Type != V13_IDENT || !V13PipelineFuncs[p.cur().Value] {
+			p.restorePos(saved)
+			break
+		}
+		funcName := p.cur().Value
+		p.advance() // consume function name
+
+		if _, err := p.expect(V13_LPAREN); err != nil {
+			p.restorePos(saved)
+			break
+		}
+
+		var extraArgs []*V13AssignFuncRHSNode
+		for p.cur().Type != V13_RPAREN && p.cur().Type != V13_EOF {
+			arg, argErr := p.ParseAssignFuncRHS()
+			if argErr != nil {
+				break
+			}
+			extraArgs = append(extraArgs, arg)
+			if p.cur().Type == V13_COMMA {
+				p.advance()
+			} else {
+				break
+			}
+		}
+
+		if _, err := p.expect(V13_RPAREN); err != nil {
+			p.restorePos(saved)
+			break
+		}
+
+		result = &V13PipelineCallNode{
+			V13BaseNode: V13BaseNode{Line: line, Col: col},
+			FuncName:    funcName,
+			Source:      currentSrc,
+			ExtraArgs:   extraArgs,
+		}
+		currentSrc = result // allow chaining: next >> sees this node as source
+	}
+
+	if result == nil {
+		return nil, p.errAt("ParsePipelineCall: no >> pipeline step found")
+	}
+	return result, nil
+}
+
+func (p *V13Parser) ParseFuncStreamLoop() (*V13FuncStreamLoopNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+
+	src, err := p.ParseIteratorSource()
+	if err != nil {
+		return nil, err
 	}
 
 	if _, err := p.expect(V13_STREAM); err != nil {
@@ -846,16 +1250,20 @@ func (p *V13Parser) ParseFuncStreamLoop() (*V13FuncStreamLoopNode, error) {
 	}
 
 	var body V13Node
-	var err error
-	if p.cur().Type == V13_LBRACE {
+	if p.cur().Type == V13_LBRACE || p.cur().Type == V13_LPAREN {
+		var err error
 		body, err = p.ParseFuncUnit()
+		if err != nil {
+			return nil, err
+		}
 	} else {
+		var err error
 		body, err = p.ParseFuncCall()
+		if err != nil {
+			return nil, err
+		}
 	}
-	if err != nil {
-		return nil, err
-	}
-	return &V13FuncStreamLoopNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Source: source, Body: body}, nil
+	return &V13FuncStreamLoopNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Source: src, Body: body}, nil
 }
 
 func (p *V13Parser) ParseFuncCallFinal() (*V13FuncCallFinalNode, error) {
@@ -864,6 +1272,14 @@ func (p *V13Parser) ParseFuncCallFinal() (*V13FuncCallFinalNode, error) {
 		saved := p.savePos()
 		if cc, err := p.ParseFuncCallChain(); err == nil {
 			return &V13FuncCallFinalNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: cc}, nil
+		}
+		p.restorePos(saved)
+	}
+	// Try pipeline call: source >>pipeline_func(args) before generic stream loop.
+	{
+		saved := p.savePos()
+		if pc, err := p.ParsePipelineCall(); err == nil {
+			return &V13FuncCallFinalNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: pc}, nil
 		}
 		p.restorePos(saved)
 	}
@@ -1184,6 +1600,46 @@ func (p *V13Parser) ParseFuncBodyStmt() (*V13FuncBodyStmtNode, error) {
 		return wrap(fa), nil
 	}
 	p.restorePos(saved)
+
+	// Try iterator_yield_stmt (Role B — postfix): func_stmt >> NL/EOF
+	// Must be attempted before ParseFuncStreamLoop so that "result >>\n"
+	// is parsed as a yield rather than an incomplete stream loop.
+	{
+		saved2 := p.savePos()
+		if iy, err := p.ParseIteratorYieldStmt(); err == nil {
+			return wrap(iy), nil
+		}
+		p.restorePos(saved2)
+	}
+
+	// Try push_forward_stmt (Role B — postfix): func_stmt ~> NL/EOF
+	{
+		saved2 := p.savePos()
+		if pf, err := p.ParsePushForwardStmt(); err == nil {
+			return wrap(pf), nil
+		}
+		p.restorePos(saved2)
+	}
+
+	// Try push_stream_bind (Role C — pipeline): push_source ~> stage { ~> stage }
+	{
+		saved2 := p.savePos()
+		if ps, err := p.ParsePushStreamBind(); err == nil {
+			return wrap(ps), nil
+		}
+		p.restorePos(saved2)
+	}
+
+	// Try pipeline call: source >>pipeline_func(args) — must come before ParseFuncStreamLoop
+	// so that col >>map(f) is desugared rather than treated as an iterator loop with a
+	// func_call body.
+	{
+		saved2 := p.savePos()
+		if pc, err := p.ParsePipelineCall(); err == nil {
+			return wrap(pc), nil
+		}
+		p.restorePos(saved2)
+	}
 
 	sl, err := p.ParseFuncStreamLoop()
 	if err != nil {

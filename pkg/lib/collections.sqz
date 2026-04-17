@@ -1,0 +1,247 @@
+(* ============================================================
+   pkg/lib/collections.sqz  --  Squeeze V13 Collection Functions
+   ============================================================
+
+   Higher-order algorithm functions for uniform collections and
+   lazy iterators.  See spec/15_collections.sqg for the full
+   design rationale.
+
+   PIPELINE directives register each transform/aggregate as
+   eligible for the >> pipeline syntax, e.g.:
+       prices >>map(<- { -> x: @?  x * 1.1 })
+   desugars at parse time to:
+       map(prices, <- { -> x: @?  x * 1.1 })
+
+   TRANSFORMS (lazy — return a new iterator):
+     map, filter, take, drop, zip
+
+   AGGREGATES (eager — consume iterator, return scalar or record):
+     reduce, join, first, last, count, sum, min, max
+   *)
+
+
+(* ============================================================
+   TRANSFORMS — lazy, return a new iterator
+   ============================================================ *)
+
+(*
+   map(col, f)
+   Apply f to every element of col.
+   Output @type is determined by the return object of f.
+   col >>map(f) pipeline form also valid.
+*)
+PIPELINE<map>
+map : <- {
+    -> col: @?
+    -> f:   @?
+    col >> {
+        elem >>
+        <- f(elem)
+    }
+}
+
+(*
+   filter(col, pred)
+   Keep only elements of col where pred(elem) returns true.
+   Output @type is identical to input @type.
+   col >>filter(pred) pipeline form also valid.
+*)
+PIPELINE<filter>
+filter : <- {
+    -> col:  @?
+    -> pred: @?
+    col >> {
+        elem >>
+        ( pred(elem) ) & elem >>
+    }
+}
+
+(*
+   take(col, n)
+   Yield the first n elements of col then stop.
+   Output @type is identical to input @type.
+   col >>take(n) pipeline form also valid.
+*)
+PIPELINE<take>
+take : <- {
+    -> col: @?
+    -> n:   integer
+    count = 0
+    col >> {
+        ( count >= n ) & <- false
+        elem >>
+        count +:1
+    }
+}
+
+(*
+   drop(col, n)
+   Skip the first n elements, then yield the rest.
+   Output @type is identical to input @type.
+   col >>drop(n) pipeline form also valid.
+*)
+PIPELINE<drop>
+drop : <- {
+    -> col: @?
+    -> n:   integer
+    skipped = 0
+    col >> {
+        ( skipped < n ) & skipped +:1
+        ( skipped <= n ) & <- true
+        elem >>
+    }
+}
+
+(*
+   zip(col_a, col_b)
+   Ordinal form: produces a lazy stream of named records [_1: a_i, _2: b_i].
+   Terminates when the shortest input is exhausted.
+   col_a >>zip(col_b) pipeline form also valid.
+
+   Named form: zip(name_a: col_a, name_b: col_b) — handled by the caller
+   via named-parameter syntax at the call site.
+*)
+PIPELINE<zip>
+zip : <- {
+    -> col_a: @?
+    -> col_b: @?
+    iter_a = col_a
+    iter_b = col_b
+    true >> {
+        a = iter_a.next()
+        b = iter_b.next()
+        ( a == null || b == null ) & <- false
+        <- [ _1: a, _2: b ] >>
+    }
+}
+
+
+(* ============================================================
+   AGGREGATES — eager, consume iterator and return a scalar
+   ============================================================ *)
+
+(*
+   reduce(col, init, f)
+   Left-fold col using f, starting from init.
+   Output @type == init.@type.
+   init is mandatory (see spec 15.8).
+   col >>reduce(init, f) pipeline form also valid.
+*)
+PIPELINE<reduce>
+reduce : <- {
+    -> col:  @?
+    -> init: @?
+    -> f:    @?
+    acc = init
+    col >> {
+        >> elem: @?
+        acc = f(acc, elem)
+    }
+    <- acc
+}
+
+(*
+   join(col, separator)
+   Fold a string collection into a single string with separator between elements.
+   col >>join(separator) pipeline form also valid.
+*)
+PIPELINE<join>
+join : <- {
+    -> col:       @?
+    -> separator: string
+    acc = ""
+    first = true
+    col >> {
+        >> elem: @?
+        sep_now = first & "" ^ separator
+        ( first ) & first = false
+        acc = acc + sep_now + elem
+    }
+    <- acc
+}
+
+(*
+   first(col)
+   Return the first element of col, or null if col is empty.
+*)
+first : <- {
+    -> col: @?
+    col >> {
+        >> elem: @?
+        <- elem
+    }
+    <- null
+}
+
+(*
+   last(col)
+   Return the last element of col.  Drains the entire iterator.
+*)
+last : <- {
+    -> col: @?
+    result = null
+    col >> {
+        >> elem: @?
+        result = elem
+    }
+    <- result
+}
+
+(*
+   count(col)
+   Count the number of elements in col.  Drains the entire iterator.
+*)
+count : <- {
+    -> col: @?
+    n = 0
+    col >> {
+        >> elem: @?
+        n +:1
+    }
+    <- n
+}
+
+(*
+   sum(col)
+   Sum numeric elements of col.
+   Input must be a numeric @type.
+*)
+sum : <- {
+    -> col: @?
+    total = 0
+    col >> {
+        >> elem: @?
+        total +:elem
+    }
+    <- total
+}
+
+(*
+   min(col)
+   Return the minimum element of col.
+   Input must be an ordered @type.
+*)
+min : <- {
+    -> col: @?
+    result = null
+    col >> {
+        >> elem: @?
+        ( result == null || elem < result ) & result = elem
+    }
+    <- result
+}
+
+(*
+   max(col)
+   Return the maximum element of col.
+   Input must be an ordered @type.
+*)
+max : <- {
+    -> col: @?
+    result = null
+    col >> {
+        >> elem: @?
+        ( result == null || elem > result ) & result = elem
+    }
+    <- result
+}

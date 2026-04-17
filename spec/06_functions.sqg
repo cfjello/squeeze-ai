@@ -6,6 +6,7 @@ include "./05_json_path.sqg";
    V12 Build in variables NEW
 ------------------------------------------------------------ *)
 type_prefix       = "@";
+iterator_oper     = ">>";
 
 (* ------------------------------------------------------------
    Build in variables 
@@ -65,9 +66,9 @@ ident_static_fn      = ident_ref "." "@" ( ident_static_str | ident_static_boole
 (* V11 added args_decl and modified func_args, func_stream_args *)
 args_decl            =  assign_lhs [ assign_immutable | assign_read_only_ref ] inspect_type { "," args_decl };
 func_args            = "->" args_decl; 
-func_stream_args     = ">>" args_decl;
+func_stream_args     = iterator_oper args_decl;
 func_deps            = dependency_oper UNIQUE< ident_static_store_name  { "," ident_static_store_name  } > ;
-func_args_decl       =  [ func_args ] [ func_stream_args ] [ func_deps ]; 
+func_args_decl       =  [ func_args ] [ func_stream_args ] [ push_recv_decl ] [ func_deps ]; 
 
 (* ------------------------------------------------------------
    Dependency chain "main" re-entry convention
@@ -116,11 +117,11 @@ func_call              =  TYPE_OF func_unit<ident_ref> [ func_call_args ];
 (* This one relies on matching output of previous funtion to input of the next function *)
 func_call_chain        = func_call 
                          [ 
-                            ( "->" | ">>" | logic_oper )   TYPE_OF func_unit<ident_ref> { ( "->" | ">>" | logic_oper ) TYPE_OF func_unit<ident_ref>  } 
+                            ( "->" | iterator_oper | logic_oper )   TYPE_OF func_unit<ident_ref> { ( "->" | iterator_oper | logic_oper ) TYPE_OF func_unit<ident_ref>  } 
                          ] ; 
 
-func_stream_loop       = ( func_range_args | ident_ref  | boolean_true ) 
-                         func_stream_decl 
+func_stream_loop       = iterator_source
+                         iterator_oper
                          ( func_unit | func_call ); 
 
 func_call_final        = func_call_chain | func_stream_loop ;
@@ -138,7 +139,10 @@ func_assign         =  [ func_inject ] assign_lhs assign_oper func_stmt;
 func_return_stmt    = "<-" func_stmt; 
 (* V13 Modified: uses dependency_oper; publishes a new UUIDv7-stamped version of a named data object *) 
 func_store_stmt     =  dependency_oper ( object_final | TYPE_OF object_final<ident_ref> ) { "," ( object_final | TYPE_OF object_final<ident_ref> ) };
-func_body_stmt      = func_assign | func_return_stmt | func_store_stmt | func_stream_loop | func_call_final;
+func_body_stmt      = func_assign | func_return_stmt | func_store_stmt | iterator_yield_stmt | push_forward_stmt | push_stream_bind | func_stream_loop | func_call_final;
+
+(* iterator_recv_decl, iterator_source, iterator_yield_stmt — defined in spec/12_iterators.sqg Section 12.6 *)
+(* push_oper, push_recv_decl, push_source, push_forward_stmt, push_stream_bind, assign_push — defined in spec/13_push_pull.sqg Section 13.6 *)
 
 
 (* ------------------------------------------------------------

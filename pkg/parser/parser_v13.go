@@ -80,6 +80,7 @@ const (
 	V13_HAS_ONE    // HAS_ONE  (V13 new)
 	V13_SUBSET_OF  // SUBSET_OF  (V13 new)
 	V13_UNQUOTE    // UNQUOTE  (V13 new)
+	V13_PIPELINE   // PIPELINE  (V13 new — library pipeline directive)
 
 	// ---- Structure / type declaration keywords (V13 new) ----
 	V13_ENUM     // ENUM
@@ -95,6 +96,7 @@ const (
 	V13_DOTDOLLAR     // .$
 	V13_ARROW         // ->
 	V13_STREAM        // >>
+	V13_PUSH          // ~>
 	V13_STORE         // =>
 	V13_RETURN_STMT   // <-
 	V13_INC           // ++
@@ -172,9 +174,9 @@ var V13tokenNames = map[V13TokenType]string{
 	V13_RETURN_DIR: "RETURN", V13_UNIFORM: "UNIFORM", V13_INFER: "INFER",
 	V13_CAST: "CAST", V13_EXTEND: "EXTEND", V13_MERGE: "MERGE",
 	V13_SQZ: "SQZ", V13_CODE: "CODE",
-	V13_HAS_ONE: "HAS_ONE", V13_SUBSET_OF: "SUBSET_OF", V13_UNQUOTE: "UNQUOTE",
+	V13_HAS_ONE: "HAS_ONE", V13_SUBSET_OF: "SUBSET_OF", V13_UNQUOTE: "UNQUOTE", V13_PIPELINE: "PIPELINE",
 	V13_ENUM: "ENUM", V13_BITFIELD: "BITFIELD",
-	V13_DOTDOT: "..", V13_ELLIPSIS: "...", V13_DOTDOLLAR: ".$", V13_ARROW: "->", V13_STREAM: ">>",
+	V13_DOTDOT: "..", V13_ELLIPSIS: "...", V13_DOTDOLLAR: ".$", V13_ARROW: "->", V13_STREAM: ">>", V13_PUSH: "~>",
 	V13_STORE: "=>", V13_RETURN_STMT: "<-",
 	V13_INC: "++", V13_DEC: "--", V13_POW: "**",
 	V13_IADD_IMM: "+:", V13_ISUB_IMM: "-:", V13_IMUL_IMM: "*:", V13_IDIV_IMM: "/:",
@@ -250,6 +252,7 @@ var V13keywords = map[string]V13TokenType{
 	"HAS_ONE":    V13_HAS_ONE,
 	"SUBSET_OF":  V13_SUBSET_OF,
 	"UNQUOTE":    V13_UNQUOTE,
+	"PIPELINE":   V13_PIPELINE,
 	"ENUM":       V13_ENUM,
 	"BITFIELD":   V13_BITFIELD,
 }
@@ -616,7 +619,7 @@ func (l *V13Lexer) V13scanTemplateQuoted(line, col int) (V13Token, error) {
 	for l.pos < len(l.input) {
 		ch := l.V13peek()
 		ch2 := l.V13peek2()
-		if ch == '$' && ch2 == '(' && depth == 0 {
+		if ch == '§' && ch2 == '(' && depth == 0 {
 			sb.WriteRune(l.V13advance())
 			sb.WriteRune(l.V13advance())
 			depth++
@@ -921,6 +924,11 @@ func (l *V13Lexer) V13scanOperator(line, col int) (V13Token, error) {
 		return l.V13makeTok(V13_QUESTION, "?", line, col), nil
 
 	case '~':
+		if ch2 == '>' {
+			l.V13advance()
+			l.V13advance()
+			return l.V13makeTok(V13_PUSH, "~>", line, col), nil
+		}
 		l.V13advance()
 		return l.V13makeTok(V13_TILDE, "~", line, col), nil
 	case '%':
@@ -1054,9 +1062,30 @@ const (
 )
 
 // V13TmplPart is one segment of a template string.
+// SlotIdx is -1 for literal segments and for mode-1/2 expression segments.
+// In mode-3 (deferred) templates, SlotIdx holds the zero-based positional
+// parameter index for each IsExpr segment.
 type V13TmplPart struct {
-	IsExpr bool
-	Text   string
+	IsExpr  bool
+	Text    string
+	SlotIdx int
+}
+
+// V13TmplParam is one positional parameter of a deferred template.
+// Name is the raw expression text of the §(…) slot (e.g. "first_name").
+// SlotIdx matches the corresponding V13TmplPart.SlotIdx.
+type V13TmplParam struct {
+	Name    string
+	SlotIdx int
+}
+
+// V13TmplDeferredNode  my_var : <- tmpl_quoted
+// Wraps a template string as a callable func_unit whose arguments are bound
+// left-to-right to each §(expr) slot in source order.
+type V13TmplDeferredNode struct {
+	V13BaseNode
+	Tmpl   *V13StringNode
+	Params []V13TmplParam
 }
 
 // V13StringNode  single_quoted | double_quoted | tmpl_quoted
@@ -1600,16 +1629,17 @@ func v13splitTemplateParts(raw string) []V13TmplPart {
 	}
 	var parts []V13TmplPart
 	for len(inner) > 0 {
-		idx := strings.Index(inner, "$(")
+		idx := strings.Index(inner, "§(")
 		if idx == -1 {
-			parts = append(parts, V13TmplPart{IsExpr: false, Text: inner})
+			parts = append(parts, V13TmplPart{IsExpr: false, Text: inner, SlotIdx: -1})
 			break
 		}
 		if idx > 0 {
-			parts = append(parts, V13TmplPart{IsExpr: false, Text: inner[:idx]})
+			parts = append(parts, V13TmplPart{IsExpr: false, Text: inner[:idx], SlotIdx: -1})
 		}
+		const sectParenLen = 3 // §( is 2 UTF-8 bytes for § plus 1 byte for (
 		depth := 1
-		i := idx + 2
+		i := idx + sectParenLen
 		for i < len(inner) && depth > 0 {
 			if inner[i] == '(' {
 				depth++
@@ -1618,7 +1648,7 @@ func v13splitTemplateParts(raw string) []V13TmplPart {
 			}
 			i++
 		}
-		parts = append(parts, V13TmplPart{IsExpr: true, Text: inner[idx+2 : i-1]})
+		parts = append(parts, V13TmplPart{IsExpr: true, Text: inner[idx+sectParenLen : i-1], SlotIdx: -1})
 		inner = inner[i:]
 	}
 	return parts
@@ -1744,6 +1774,42 @@ func (p *V13Parser) ParseAnyType() (*V13AnyTypeNode, error) {
 	}
 	p.advance()
 	return &V13AnyTypeNode{V13BaseNode: V13BaseNode{Line: tok.Line, Col: tok.Col}}, nil
+}
+
+// ParseTmplDeferred parses:  deferred_tmpl = "<-" tmpl_quoted
+//
+// This is mode-3 template assignment (spec 14.2).  Each §(expr) slot is
+// annotated left-to-right with a zero-based SlotIdx and collected as a
+// positional parameter in the returned V13TmplDeferredNode.Params slice.
+func (p *V13Parser) ParseTmplDeferred() (*V13TmplDeferredNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	if _, err := p.expect(V13_RETURN_STMT); err != nil {
+		return nil, err
+	}
+	tok := p.cur()
+	if (tok.Type != V13_STRING && tok.Type != V13_EMPTY_STR_T) ||
+		!strings.HasPrefix(tok.Value, "`") {
+		return nil, p.errAt(fmt.Sprintf("deferred_tmpl: expected template-quoted string after <-, got %s %q", tok.Type, tok.Value))
+	}
+	tmplNode, err := p.ParseString()
+	if err != nil {
+		return nil, err
+	}
+	// Annotate IsExpr parts with sequential SlotIdx values and collect Params.
+	var params []V13TmplParam
+	slot := 0
+	for i := range tmplNode.Parts {
+		if tmplNode.Parts[i].IsExpr {
+			tmplNode.Parts[i].SlotIdx = slot
+			params = append(params, V13TmplParam{Name: tmplNode.Parts[i].Text, SlotIdx: slot})
+			slot++
+		}
+	}
+	return &V13TmplDeferredNode{
+		V13BaseNode: V13BaseNode{Line: line, Col: col},
+		Tmpl:        tmplNode,
+		Params:      params,
+	}, nil
 }
 
 // --------------------------------------------------------------------------

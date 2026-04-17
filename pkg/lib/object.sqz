@@ -1,0 +1,112 @@
+(* ============================================================
+   pkg/lib/object.sqz  --  Squeeze V13 Object Type
+   ============================================================
+
+   Defines the @object type (associative array: string keys → @? values)
+   and its key-based methods.
+
+   Key order is undefined at the Go runtime level (Go maps are unordered).
+   All methods that return or iterate keys yield them in sorted order for
+   deterministic, reproducible behaviour.
+
+   To use collection-generic operations (map, filter, reduce, …) over an
+   object's contents, convert first:
+     obj.get_values()   — iterator of values (key-sorted order)
+     obj.to_array()     — iterator of [key: k, value: v] records
+
+   Intrinsics used (UPPERCASE builtins):
+     LENGTH<obj>          — count of key-value pairs
+     OBJ_HAS<obj, key>    — O(1) boolean key-presence check
+     OBJ_KEYS<obj>        — sorted @array of all keys
+     OBJ_VALUES<obj>      — @array of values in key-sorted order
+     OBJ_TO_ARRAY<obj>    — @array of [key: k, value: v] records
+     TO_JSON<val>         — JSON-serialise a single value
+   *)
+
+object, object_final: {
+    names, n, 1..m: ["object", "object_final"]
+    card,  c:       1..1
+    type,  t:       $
+    data,  d:       []
+    ver,   v:       "v0.0"
+
+    init: <- (
+        -> raw: §object_final
+        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+             card:  LHS_CALLER<§assign_lhs.cardinality>,
+             type:  $,
+             data:  raw ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       O(1) access
+       --------------------------------------------------------------- *)
+
+    (* length — number of key-value pairs. *)
+    (obj @object) length: <- (
+        <- LENGTH<obj.data>
+    )
+
+    (* contains_key — O(1) hash check; true when key is present. *)
+    (obj @object) contains_key: <- (
+        -> key: string
+        <- OBJ_HAS<obj.data, key>
+    )
+
+    (* get — safe key access; returns default when the key is absent.
+       Avoids a guarded double-lookup at every call site. *)
+    (obj @object) get: <- (
+        -> key:     string
+        -> default: @?
+        ( OBJ_HAS<obj.data, key> ) & <- obj.data[key]
+        <- default
+    )
+
+
+    (* ---------------------------------------------------------------
+       Projection
+       --------------------------------------------------------------- *)
+
+    (* get_keys — @array of all keys in sorted order.
+       Sorted order guarantees repeatable iteration and JSON output. *)
+    (obj @object) get_keys: <- (
+        <- OBJ_KEYS<obj.data>
+    )
+
+    (* get_values — @array of all values ordered by sorted key.
+       Use this as the input to collection pipelines when only values
+       are needed. *)
+    (obj @object) get_values: <- (
+        <- OBJ_VALUES<obj.data>
+    )
+
+    (* to_array — converts to an @array of [key: k, value: v] records
+       in sorted key order.  Enables full collection-generic pipelines
+       over key-value pairs via collections.sqz. *)
+    (obj @object) to_array: <- (
+        <- OBJ_TO_ARRAY<obj.data>
+    )
+
+
+    (* ---------------------------------------------------------------
+       Serialisation
+       --------------------------------------------------------------- *)
+
+    (* to_json — JSON object string: '{"k1": v1, "k2": v2, ...}'.
+       Keys are emitted in sorted order for deterministic output.
+       Delegates value formatting to TO_JSON<> for correct quoting. *)
+    (obj @object) to_json: <- (
+        keys:  obj.get_keys()
+        result = "{"
+        first  = true
+        keys >> (
+            >> key: string
+            sep_now = first & "" ^ ", "
+            ( first ) & first = false
+            result = result + sep_now + TO_JSON<key> + ": " + TO_JSON<obj.data[key]>
+        )
+        result = result + "}"
+        <- result
+    )
+}

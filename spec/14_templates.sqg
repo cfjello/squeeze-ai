@@ -1,0 +1,204 @@
+﻿(* ============================================================
+   14_template.sqg  --  Squeeze V13 Templates Specification
+   ============================================================
+
+   This file documents the TEMPLATE model -- backtick strings
+   with interpolated expressions delimited by the § character
+   (U+00A7 SECTION SIGN).
+
+   This file is intentionally non-executable -- it documents
+   directives and conventions only.
+   Grammar rules in Section 14.3 are the canonical source for
+   the parser implementation.
+   Runtime library type: pkg/lib/template.sqz (to be written).
+   Error handling delegates to the Global Error Handler
+   (spec/10_error_handler.sqg).
+
+   *)
+
+
+(* ------------------------------------------------------------
+   SECTION 14 -- Templates
+   ------------------------------------------------------------ *)
+
+(*
+   14.1  Current Grammar
+
+        In 01_definitions.sqg we have the following initial template rules:
+
+        1. tmpl_stmt        = constant;
+
+        This rule (denoting statements allowed within a template) is too restrictive;
+        "constant" should be any expression that helps build the template and is without
+        other side-effects.
+
+        2. tmpl_expr        = "$(" tmpl_stmt ")";
+
+        $ is used elsewhere in the grammar (V13_DOLLAR, V13_DOTDOLLAR), so § is used
+        instead as the interpolation sentinel.
+
+        3. tmpl_text        = /(?:(?!\$\(|`)[\s\S])*)/ 
+
+        The kind of text allowed within a template string segment. The negative lookahead
+        must be updated to §\( to match the new sentinel.
+
+        4. tmpl_quoted      = "`" ( tmpl_text | tmpl_expr )  { ( tmpl_text | tmpl_expr ) } "`";
+
+        The normal back-quotes for templates -- unchanged.
+
+   14.2  Template functionality -- three usage modes
+
+        1. INLINE
+           `Hello §(name)`
+           §(expr) is evaluated immediately at point of use.
+           Error if any referenced ident_ref is out of scope.
+
+        2. ASSIGNED
+           my_var : `Hello §(name)`
+           Same evaluation as 1 -- captured in a named variable.
+
+        3. DEFERRED
+           my_var : <- `Hello §(name)`
+           Wrapped as a func_unit; called as a normal func_unit with arguments.
+           Each ident_ref encountered left-to-right in the template is treated as
+           a positional parameter, bound in order to the supplied call arguments.
+           Type mismatch or argument count mismatch is a call-time error.
+
+        Combining these 3 modes allows nested templates -- a mode 3 template can
+        call another deferred template as one of its §(expr) expressions.
+
+   14.3  Revised grammar rules
+
+        tmpl_stmt    = func_call_chain | calc_unit | ident_ref | constant ;
+
+        The parser validates that:
+          - every ident_ref appearing in mode 1 / 2 is in scope at parse time.
+          - in mode 3  every ident_ref is recorded as a positional parameter; scope
+            check is deferred to call time.
+          - the final return type of the expression is string (or coercible to string).
+
+        tmpl_expr    = "§(" tmpl_stmt ")" ;
+
+        tmpl_text    = /(?:(?!§\(|`)[\s\S])*/
+
+        tmpl_quoted  = "`" ( tmpl_text | tmpl_expr ) { ( tmpl_text | tmpl_expr ) } "`" ;  (* unchanged *)
+
+        tmpl_unquoted = UNQUOTE<tmpl_quoted> ;  (* unchanged; shares all three modes *)
+
+   14.4  Interpolation delimiter -- § vs $
+
+        § (U+00A7 SECTION SIGN) is already a recognised token (V13_SECTION) in the
+        lexer.  The input is stored as []rune, so § is a single rune.  Two locations
+        in parser_v13.go must be updated:
+
+          a) V13scanTemplateQuoted -- change  ch == '$' && ch2 == '('
+                                      to      ch == '§' && ch2 == '('
+
+          b) v13splitTemplateParts  -- change strings.Index(inner, "$(")
+                                      to      strings.Index(inner, "§(")
+             and update the byte-offset constant from 2 to 3, because § is
+             2 UTF-8 bytes and ( is 1 byte  =>  len("§(") == 3.
+
+        Both changes have been applied in parser_v13.go.
+
+   14.5  Mode 3 -- deferred templates and argument passing
+
+        Positional, left-to-right binding:
+
+          greeting : <- `Hello §(first_name), you have §(count) messages`
+          greeting("Alice", 3)
+
+        The ident_refs are collected in source order: first_name, count.
+        The call supplies "Alice" (string) and 3 (int).
+        The parser checks type compatibility at call time and errors on mismatch
+        or if too few / too many arguments are supplied.
+
+        Note: in mode 3 the ident_refs inside §(...) are NOT resolved against the
+        lexical scope -- they are bound as positional slots.  The parser annotates
+        each V13TmplPart.IsExpr segment with its slot index.
+
+   14.6  Nesting templates
+
+        Because a deferred template (mode 3) evaluates to a string when called,
+        it is a valid tmpl_stmt and can appear inside another template:
+
+          subject  : <- `§(product) -- Order #§(order_id)`
+          body     : <- `Dear §(name),\n§(subject("Widget", 42))`
+          body("Alice")
+          (* => "Dear Alice,\nWidget -- Order #42" *)
+
+        Chains of func_units are equally valid:
+          body2 : <- `§(records >>filter(active) >>first() >>name)`
+
+   14.7  Error policy
+
+        Mode 1 / 2  -- parse-time: error if any ident_ref in tmpl_stmt is not in scope.
+        Mode 3      -- call-time:  error if argument count or type does not match the
+                       collected positional parameter list.
+        All template errors delegate to the Global Error Handler
+        (spec/10_error_handler.sqg).
+
+   14.8  tmpl_unquoted semantics
+
+        tmpl_unquoted = UNQUOTE<tmpl_quoted> strips the surrounding backticks from the
+        result.  It participates in all three modes with identical rules.
+
+   14.9  AST node additions
+
+        Existing nodes (unchanged):
+          V13TmplPart   -- {IsExpr bool; Text string; SlotIdx int}
+                          SlotIdx is -1 for literal parts and for mode 1/2 expr parts;
+                          set to the positional index in mode 3.
+          V13StringNode{Kind: V13StringTemplate, Parts []V13TmplPart}
+
+        New node:
+          V13TmplDeferredNode  -- wraps a V13StringNode as a callable func_unit.
+            Fields:
+              Tmpl     *V13StringNode
+              Params   []V13TmplParam   // {Name string; Type V13TypeRef; SlotIdx int}
+              Pos      V13Pos
+
+   14.10 Grammar additions in 06_functions.sqg / 03_assignment.sqg
+
+        assignment  ::= ...
+                      | ident ":" "<-" tmpl_quoted       (* mode 3 *)
+
+        The "<-" prefix already signals func_unit wrapping.  No new keyword needed.
+
+   14.11 Lexer -- no new tokens required
+
+        § is already V13_SECTION.  The template scanner and splitter are updated
+        in-place (see 14.4).  No additions to the V13TokenType iota are needed.
+
+   14.12 Implementation Plan
+
+        Step 1  -- Grammar spec (DONE -- this file + 01_definitions.sqg updated).
+
+        Step 2  -- Lexer / splitter (DONE -- parser_v13.go updated).
+
+        Step 3  -- AST: add SlotIdx field to V13TmplPart; add V13TmplDeferredNode
+                  and V13TmplParam types to parser_v13.go.
+
+        Step 4  -- ParseString (parser_v13.go): after splitting parts, if the node
+                  is being parsed in a "deferred" context (signalled by a preceding
+                  "<-" token), annotate each IsExpr part with an incrementing SlotIdx
+                  and build a V13TmplDeferredNode wrapper.
+
+        Step 5  -- ParseAssignment (parser_v13_assignment.go): detect the
+                  ident ":" "<-" tmpl_quoted pattern and create V13TmplDeferredNode.
+
+        Step 6  -- Scope checker: for mode 1/2 walk tmpl_parts and resolve each
+                  IsExpr text against the current scope; error if not found.
+                  For mode 3 skip scope resolution; record param names and types.
+
+        Step 7  -- Call-site validator: when a V13TmplDeferredNode is invoked,
+                  match the supplied argument list against Params left-to-right;
+                  error on count or type mismatch.
+
+        Step 8  -- Tests: add spec_test/squeeze_v13_template_test.go covering
+                  all three modes, nesting, error cases.
+
+        Step 9  -- Runtime library: pkg/lib/template.sqz (string concatenation
+                  helpers, coerce-to-string).
+
+*)

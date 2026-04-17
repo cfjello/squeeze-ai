@@ -1,0 +1,56 @@
+(* ============================================================
+   pkg/lib/template.sqz  --  Squeeze V13 Template Runtime Library
+   ============================================================
+
+   Helper functions for the template subsystem (spec/14_templates.sqg).
+
+   Public API:
+     tmpl_render    -- assemble a completed template from a parts array
+
+   Internal conventions:
+     - coerce_to_string converts any supported type to its string
+       representation for §(expr) interpolation.
+     - All functions are pure (no side effects).
+
+   Note: tmpl_concat was removed.  Template rendering delegates to
+   join() from pkg/lib/collections.sqz.
+
+   Runtime library type: string helpers.
+   Error handling delegates to the Global Error Handler
+   (spec/10_error_handler.sqg).
+   *)
+
+
+(* ------------------------------------------------------------
+   Coercion helpers
+   ------------------------------------------------------------ *)
+
+(*
+   coerce_to_string converts a value of any base type to its string
+   representation.  Supported types: string, int, float, decimal, bool.
+   Any other type causes a runtime error via the global error handler.
+*)
+coerce_to_string : <- {
+    -> v: @?
+    TYPE_OF string<v>
+}
+
+
+(* ------------------------------------------------------------
+   Template rendering
+   ------------------------------------------------------------ *)
+
+(*
+   tmpl_render takes an array of rendered segment strings and joins them
+   into a single string.  Each segment is already a string (coerced if
+   necessary by the caller).
+
+   Example:
+     tmpl_render(["Hello ", "Alice", ", you have ", "3", " messages"])
+     => "Hello Alice, you have 3 messages"
+*)
+tmpl_render : <- {
+    -> segments: @string_array
+    <- join(segments, "")
+}
+

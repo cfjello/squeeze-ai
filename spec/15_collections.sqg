@@ -1,0 +1,344 @@
+﻿(* ============================================================
+   15_collections.sqg  --  Squeeze V13 Collection Functions
+                           Design Discussion and Decisions
+   ============================================================
+
+   This file documents the full design discussion for collection /
+   higher-order functions in the Squeeze V13 standard library.
+   It is intentionally non-executable -- it records design
+   decisions and the intended implementation plan.
+
+   Status: ALL DESIGN QUESTIONS RESOLVED -- ready for implementation.
+
+   Related files:
+     pkg/lib/iterators.sqz    -- iterator protocol (next, close)
+     pkg/lib/array.sqz        -- array type (currently empty)
+     pkg/lib/template.sqz     -- template runtime (uses join)
+     pkg/lib/collections.sqz  -- TO BE WRITTEN (this spec)
+     spec/12_iterators.sqg    -- iterator grammar spec
+     spec/14_templates.sqg    -- template grammar spec
+
+   *)
+
+
+(* ------------------------------------------------------------
+   SECTION 15 -- Collection Functions
+   ------------------------------------------------------------ *)
+
+(*
+   15.1  Background -- what prompted this discussion
+
+        pkg/lib/template.sqz originally defined tmpl_render using
+        >>reduce(...).  Two problems were identified:
+
+        1. reduce is undefined.  The function reduce (fold-left over
+           an iterator) is not implemented anywhere in the standard
+           library.  It belongs to the "higher-order operations on
+           sequences" family, alongside map, filter, first, etc.
+           All of these operate on the iterator abstraction, not on
+           any specific concrete collection type.
+
+        2. Illegal func_args_decl syntax.  The draft used:
+
+             -> acc: string, -> seg: string
+
+           with a repeated "->" on a single line, which is a parser
+           error.  The correct form is two separate declarations:
+
+             -> acc: string
+             -> seg: string
+
+   15.2  File layout decision -- OPTION B chosen
+
+        A single new file pkg/lib/collections.sqz holds all
+        higher-order algorithm functions.  This cleanly separates:
+
+          iterators.sqz    -- iterator PROTOCOL only
+                             (next, close, set_channel_cap)
+
+          collections.sqz  -- higher-order ALGORITHMS
+                             (map, filter, reduce, zip, join, ...)
+
+        The split into "transformations" vs. "aggregates" is done
+        within collections.sqz using comment sections, and can be
+        refactored into separate files later if the language grows
+        to production size.
+
+        Rejected alternatives:
+          Option A -- extend iterators.sqz: mixes protocol and
+                      algorithm in one file.
+          Option C -- three files (iterators, collections,
+                      aggregates): premature; adds navigation
+                      overhead for the current language size.
+
+   15.3  Function style -- free plain functions
+
+        All collection functions are free plain functions, not methods
+        on @iterators.  Rationale: aggregates consume and collapse an
+        iterator to a scalar; the method/pipeline metaphor breaks down
+        at that termination step.  Free functions are honest about
+        this boundary.
+
+        Example:
+          reduce(int_array, 0, <- { -> acc: @?  -> x: @?  acc + x })
+
+        NOT:
+          int_array >>reduce(0, ...)     (* not the primary form *)
+
+   15.4  Pipeline syntax -- PIPELINE directive (compiler-internal)
+
+        The >> chaining syntax is preserved for transforms because it
+        reads naturally in a sequence pipeline.  To support both
+        styles without ambiguity, a compiler-internal directive
+        annotates each eligible function:
+
+          PIPELINE<map>
+          PIPELINE<filter>
+          PIPELINE<take>
+          PIPELINE<drop>
+          PIPELINE<zip>
+          PIPELINE<join>
+          PIPELINE<reduce>
+
+        This directive lives only in the library source (collections.sqz)
+        and in compiler/linter internals -- it NEVER appears in user
+        code.  Users may write either form:
+
+          (* free function form *)
+          map(prices, <- { -> x: @?  x * 1.1 })
+
+          (* pipeline form -- desugars to the above *)
+          prices >>map(<- { -> x: @?  x * 1.1 })
+
+        The directive system is consistent with existing Squeeze
+        directives (EXTEND, UNQUOTE, TYPE_OF) which are also
+        compiler-internal.
+
+   15.5  "each" removed from the inventory
+
+        The existing Squeeze block-iteration syntax already covers
+        the "each" use case:
+
+          col >> { ... body ... }
+
+        Adding a library function each(col, f) would be a redundant
+        alias with no additional expressive power.  Removed.
+
+   15.6  Laziness -- transforms lazy, aggregates eager
+
+        TRANSFORMS produce a new lazy iterator.  They do NOT
+        materialise the collection into memory.  The lazy iterator
+        carries element @type metadata through the chain so that a
+        terminal aggregate always knows the element type.
+
+        Functions:  map, filter, take, drop, zip
+
+        AGGREGATES consume the iterator eagerly, producing a single
+        scalar or record value.
+
+        Functions:  reduce, join, first, last, count, sum, min, max
+
+        Exceptions where eager materialisation is required by nature:
+          last      -- must drain the whole iterator
+          count     -- must drain the whole iterator (no predicate form)
+          sort      -- must buffer completely before sorting (future)
+          reverse   -- must buffer completely (future)
+          zip       -- one side may need buffering when both inputs share
+                       the same underlying iterator (see 15.9)
+
+   15.7  Type system -- @? is polymorphic, not untyped
+
+        In Squeeze, @? means the function accepts different types
+        polymorphically.  Every value, including a value bound to an
+        @? parameter, retains its @type at runtime.  No value is ever
+        without a @type.
+
+        Consequences for collection functions:
+
+        a) Output type for map:
+           The output element @type comes from the return object of the
+           supplied func_unit.  The linter statically inspects the
+           func_unit body when it is an inline literal and infers the
+           return @type.  When f is passed as a named variable of type
+           @?, the linter falls back to best-effort and warns; runtime
+           @type is used.
+
+        b) Output type for filter:
+           Output @type is always identical to input @type (filter
+           preserves element type by definition).
+
+        c) Output type for reduce:
+           The initial accumulator value init exactly determines the
+           output @type:  reduce(col, init, f)  =>  output @type ==
+           init.@type.  This is the canonical way to declare the
+           output type -- no separate type annotation is needed.
+
+        d) Empty collections:
+           Squeeze arrays are typed even when empty:  integer[] []
+           carries @type = integer[].  So filter and map on an empty
+           collection correctly infer output @type from the input
+           array's @type (filter) or from linter body analysis (map).
+           No special case is needed.
+
+        e) Uniform collections required:
+           Collection functions require uniform typed input (all
+           elements share the same @type).  Heterogeneous collections
+           are not supported.  This removes an entire class of
+           runtime type-mismatch errors and is consistent with
+           Squeeze's uniform array model.
+
+        f) User-supplied result type:
+           If the output type differs from the input type (e.g. map
+           from integer to string), no explicit result-type argument
+           is needed.  The return object from the func_unit carries
+           the correct @type, and the linter can verify statically
+           (or at call time from the first element) that the output
+           collection is uniformly typed.
+
+   15.8  reduce -- mandatory initial value
+
+        DECIDED: reduce(col, init, f) only.  The initial value is
+        mandatory.
+
+        Rationale: reduce(col, f) without init would fail at runtime
+        on an empty collection with no recoverable error.  The linter
+        can enforce the three-argument form statically.
+
+        Signature:
+          reduce(col, init, f)
+            col   -- source iterator or uniform collection
+            init  -- initial accumulator; its @type is the output type
+            f     -- <- { -> acc: @?  -> elem: @?  ... }
+                     returns new accumulator value
+
+        The single-argument form reduce(col, f) is ILLEGAL and is a
+        linter error.
+
+   15.9  zip -- lazy iterator of named records
+
+        zip produces a lazy iterator of named records.  It does NOT
+        produce a simple array because Squeeze arrays are uniform --
+        if the two input sequences have different element types, a
+        positional array would be heterogeneous and therefore illegal.
+        A named record [_1: a_i, _2: b_i] gives each field its own
+        @type and is the correct Squeeze type for a fixed-width
+        heterogeneous pair.
+
+        TWO CALL FORMS:
+
+        Ordinal form (default names _1, _2, ..._N):
+          zip(prices, quantities)
+          => lazy stream of [_1: price_i, _2: qty_i]
+
+        Named form (user-supplied field names, preferred for
+        readability -- downstream code uses pair.price, pair.qty):
+          zip(price: prices, qty: quantities)
+          => lazy stream of [price: price_i, qty: qty_i]
+
+        Both forms produce a lazy iterator of records.  The only
+        difference is field naming.  Field names from the named form
+        become the @type field names of the output record.
+
+        Termination: zip terminates when the SHORTEST input is
+        exhausted.
+
+        Same-iterator warning: if both inputs are the same underlying
+        iterator, advancing one also advances the other.  The linter
+        should warn; the implementation may eagerly buffer one side.
+
+        to_object (object construction from two arrays) is NOT a
+        collection function -- it is a one-time data-shaping step
+        expressible in direct object literal syntax and does not
+        belong in collections.sqz.
+
+   15.10  tmpl_render simplified with join
+
+        Once join is defined in collections.sqz, template.sqz is
+        simplified to:
+
+          tmpl_render : <- {
+              -> segments: @string_array
+              <- join(segments, "")
+          }
+
+        tmpl_concat is removed from the public API of template.sqz
+        because it is no longer needed.
+
+   15.11  Consolidated function inventory
+
+        TRANSFORMS (lazy -- return a new iterator):
+
+          map(col, f)
+            Apply f to every element.  Output @type from f's return.
+            col >>map(f) pipeline form also valid.
+
+          filter(col, pred)
+            Keep elements where pred returns true.  Output @type
+            identical to input @type.
+            col >>filter(pred) pipeline form also valid.
+
+          take(col, n)
+            First n elements.  Output @type identical to input @type.
+            col >>take(n) pipeline form also valid.
+
+          drop(col, n)
+            Skip first n elements.  Output @type identical to input.
+            col >>drop(n) pipeline form also valid.
+
+          zip(col_a, col_b, ...)   /   zip(name_a: col_a, name_b: col_b, ...)
+            Lazy stream of named records.  See 15.9.
+            col_a >>zip(col_b) pipeline form also valid (ordinal names).
+
+        AGGREGATES (eager -- consume iterator, return scalar or record):
+
+          reduce(col, init, f)
+            Left-fold.  Output @type == init.@type.  init mandatory.
+            col >>reduce(init, f) pipeline form also valid.
+
+          join(col, separator)
+            Fold string collection to single string with separator.
+            col >>join(separator) pipeline form also valid.
+
+          first(col)   /   first(col, pred)
+            First element, or first element matching pred.
+
+          last(col)
+            Last element.  Drains iterator.
+
+          count(col)   /   count(col, pred)
+            Count of elements, optionally matching pred.
+
+          sum(col)
+            Numeric fold (addition).  Input must be numeric @type.
+
+          min(col)   /   max(col)
+            Extrema.  Input must be an ordered @type.
+
+   15.12  Implementation plan
+
+        Step 1  -- Write spec grammar additions (this file, done).
+
+        Step 2  -- Implement PIPELINE directive in the parser
+                   (parser_v13.go or parser_v13_functions.go) so that
+                   col >>free_func(args) desugars to free_func(col, args).
+
+        Step 3  -- Write pkg/lib/collections.sqz with all functions
+                   from 15.11, annotated with PIPELINE<name>.
+
+        Step 4  -- Update pkg/lib/template.sqz: remove tmpl_concat,
+                   rewrite tmpl_render using join.
+
+        Step 5  -- Write spec_test/squeeze_v13_collections_test.go
+                   covering all functions in 15.11, including:
+                     - type inference (output @type)
+                     - empty collection behaviour
+                     - zip ordinal and named forms
+                     - reduce with mandatory init
+                     - pipeline vs. free-function equivalence
+
+        Step 6  -- Linter rules:
+                     - reduce without init is a compile error
+                     - map/filter on heterogeneous input is a compile error
+                     - zip of same-iterator source is a warning
+
+*)

@@ -108,9 +108,9 @@ string_quoted    = single_quoted | double_quoted;
 (* V13 added new rule *)
 string_unquoted  = UNQUOTE<string_quoted>;
 
-tmpl_stmt        = constant;
-tmpl_expr        = "$(" tmpl_stmt ")";
-tmpl_text        = /(?:(?!\$\(|`)[\s\S])*)/
+tmpl_stmt        = func_call_chain | calc_unit | ident_ref | constant ;
+tmpl_expr        = "§(" tmpl_stmt ")";
+tmpl_text        = /(?:(?!§\(|`)[\s\S])*)/  
 tmpl_quoted      = "`" ( tmpl_text | tmpl_expr )  { ( tmpl_text | tmpl_expr ) } "`";
 (* V13 added new rule *)
 tmpl_unquoted    = UNQUOTE<tmpl_quoted>;

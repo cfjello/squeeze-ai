@@ -52,4 +52,13 @@ string, string_quoted: {
                 <-  CAST string<SUB_RANGE sub_range<char_array>>
             )
         )
+
+        (* substr_range — convenience form that accepts a 1-based range literal,
+           e.g. s.substr_range(3..7).
+           Unpacks the range into its lo and hi endpoints and delegates entirely to
+           substr, which owns all bounds-checking and negative-index handling. *)
+        (s @string) substr_range: <- (
+            -> r: §func_fixed_num_range
+            <- s.substr(r.lo, r.hi)
+        )
     }

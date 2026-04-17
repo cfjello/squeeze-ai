@@ -171,6 +171,15 @@ func (p *V13Parser) parseScopeBodyItem() (*V13ScopeBodyItemNode, error) {
 		return &V13ScopeBodyItemNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: v}
 	}
 
+	// PIPELINE<name> directive (library source only).
+	if p.cur().Type == V13_PIPELINE {
+		pd, err := p.ParsePipelineDecl()
+		if err != nil {
+			return nil, err
+		}
+		return wrap(pd), nil
+	}
+
 	saved := p.savePos()
 	if sa, err := p.ParseScopeAssign(); err == nil {
 		return wrap(sa), nil
