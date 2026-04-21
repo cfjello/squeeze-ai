@@ -1274,8 +1274,8 @@ type V13URLNode struct {
 	Value string
 }
 
-// V13FilePathNode  file_path
-type V13FilePathNode struct {
+// V13FileURLNode  file_url
+type V13FileURLNode struct {
 	V13BaseNode
 	Value string
 }
@@ -1284,7 +1284,7 @@ type V13FilePathNode struct {
 
 // V13ConstantNode  constant = numeric_const | string | char | regexp | boolean | null |
 //
-//	date | time | date_time | time_stamp | uuid | http_url | file_path
+//	date | time | date_time | time_stamp | uuid | http_url | file_url
 type V13ConstantNode struct {
 	V13BaseNode
 	Value V13Node

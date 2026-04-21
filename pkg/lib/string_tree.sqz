@@ -1,0 +1,178 @@
+(* ============================================================
+   pkg/lib/string_tree.sqz  --  Squeeze V13 String Tree Type
+   ============================================================
+
+   Defines the @string_tree type and its methods.
+   A string_tree is structurally identical to @tree but the grammar
+   enforces that every node value is a string literal or a binding
+   of type string.  No explicit `type` field is needed.
+
+   All methods return new values; none mutate in place.
+
+   Node shape (internal):  [ value: string, children: [] ]
+   Tree shape (internal):  [ root: node | null ]
+
+   The path_to result is an @array of string node values from the
+   root down to (and including) the first node matching the target.
+
+   Intrinsics used (UPPERCASE builtins):
+     TREE_NODE_COUNT<t>           — total number of nodes
+     TREE_DEPTH<t>                — max depth from root to any leaf
+     TREE_ROOT_VALUE<t>           — value at the root node
+     TREE_CHILDREN_COUNT<t>       — number of direct root children
+     TREE_DFS<t>                  — @array of string values in DFS pre-order
+     TREE_BFS<t>                  — @array of string values in BFS level-order
+     TREE_WITH_CHILD<t, node>     — new string_tree: node appended as root child
+     TREE_TO_JSON<t>              — JSON representation
+     TREE_TO_STRING<t>            — indented text representation
+     TREE_CONTAINS<t, value>      — boolean: any node equals value
+     TREE_FIND_STR<t, value>      — first string value matching, or null
+     TREE_PATH_TO<t, value>       — @array path of strings from root to first match
+     TREE_TO_PATHS<t>             — @array of @array (each root-to-leaf path)
+   *)
+
+string_tree, string_tree_final: {
+    names, n, 1..m: ["string_tree", "string_tree_final"]
+    card,  c:       1..1
+    type,  t:       $
+    data,  d:       [ root: null ]
+    ver,   v:       "v0.0"
+
+    init: <- (
+        -> raw: §string_tree_final
+        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+             card:  LHS_CALLER<§assign_lhs.cardinality>,
+             type:  $,
+             data:  raw ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Structural inspection
+       --------------------------------------------------------------- *)
+
+    (* node_count — total number of nodes in the tree. *)
+    (t @string_tree) node_count: <- (
+        <- TREE_NODE_COUNT<t>
+    )
+
+    (* depth — maximum depth from root to any leaf.  Root alone = 1. *)
+    (t @string_tree) depth: <- (
+        <- TREE_DEPTH<t>
+    )
+
+    (* is_empty — true when the tree has no root node. *)
+    (t @string_tree) is_empty: <- (
+        <- t.data.root == null
+    )
+
+    (* root_value — the string value at the root node. *)
+    (t @string_tree) root_value: <- (
+        <- TREE_ROOT_VALUE<t>
+    )
+
+    (* children_count — number of direct children of the root node. *)
+    (t @string_tree) children_count: <- (
+        <- TREE_CHILDREN_COUNT<t>
+    )
+
+    (* is_leaf — true when the root has no children. *)
+    (t @string_tree) is_leaf: <- (
+        <- TREE_CHILDREN_COUNT<t> == 0
+    )
+
+
+    (* ---------------------------------------------------------------
+       Traversal
+       --------------------------------------------------------------- *)
+
+    (* to_depth_first — @array of string values in DFS pre-order. *)
+    (t @string_tree) to_depth_first: <- (
+        <- [ type: $, data: TREE_DFS<t> ]
+    )
+
+    (* to_breadth_first — @array of string values in BFS level-order. *)
+    (t @string_tree) to_breadth_first: <- (
+        <- [ type: $, data: TREE_BFS<t> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Search
+       --------------------------------------------------------------- *)
+
+    (* contains — true if any node in the tree holds exactly value. *)
+    (t @string_tree) contains: <- (
+        -> value: string
+        <- TREE_CONTAINS<t, value>
+    )
+
+    (* find — first node value (DFS) that equals value, or null if absent. *)
+    (t @string_tree) find: <- (
+        -> value: string
+        <- TREE_FIND_STR<t, value>
+    )
+
+    (* path_to — @array of string values along the path from the root
+       down to (and including) the first node matching value.
+       Returns an empty array when value is not present. *)
+    (t @string_tree) path_to: <- (
+        -> value: string
+        <- [ type: $, data: TREE_PATH_TO<t, value> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Path enumeration
+       --------------------------------------------------------------- *)
+
+    (* to_paths — @array of @array; each inner array is the sequence of
+       string values on one root-to-leaf path, ordered root-first. *)
+    (t @string_tree) to_paths: <- (
+        <- [ type: $, data: TREE_TO_PATHS<t> ]
+    )
+
+    (* to_paths_joined — @array of string; each element is one
+       root-to-leaf path with node values joined by sep.
+       Useful for rendering file-system–like path strings. *)
+    (t @string_tree) to_paths_joined: <- (
+        -> sep: string
+        paths = t.to_paths
+        result = []
+        >> path: paths.data
+            joined = ""
+            first  = true
+            >> node: path
+                joined = first & node ^ (joined + sep + node)
+                first  = false
+            result = result + [ joined ]
+        <- [ type: $, data: result ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Functional mutation
+       --------------------------------------------------------------- *)
+
+    (* with_child — new string_tree with node appended as a root child. *)
+    (t @string_tree) with_child: <- (
+        -> node: @?
+        <- [ type: $, data: TREE_WITH_CHILD<t, node> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Conversion
+       --------------------------------------------------------------- *)
+
+    (* to_json — JSON object representation of the full tree. *)
+    (t @string_tree) to_json: <- (
+        <- TREE_TO_JSON<t>
+    )
+
+    (* to_string — indented text representation; children are indented
+       two spaces per level below their parent. *)
+    (t @string_tree) to_string: <- (
+        <- TREE_TO_STRING<t>
+    )
+}

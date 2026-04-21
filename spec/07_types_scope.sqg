@@ -22,7 +22,10 @@ extend_scope_oper = "+=" ;
 
 scope_inject      = "(" assign_lhs assign_immutable ident_ref  { ","  assign_lhs assign_immutable ident_ref  } ")";
 
-import_assign     = assign_lhs assign_immutable ( http_url | file_path );
+(* Use at your own peril *)
+import_assign_inline =  "_" ;
+
+import_assign     = ( assign_lhs | import_assign_inline )  assign_immutable ( http_url | file_url ) { "," ( http_url | file_url ) } ;
 
 scope_assign      = [ scope_inject ] assign_lhs ( equal_assign | extend_scope_oper ) 
                     scope_begin  

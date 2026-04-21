@@ -1,0 +1,240 @@
+(* ============================================================
+   pkg/lib/bitfield.sqz  --  Squeeze V13 Bitfield Type
+   ============================================================
+
+   Defines the @bitfield type and its methods.
+   A bitfield is a fixed-width set of named binary flags packed
+   into one unsigned integer.  The base type (uint8..uint64)
+   determines the maximum flag capacity.
+
+   Grammar declares a bitfield schema via:
+       Perms : BITFIELD uint8 [ read: 0, write: 1, exec: 2 ]
+
+   The grammar comment shows runtime OR like `Perms.read | Perms.write`
+   but Squeeze has no bitwise operators.  All bit operations are
+   method calls backed by intrinsics.
+
+   Each flag declaration binds a name to a zero-based bit position.
+   A uint8 position value covers all valid positions for all base types
+   (max position for uint64 is 63, which fits uint8 0..255 comfortably).
+   No cast from position to base type is needed in .sqz code — the
+   intrinsic always operates using the base type's full width.
+
+   All methods return new values; none mutate in place.
+
+   Internal representation:
+     [ base: "uint8"|"uint16"|"uint32"|"uint64",
+       flags: @array of { name: string, position: uint8 },
+       value: uint64 ]   (* value always stored as uint64 internally;
+                            the base type constrains which bits are valid *)
+
+   Intrinsics used (UPPERCASE builtins):
+     BF_MAX_BITS<b>              — 8|16|32|64 from base string b
+     BF_IS_SET<bf, name>         — boolean: named flag bit is 1
+     BF_IS_ALL<bf>               — boolean: every declared flag is set
+     BF_SET<bf, name>            — new value with named bit forced to 1
+     BF_CLEAR<bf, name>          — new value with named bit forced to 0
+     BF_TOGGLE<bf, name>         — new value with named bit flipped
+     BF_UNION<bf1, bf2>          — new value: bits set in either (OR)
+     BF_INTERSECT<bf1, bf2>      — new value: bits set in both (AND)
+     BF_DIFFERENCE<bf1, bf2>     — new value: bits in bf1 but not bf2 (AND NOT)
+     BF_COMPLEMENT<bf>           — new value: declared bits inverted (NOT, bounded)
+     BF_ACTIVE_FLAGS<bf>         — @array of names of all set flags
+     BF_OF<bf, names>            — new value with exactly named flags set
+     BF_MASK_OF<bf, name>        — new value with only the named flag bit set
+     BF_HAS_FLAG<bf, name>       — boolean: name is a declared flag
+     BF_TO_UINT<bf>              — packed raw value as uint64
+     BF_TO_JSON<bf>              — JSON { base, value, active: [...] }
+     BF_TO_STRING<bf>            — "read | write" active flag names
+   *)
+
+bitfield, bitfield_final: {
+    names, n, 1..m: ["bitfield", "bitfield_final"]
+    card,  c:       1..1
+    type,  t:       $
+    data,  d:       [ base: "uint8", flags: [], value: 0 ]
+    ver,   v:       "v0.0"
+
+    init: <- (
+        -> raw: §bitfield_final
+        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+             card:  LHS_CALLER<§assign_lhs.cardinality>,
+             type:  $,
+             data:  raw ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Schema inspection
+       --------------------------------------------------------------- *)
+
+    (* flag_names — @array of all declared flag name strings. *)
+    (b @bitfield) flag_names: <- (
+        result = []
+        >> f: b.data.flags
+            >> elem: @?
+            result = result + [ f.name ]
+        <- [ type: $, data: result ]
+    )
+
+    (* flag_count — number of declared flags. *)
+    (b @bitfield) flag_count: <- (
+        <- LENGTH<b.data.flags>
+    )
+
+    (* base_type — "uint8", "uint16", "uint32", or "uint64". *)
+    (b @bitfield) base_type: <- (
+        <- b.data.base
+    )
+
+    (* max_bits — maximum number of flag bits available: 8, 16, 32, or 64. *)
+    (b @bitfield) max_bits: <- (
+        <- BF_MAX_BITS<b.data.base>
+    )
+
+    (* has_flag — true if name is a declared flag in this bitfield schema. *)
+    (b @bitfield) has_flag: <- (
+        -> name: string
+        <- BF_HAS_FLAG<b, name>
+    )
+
+
+    (* ---------------------------------------------------------------
+       Value inspection
+       --------------------------------------------------------------- *)
+
+    (* is_set — true if the named flag bit is currently 1. *)
+    (b @bitfield) is_set: <- (
+        -> name: string
+        <- BF_IS_SET<b, name>
+    )
+
+    (* is_clear — true if the named flag bit is currently 0. *)
+    (b @bitfield) is_clear: <- (
+        -> name: string
+        <- ( BF_IS_SET<b, name> ) & false ^ true
+    )
+
+    (* active_flags — @array of names of all flags that are currently set. *)
+    (b @bitfield) active_flags: <- (
+        <- [ type: $, data: BF_ACTIVE_FLAGS<b> ]
+    )
+
+    (* is_none — true if no flag bits are set (packed value == 0). *)
+    (b @bitfield) is_none: <- (
+        <- b.data.value == 0
+    )
+
+    (* is_all — true if every declared flag bit is set. *)
+    (b @bitfield) is_all: <- (
+        <- BF_IS_ALL<b>
+    )
+
+
+    (* ---------------------------------------------------------------
+       Single-flag mutation
+       --------------------------------------------------------------- *)
+
+    (* set — new bitfield with the named flag bit forced to 1. *)
+    (b @bitfield) set: <- (
+        -> name: string
+        <- [ type: $, data: BF_SET<b, name> ]
+    )
+
+    (* clear — new bitfield with the named flag bit forced to 0. *)
+    (b @bitfield) clear: <- (
+        -> name: string
+        <- [ type: $, data: BF_CLEAR<b, name> ]
+    )
+
+    (* toggle — new bitfield with the named flag bit flipped. *)
+    (b @bitfield) toggle: <- (
+        -> name: string
+        <- [ type: $, data: BF_TOGGLE<b, name> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Multi-flag / bitwise operations
+       These replace the | & ~ operators that are absent in Squeeze.
+       Both operands must share the same schema (base type and flag declarations).
+       --------------------------------------------------------------- *)
+
+    (* union — new bitfield with bits set in either self or other (OR).
+       Equivalent to the grammar comment `Perms.read | Perms.write`. *)
+    (b @bitfield) union: <- (
+        -> other: @bitfield
+        <- [ type: $, data: BF_UNION<b, other> ]
+    )
+
+    (* intersect — new bitfield with bits set in both self and other (AND). *)
+    (b @bitfield) intersect: <- (
+        -> other: @bitfield
+        <- [ type: $, data: BF_INTERSECT<b, other> ]
+    )
+
+    (* difference — new bitfield with bits set in self but not in other (AND NOT). *)
+    (b @bitfield) difference: <- (
+        -> other: @bitfield
+        <- [ type: $, data: BF_DIFFERENCE<b, other> ]
+    )
+
+    (* complement — new bitfield with every declared flag bit inverted (NOT).
+       Only bits that correspond to a declared flag are affected; all other
+       bits remain 0 regardless of the base type width. *)
+    (b @bitfield) complement: <- (
+        <- [ type: $, data: BF_COMPLEMENT<b> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Convenience constructors
+       These return a new bitfield instance sharing the same schema
+       but with a freshly computed value.
+       --------------------------------------------------------------- *)
+
+    (* none — new instance with all bits cleared (value == 0). *)
+    (b @bitfield) none: <- (
+        <- [ type: $, data: [ base: b.data.base, flags: b.data.flags, value: 0 ] ]
+    )
+
+    (* all — new instance with every declared flag bit set. *)
+    (b @bitfield) all: <- (
+        <- [ type: $, data: BF_OF<b, BF_ACTIVE_FLAGS<BF_COMPLEMENT<b.none>>> ]
+    )
+
+    (* of — new instance with exactly the named flags set, all others cleared.
+       names is an @array of flag name strings. *)
+    (b @bitfield) of: <- (
+        -> names: @?
+        <- [ type: $, data: BF_OF<b, names> ]
+    )
+
+    (* mask_of — new instance with only the single named flag bit set.
+       Useful as a standalone mask value for manual intersect/union work. *)
+    (b @bitfield) mask_of: <- (
+        -> name: string
+        <- [ type: $, data: BF_MASK_OF<b, name> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Conversion
+       --------------------------------------------------------------- *)
+
+    (* to_uint — raw packed value as uint64 integer. *)
+    (b @bitfield) to_uint: <- (
+        <- BF_TO_UINT<b>
+    )
+
+    (* to_json — JSON object: { "base": "uint8", "value": 3, "active": ["read","write"] } *)
+    (b @bitfield) to_json: <- (
+        <- BF_TO_JSON<b>
+    )
+
+    (* to_string — active flag names joined by " | ", e.g. "read | write".
+       Returns "" when no flags are set. *)
+    (b @bitfield) to_string: <- (
+        <- BF_TO_STRING<b>
+    )
+}

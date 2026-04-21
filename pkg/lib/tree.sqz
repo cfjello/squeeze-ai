@@ -1,0 +1,160 @@
+(* ============================================================
+   pkg/lib/tree.sqz  --  Squeeze V13 General Tree Type
+   ============================================================
+
+   Defines the @tree type and its methods.
+   A tree is a directed acyclic structure with a single root node.
+   Each node holds any tree_value and zero or more child nodes.
+   Type homogeneity across nodes is a runtime contract, not enforced
+   here — use @? to allow any type explicitly.
+
+   All methods return new values; none mutate in place.
+   Stream iteration: tree nodes are iterable with >>; collection-
+   generic operations in collections.sqz apply without duplication here.
+
+   Node shape (internal):  [ value: @?, children: [] ]
+   Tree shape (internal):  [ type: @?, root: node | null ]
+
+   Intrinsics used (UPPERCASE builtins):
+     TREE_NODE_COUNT<t>           — total number of nodes
+     TREE_DEPTH<t>                — max depth from root to any leaf
+     TREE_ROOT_VALUE<t>           — value at the root node
+     TREE_CHILDREN_COUNT<t>       — number of direct root children
+     TREE_DFS<t>                  — @array of values in DFS pre-order
+     TREE_BFS<t>                  — @array of values in BFS level-order
+     TREE_FIND<t, pred>           — first DFS value matching pred, or null
+     TREE_FIND_ALL<t, pred>       — @array of all values matching pred
+     TREE_MAP<t, fn>              — new tree: every value transformed by fn
+     TREE_WITH_CHILD<t, node>     — new tree: node appended as root child
+     TREE_PRUNE<t, pred>          — new tree: subtrees removed where pred matches
+     TREE_TO_JSON<t>              — JSON representation
+     TREE_TO_STRING<t>            — indented text representation
+   *)
+
+tree, tree_final: {
+    names, n, 1..m: ["tree", "tree_final"]
+    card,  c:       1..1
+    type,  t:       $
+    data,  d:       [ type: @?, root: null ]
+    ver,   v:       "v0.0"
+
+    init: <- (
+        -> raw: §tree_final
+        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+             card:  LHS_CALLER<§assign_lhs.cardinality>,
+             type:  $,
+             data:  raw ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Structural inspection
+       --------------------------------------------------------------- *)
+
+    (* node_count — total number of nodes in the tree. *)
+    (t @tree) node_count: <- (
+        <- TREE_NODE_COUNT<t>
+    )
+
+    (* depth — maximum depth from root to any leaf.  Root alone = 1. *)
+    (t @tree) depth: <- (
+        <- TREE_DEPTH<t>
+    )
+
+    (* is_empty — true when the tree has no root node. *)
+    (t @tree) is_empty: <- (
+        <- t.data.root == null
+    )
+
+    (* root_value — the value held at the root node. *)
+    (t @tree) root_value: <- (
+        <- TREE_ROOT_VALUE<t>
+    )
+
+    (* children_count — number of direct children of the root node. *)
+    (t @tree) children_count: <- (
+        <- TREE_CHILDREN_COUNT<t>
+    )
+
+    (* is_leaf — true when the root has no children. *)
+    (t @tree) is_leaf: <- (
+        <- TREE_CHILDREN_COUNT<t> == 0
+    )
+
+
+    (* ---------------------------------------------------------------
+       Traversal
+       --------------------------------------------------------------- *)
+
+    (* to_depth_first — @array of node values in DFS pre-order.
+       Root is always first; leaves are last within each subtree. *)
+    (t @tree) to_depth_first: <- (
+        <- [ type: $, data: TREE_DFS<t> ]
+    )
+
+    (* to_breadth_first — @array of node values in BFS level-order.
+       Root is first; all children of a node precede their grandchildren. *)
+    (t @tree) to_breadth_first: <- (
+        <- [ type: $, data: TREE_BFS<t> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Search
+       --------------------------------------------------------------- *)
+
+    (* find — first value (DFS) for which predicate returns true, or null. *)
+    (t @tree) find: <- (
+        -> predicate: @?
+        <- TREE_FIND<t, predicate>
+    )
+
+    (* find_all — @array of all values for which predicate returns true, DFS order. *)
+    (t @tree) find_all: <- (
+        -> predicate: @?
+        <- [ type: $, data: TREE_FIND_ALL<t, predicate> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Functional mutation
+       --------------------------------------------------------------- *)
+
+    (* with_child — new tree with node appended as a direct child of the root.
+       Mirrors the grammar's + operator. *)
+    (t @tree) with_child: <- (
+        -> node: @?
+        <- [ type: $, data: TREE_WITH_CHILD<t, node> ]
+    )
+
+    (* map — new tree with every node value replaced by fn(value).
+       Tree structure (parent-child relationships) is preserved exactly. *)
+    (t @tree) map: <- (
+        -> fn: @?
+        <- [ type: $, data: TREE_MAP<t, fn> ]
+    )
+
+    (* prune — new tree with every subtree removed whose root value
+       satisfies predicate.  The matched node and all its descendants
+       are excluded from the result. *)
+    (t @tree) prune: <- (
+        -> predicate: @?
+        <- [ type: $, data: TREE_PRUNE<t, predicate> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Conversion
+       --------------------------------------------------------------- *)
+
+    (* to_json — JSON object representation of the full tree. *)
+    (t @tree) to_json: <- (
+        <- TREE_TO_JSON<t>
+    )
+
+    (* to_string — indented text representation; children are indented
+       two spaces per level below their parent. *)
+    (t @tree) to_string: <- (
+        <- TREE_TO_STRING<t>
+    )
+}

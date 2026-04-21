@@ -1,0 +1,49 @@
+std, standard_library = {
+    (* Inlines all standard library names directly into this scope.
+       All exported names are unique across the included files — no conflicts.
+
+       Exported names by file:
+         array.sqz        : array, array_final
+         bitfield.sqz     : bitfield, bitfield_final
+         collections.sqz  : map, filter, take, drop, zip, reduce, join,
+                            first, last, count, sum, min, max
+         decimal.sqz      : decimal, decimal_num
+         dependencies.sqz : dep_version/dv, dep_node/dn, dep_graph/dg,
+                            dep_chain/dc, dependencies/deps
+         enum.sqz         : enum, enum_final
+         error.sqz        : error_event, err_ev
+         graph.sqz        : graph, graph_final
+         integer.sqz      : integer, unsigned_int
+         iterators.sqz    : iterator_record, iterators
+         keyed_tree.sqz   : keyed_tree, keyed_tree_final
+         logger.sqz       : log_target/lt, log_entry/le, logger/log
+         object.sqz       : object, object_final
+         push.sqz         : push_record, push
+         sorted_tree.sqz  : sorted_tree, sorted_tree_final
+         string.sqz       : string, string_quoted
+         string_tree.sqz  : string_tree, string_tree_final
+         table.sqz        : table, table_final
+         template.sqz     : coerce_to_string, tmpl_render
+         tree.sqz         : tree, tree_final
+    *)
+    _: "file://./array.sqz",
+       "file://./bitfield.sqz",
+       "file://./collections.sqz",
+       "file://./decimal.sqz",
+       "file://./dependencies.sqz",
+       "file://./enum.sqz",
+       "file://./error.sqz",
+       "file://./graph.sqz",
+       "file://./integer.sqz",
+       "file://./iterators.sqz",
+       "file://./keyed_tree.sqz",
+       "file://./logger.sqz",
+       "file://./object.sqz",
+       "file://./push.sqz",
+       "file://./sorted_tree.sqz",
+       "file://./string.sqz",
+       "file://./string_tree.sqz",
+       "file://./table.sqz",
+       "file://./template.sqz",
+       "file://./tree.sqz"
+}

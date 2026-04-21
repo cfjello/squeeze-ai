@@ -1,0 +1,229 @@
+(* ============================================================
+   pkg/lib/sorted_tree.sqz  --  Squeeze V13 Sorted Tree Type
+   ============================================================
+
+   Defines the @sorted_tree type and its methods.
+   A sorted_tree is a keyed tree where the key type is restricted to
+   the sortable subset of §unique_key — types that have a total order.
+   Excluded: uuid_v4, nano_id, hash_key (no natural ordering).
+   Allowed:  integer_key, string_key, timestamp_key, sequence_key, etc.
+
+   The invariant maintained by every mutation method is that siblings
+   are ordered ascending by key.  This makes the structure suitable
+   for BSTs, B-trees, ordered indexes, and priority queues.
+
+   All methods return new values; none mutate in place.
+
+   Node shape (internal):
+       [ key: sortable_key, value: @?, children: [] ]
+       (children are kept sorted ascending by key at all times)
+
+   Tree shape (internal):
+       [ type: @?, root: node | null ]
+
+   Intrinsics used (UPPERCASE builtins):
+     TREE_NODE_COUNT<t>              — total number of nodes
+     TREE_DEPTH<t>                   — max depth from root to leaf
+     TREE_ROOT_VALUE<t>              — value at the root node
+     TREE_CHILDREN_COUNT<t>          — direct root child count
+     TREE_DFS<t>                     — @array of values in DFS pre-order
+     TREE_BFS<t>                     — @array of values in BFS level-order
+     TREE_GET_NODE<t, key>           — full node record for key, or null
+     TREE_GET_KEYS<t>                — @array of every key in the tree (DFS)
+     TREE_PARENT_KEY<t, key>         — key of parent node, or null if root
+     TREE_TO_JSON<t>                 — JSON representation
+     TREE_TO_STRING<t>               — indented text representation
+     STREE_SEARCH<t, key>            — value for key; performs ordered search
+     STREE_MIN_KEY<t>                — smallest key across the whole tree
+     STREE_MAX_KEY<t>                — largest key across the whole tree
+     STREE_RANGE<t, lo, hi>          — @array of values whose keys are lo..hi
+     STREE_SUCCESSOR<t, key>         — key of next-larger node, or null
+     STREE_PREDECESSOR<t, key>       — key of next-smaller node, or null
+     STREE_WITH_NODE<t, node>        — new tree: node inserted maintaining sort
+     STREE_WITHOUT_KEY<t, key>       — new tree: node removed maintaining sort
+   *)
+
+sorted_tree, sorted_tree_final: {
+    names, n, 1..m: ["sorted_tree", "sorted_tree_final"]
+    card,  c:       1..1
+    type,  t:       $
+    data,  d:       [ type: @?, root: null ]
+    ver,   v:       "v0.0"
+
+    init: <- (
+        -> raw: §sorted_tree_final
+        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+             card:  LHS_CALLER<§assign_lhs.cardinality>,
+             type:  $,
+             data:  raw ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Structural inspection
+       --------------------------------------------------------------- *)
+
+    (* node_count — total number of nodes in the tree. *)
+    (t @sorted_tree) node_count: <- (
+        <- TREE_NODE_COUNT<t>
+    )
+
+    (* depth — maximum depth from root to any leaf.  Root alone = 1. *)
+    (t @sorted_tree) depth: <- (
+        <- TREE_DEPTH<t>
+    )
+
+    (* is_empty — true when the tree has no root node. *)
+    (t @sorted_tree) is_empty: <- (
+        <- t.data.root == null
+    )
+
+    (* root_value — the value at the root node. *)
+    (t @sorted_tree) root_value: <- (
+        <- TREE_ROOT_VALUE<t>
+    )
+
+    (* children_count — number of direct children of the root node. *)
+    (t @sorted_tree) children_count: <- (
+        <- TREE_CHILDREN_COUNT<t>
+    )
+
+    (* is_leaf — true when the root has no children. *)
+    (t @sorted_tree) is_leaf: <- (
+        <- TREE_CHILDREN_COUNT<t> == 0
+    )
+
+
+    (* ---------------------------------------------------------------
+       Traversal
+       --------------------------------------------------------------- *)
+
+    (* to_depth_first — @array of node values in DFS pre-order. *)
+    (t @sorted_tree) to_depth_first: <- (
+        <- [ type: $, data: TREE_DFS<t> ]
+    )
+
+    (* to_breadth_first — @array of node values in BFS level-order. *)
+    (t @sorted_tree) to_breadth_first: <- (
+        <- [ type: $, data: TREE_BFS<t> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Key-addressed access (shared with @keyed_tree)
+       --------------------------------------------------------------- *)
+
+    (* contains_key — true if any node in the tree carries key. *)
+    (t @sorted_tree) contains_key: <- (
+        -> key: @?
+        <- TREE_GET_NODE<t, key> != null
+    )
+
+    (* get_node — full node record { key, value, children } for key,
+       or null when not found. *)
+    (t @sorted_tree) get_node: <- (
+        -> key: @?
+        <- TREE_GET_NODE<t, key>
+    )
+
+    (* get_value — value field of the node identified by key, or null. *)
+    (t @sorted_tree) get_value: <- (
+        -> key: @?
+        node = TREE_GET_NODE<t, key>
+        <- ( node == null ) & null ^ node.value
+    )
+
+    (* get_keys — @array of every key present in the tree (DFS order). *)
+    (t @sorted_tree) get_keys: <- (
+        <- [ type: $, data: TREE_GET_KEYS<t> ]
+    )
+
+    (* parent_key — sortable_key of the parent of the node identified by key.
+       Returns null when key is the root or is not found. *)
+    (t @sorted_tree) parent_key: <- (
+        -> key: @?
+        <- TREE_PARENT_KEY<t, key>
+    )
+
+
+    (* ---------------------------------------------------------------
+       Order-exploiting search
+       --------------------------------------------------------------- *)
+
+    (* search — value associated with key using an order-aware traversal
+       (e.g., binary search within each sibling list).
+       Returns null when key is absent. *)
+    (t @sorted_tree) search: <- (
+        -> key: @?
+        <- STREE_SEARCH<t, key>
+    )
+
+    (* min_key — smallest key across all nodes in the tree. *)
+    (t @sorted_tree) min_key: <- (
+        <- STREE_MIN_KEY<t>
+    )
+
+    (* max_key — largest key across all nodes in the tree. *)
+    (t @sorted_tree) max_key: <- (
+        <- STREE_MAX_KEY<t>
+    )
+
+    (* range_values — @array of values whose keys satisfy lo <= key <= hi.
+       Result is ordered by key ascending. *)
+    (t @sorted_tree) range_values: <- (
+        -> lo: @?
+        -> hi: @?
+        <- [ type: $, data: STREE_RANGE<t, lo, hi> ]
+    )
+
+    (* successor — the immediately larger key after key in the tree,
+       or null when key is the maximum or is not present. *)
+    (t @sorted_tree) successor: <- (
+        -> key: @?
+        <- STREE_SUCCESSOR<t, key>
+    )
+
+    (* predecessor — the immediately smaller key before key in the tree,
+       or null when key is the minimum or is not present. *)
+    (t @sorted_tree) predecessor: <- (
+        -> key: @?
+        <- STREE_PREDECESSOR<t, key>
+    )
+
+
+    (* ---------------------------------------------------------------
+       Functional mutation  (sort invariant maintained by runtime)
+       --------------------------------------------------------------- *)
+
+    (* with_node — new sorted_tree with node inserted at the correct
+       sorted position among its siblings.
+       node must carry a key not yet present in the tree. *)
+    (t @sorted_tree) with_node: <- (
+        -> node: @?
+        <- [ type: $, data: STREE_WITH_NODE<t, node> ]
+    )
+
+    (* without_key — new sorted_tree with the node identified by key and
+       its entire subtree removed.  Sort order is preserved.
+       Returns the tree unchanged when key is absent. *)
+    (t @sorted_tree) without_key: <- (
+        -> key: @?
+        <- [ type: $, data: STREE_WITHOUT_KEY<t, key> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Conversion
+       --------------------------------------------------------------- *)
+
+    (* to_json — JSON object representation of the full tree. *)
+    (t @sorted_tree) to_json: <- (
+        <- TREE_TO_JSON<t>
+    )
+
+    (* to_string — indented text representation; children indented
+       two spaces per level below their parent. *)
+    (t @sorted_tree) to_string: <- (
+        <- TREE_TO_STRING<t>
+    )
+}

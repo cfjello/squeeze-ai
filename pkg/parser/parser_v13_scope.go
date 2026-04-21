@@ -7,6 +7,7 @@
 //
 //	extend_scope_oper
 //	scope_inject
+//	import_assign_inline
 //	import_assign
 //	scope_assign
 //	parser_root
@@ -30,11 +31,20 @@ type V13ScopeInjectNode struct {
 	Binds []V13ScopeInjectBind
 }
 
-// V13ImportAssignNode  import_assign = assign_lhs ":" ( http_url | file_path )
+// V13ImportAssignInlineNode  import_assign_inline = "_"
+// A wildcard import: all exported names from the target source units are
+// injected directly into the current scope with no binding name.
+// Use at your own peril — see spec/07_types_scope.sqg.
+type V13ImportAssignInlineNode struct {
+	V13BaseNode
+}
+
+// V13ImportAssignNode  import_assign = ( assign_lhs | import_assign_inline ) assign_immutable ( http_url | file_url ) { "," ( http_url | file_url ) }
+// LHS is either *V13AssignLHSNode (named import) or *V13ImportAssignInlineNode (wildcard import).
 type V13ImportAssignNode struct {
 	V13BaseNode
-	LHS    *V13AssignLHSNode
-	Target V13Node // *V13URLNode | *V13FilePathNode
+	LHS     V13Node   // *V13AssignLHSNode | *V13ImportAssignInlineNode
+	Targets []V13Node // each element: *V13URLNode | *V13FileURLNode
 }
 
 // V13ScopeBodyItemNode  one element inside a scope body
@@ -134,34 +144,62 @@ func (p *V13Parser) ParseScopeInject() (*V13ScopeInjectNode, error) {
 	return node, nil
 }
 
-// ParseImportAssign parses:  import_assign = assign_lhs ":" ( http_url | file_path )
+// ParseImportAssign parses:
+//
+//	import_assign = ( assign_lhs | import_assign_inline ) assign_immutable ( http_url | file_url ) { "," ( http_url | file_url ) }
 func (p *V13Parser) ParseImportAssign() (*V13ImportAssignNode, error) {
 	line, col := p.cur().Line, p.cur().Col
-	lhs, err := p.ParseAssignLHS()
-	if err != nil {
-		return nil, err
+
+	// Determine LHS: import_assign_inline ("_") or a normal assign_lhs.
+	var lhs V13Node
+	if p.cur().Type == V13_IDENT && p.cur().Value == "_" {
+		lhs = &V13ImportAssignInlineNode{V13BaseNode: V13BaseNode{Line: p.cur().Line, Col: p.cur().Col}}
+		p.advance()
+	} else {
+		al, err := p.ParseAssignLHS()
+		if err != nil {
+			return nil, err
+		}
+		lhs = al
 	}
+
 	if _, err := p.expect(V13_COLON); err != nil {
 		return nil, err
 	}
 
-	var target V13Node
-	saved := p.savePos()
-	if u, err := p.ParseHTTPURL(); err == nil {
-		target = u
-	} else {
-		p.restorePos(saved)
-		fp, err := p.ParseFilePath()
-		if err != nil {
-			return nil, fmt.Errorf("import_assign: expected http_url or file_path: %w", err)
+	parseTarget := func() (V13Node, error) {
+		saved := p.savePos()
+		if u, err := p.ParseHTTPURL(); err == nil {
+			return u, nil
 		}
-		target = fp
+		p.restorePos(saved)
+		fu, err := p.ParseFileURL()
+		if err != nil {
+			return nil, fmt.Errorf("import_assign: expected http_url or file_url: %w", err)
+		}
+		return fu, nil
 	}
-	return &V13ImportAssignNode{
+
+	first, err := parseTarget()
+	if err != nil {
+		return nil, err
+	}
+	node := &V13ImportAssignNode{
 		V13BaseNode: V13BaseNode{Line: line, Col: col},
 		LHS:         lhs,
-		Target:      target,
-	}, nil
+		Targets:     []V13Node{first},
+	}
+	for p.cur().Type == V13_COMMA {
+		saved := p.savePos()
+		p.advance()
+		t, err := parseTarget()
+		if err != nil {
+			p.restorePos(saved)
+			break
+		}
+		node.Targets = append(node.Targets, t)
+	}
+	return node, nil
 }
 
 // parseScopeBodyItem parses one body item:  import_assign | assignment | scope_assign

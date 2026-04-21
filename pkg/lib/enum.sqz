@@ -1,0 +1,174 @@
+(* ============================================================
+   pkg/lib/enum.sqz  --  Squeeze V13 Enum Type
+   ============================================================
+
+   Defines the @enum type and its methods.
+   An enum is a named domain of unique string or integer constants
+   (a type declaration, not a mutable data collection).
+   Internally members are stored as an ordered @array so that
+   ordinal position and navigation are well-defined.
+
+   Grammar declares members at parse time via:
+       Status : ENUM [ "active", "inactive", "pending" ]
+   and can extend via:
+       Status EXTEND [ "archived" ]
+
+   All methods return new values; none mutate in place.
+
+   Intrinsics used (UPPERCASE builtins):
+     ENUM_MEMBERS<e>              — @array of member values in declaration order
+     ENUM_CONTAINS<e, value>      — boolean: value is a valid member
+     ENUM_INDEX_OF<e, value>      — zero-based ordinal of value, or -1
+     ENUM_VALUE_AT<e, index>      — member at ordinal index, or null
+     ENUM_WITH_MEMBER<e, value>   — new enum data with value appended; error on dup
+     ENUM_WITHOUT_MEMBER<e, val>  — new enum data with value removed; unchanged if absent
+     ENUM_IS_STRING<e>            — boolean: all members are string literals
+     ENUM_IS_INTEGER<e>            — boolean: all members are integers
+     TO_JSON<val>                 — JSON-serialise a value
+   *)
+
+enum, enum_final: {
+    names, n, 1..m: ["enum", "enum_final"]
+    card,  c:       1..1
+    type,  t:       $
+    data,  d:       []
+    ver,   v:       "v0.0"
+
+    init: <- (
+        -> raw: §enum_final
+        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+             card:  LHS_CALLER<§assign_lhs.cardinality>,
+             type:  $,
+             data:  raw ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Inspection
+       --------------------------------------------------------------- *)
+
+    (* count — number of declared members. *)
+    (e @enum) count: <- (
+        <- LENGTH<ENUM_MEMBERS<e>>
+    )
+
+    (* members — @array of all member values in declaration order. *)
+    (e @enum) members: <- (
+        <- [ type: $, data: ENUM_MEMBERS<e> ]
+    )
+
+    (* is_empty — true if the enum has no members. *)
+    (e @enum) is_empty: <- (
+        <- LENGTH<ENUM_MEMBERS<e>> == 0
+    )
+
+    (* is_string_enum — true if all members are string literals. *)
+    (e @enum) is_string_enum: <- (
+        <- ENUM_IS_STRING<e>
+    )
+
+    (* is_integer_enum — true if all members are integers. *)
+    (e @enum) is_integer_enum: <- (
+        <- ENUM_IS_INTEGER<e>
+    )
+
+
+    (* ---------------------------------------------------------------
+       Membership and lookup
+       --------------------------------------------------------------- *)
+
+    (* contains — true if value is a declared member of this enum. *)
+    (e @enum) contains: <- (
+        -> value: @?
+        <- ENUM_CONTAINS<e, value>
+    )
+
+    (* index_of — zero-based ordinal position of value, or -1 if absent. *)
+    (e @enum) index_of: <- (
+        -> value: @?
+        <- ENUM_INDEX_OF<e, value>
+    )
+
+    (* value_at — member at zero-based ordinal index, or null if out of range. *)
+    (e @enum) value_at: <- (
+        -> index: @?
+        <- ENUM_VALUE_AT<e, index>
+    )
+
+
+    (* ---------------------------------------------------------------
+       Navigation  (useful for state machines)
+       --------------------------------------------------------------- *)
+
+    (* first — first declared member, or null if the enum is empty. *)
+    (e @enum) first: <- (
+        <- ENUM_VALUE_AT<e, 0>
+    )
+
+    (* last — last declared member, or null if the enum is empty. *)
+    (e @enum) last: <- (
+        len = LENGTH<ENUM_MEMBERS<e>>
+        <- ( len == 0 ) & null ^ ENUM_VALUE_AT<e, len - 1>
+    )
+
+    (* next — member immediately after value in declaration order,
+       or null when value is the last member or is not present. *)
+    (e @enum) next: <- (
+        -> value: @?
+        idx = ENUM_INDEX_OF<e, value>
+        <- ( idx < 0 ) & null ^ ENUM_VALUE_AT<e, idx + 1>
+    )
+
+    (* prev — member immediately before value in declaration order,
+       or null when value is the first member or is not present. *)
+    (e @enum) prev: <- (
+        -> value: @?
+        idx = ENUM_INDEX_OF<e, value>
+        <- ( idx <= 0 ) & null ^ ENUM_VALUE_AT<e, idx - 1>
+    )
+
+
+    (* ---------------------------------------------------------------
+       Functional mutation  (mirrors grammar ENUM / EXTEND)
+       --------------------------------------------------------------- *)
+
+    (* with_member — new enum with value appended in last position.
+       The runtime raises an error when value is already a member. *)
+    (e @enum) with_member: <- (
+        -> value: @?
+        <- [ type: $, data: ENUM_WITH_MEMBER<e, value> ]
+    )
+
+    (* without_member — new enum with value removed.
+       Returns the enum unchanged when value is not a member. *)
+    (e @enum) without_member: <- (
+        -> value: @?
+        <- [ type: $, data: ENUM_WITHOUT_MEMBER<e, value> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Conversion
+       --------------------------------------------------------------- *)
+
+    (* to_array — @array of member values in declaration order. *)
+    (e @enum) to_array: <- (
+        <- [ type: $, data: ENUM_MEMBERS<e> ]
+    )
+
+    (* to_json — JSON array of all member values. *)
+    (e @enum) to_json: <- (
+        <- TO_JSON<ENUM_MEMBERS<e>>
+    )
+
+    (* to_string — comma-separated member string, e.g. "active, inactive, pending". *)
+    (e @enum) to_string: <- (
+        members = ENUM_MEMBERS<e>
+        result  = ""
+        first   = true
+        >> m: members
+            result = first & CAST string<m> ^ (result + ", " + CAST string<m>)
+            first  = false
+        <- result
+    )
+}

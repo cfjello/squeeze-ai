@@ -36,6 +36,9 @@ import (
 // V13urlRe matches http/https URLs.
 var V13urlRe = regexp.MustCompile(`^https?://`)
 
+// V13fileURLRe matches file:// URLs (absolute or relative).
+var V13fileURLRe = regexp.MustCompile(`^file://(?:/[^\s\x00]+|\.\./[^\s\x00]+|\./[^\s\x00]+)$`)
+
 // =============================================================================
 // PHASE 2 — AST NODE TYPES  (06_functions.sqg)
 // =============================================================================
@@ -1890,19 +1893,22 @@ func (p *V13Parser) ParseHTTPURL() (*V13URLNode, error) {
 	return &V13URLNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: raw}, nil
 }
 
-// ParseFilePath parses a file_path (any quoted STRING).
-func (p *V13Parser) ParseFilePath() (*V13FilePathNode, error) {
+// ParseFileURL parses a file_url (quoted STRING token with file:// scheme).
+func (p *V13Parser) ParseFileURL() (*V13FileURLNode, error) {
 	tok := p.cur()
 	line, col := tok.Line, tok.Col
 	if tok.Type != V13_STRING {
-		return nil, p.errAt(fmt.Sprintf("expected quoted file_path, got %s %q", tok.Type, tok.Value))
+		return nil, p.errAt(fmt.Sprintf("expected quoted file_url, got %s %q", tok.Type, tok.Value))
 	}
 	raw := tok.Value
 	if len(raw) >= 2 {
 		raw = raw[1 : len(raw)-1]
 	}
 	p.advance()
-	return &V13FilePathNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: raw}, nil
+	if !V13fileURLRe.MatchString(raw) {
+		return nil, &V13ParseError{Line: line, Col: col, Message: fmt.Sprintf("invalid file_url (must start with file://): %q", raw)}
+	}
+	return &V13FileURLNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: raw}, nil
 }
 
 var _ = fmt.Sprintf

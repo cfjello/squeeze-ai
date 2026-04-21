@@ -227,10 +227,10 @@ hashable = string_quoted | integer | boolean
 sortable = integer | string_quoted | date | time | date_time | time_stamp
          | uuid_v7 | ulid | snowflake_id | seq_id;
 
-(* URL and file path *)
+(* URL and file URL *)
 http_url  = /^https?:\/\/(?:[\w-]+\.)+[\w-]+(?::\d+)?(?:\/[^\s]*)?(?:\?[^\s]*)?(?:#[^\s]*)?$/;
-file_path = /^(?:[A-Za-z]:)?\/(?:[^\s\/\0]+\/)*[^\s\/\0]*$/;
+file_url  = /^file:\/\/(?:\/[^\s\0]+|\.\.\/[^\s\0]+|\.\/[^\s\0]+)$/;
 
 string = single_quoted | double_quoted | tmpl_quoted;
 
-constant = numeric_const | string | char | regexp | boolean | null | date | time | date_time | time_stamp | uuid | http_url | file_path;
+constant = numeric_const | string | char | regexp | boolean | null | date | time | date_time | time_stamp | uuid | http_url | file_url;

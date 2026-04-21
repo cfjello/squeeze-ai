@@ -1,0 +1,999 @@
+(* ============================================================
+   21_checker.sqg  —  Squeeze Linter and Type-Checker Design
+   ============================================================
+   Canonical reference for the Squeeze static analysis tool:
+   architecture, pass ordering, check catalogue, diagnostic
+   severity levels, and the interface contract with the parser.
+
+   This file is intentionally non-executable — it documents
+   design and conventions only.
+   The checker consumes the AST produced by the V13 parser
+   (pkg/parser/parser_v13.go) and operates in multiple passes.
+   ============================================================ *)
+
+
+(* ------------------------------------------------------------
+   SECTION 21 — OVERVIEW AND GOALS
+   ------------------------------------------------------------ *)
+
+(*
+   21.1  Purpose
+         The Squeeze checker is a two-phase static analysis tool:
+
+         Phase A — Linter
+           Enforces style rules, structural completeness, and
+           hygiene conventions that do not require full type
+           information.  Runs first; fast.
+
+         Phase B — Type-checker
+           Performs type inference, type compatibility verification,
+           cardinality tracking, and Squeeze-specific semantic
+           contracts.  Requires a completed symbol table built in
+           Phase A.
+
+   21.2  Inputs
+         - The AST produced by the V13 parser for a single source
+           file or a full scope tree.
+         - The registered intrinsic table (list of valid UPPERCASE
+           builtin names and their Go-side signatures).
+         - The pkg/lib/*.sqz type library descriptors, parsed and
+           registered before user source is checked.
+
+   21.3  Outputs
+         A list of Diagnostic records, each containing:
+           code     — string code, e.g. "L001", "T014"
+           severity — "error" | "warning" | "info"
+           message  — human-readable description
+           file     — source file path
+           line     — 1-based line number
+           col      — 1-based column number
+           node     — reference to the offending AST node
+
+   21.4  Execution order
+         Phases are sequential; Phase B does not start if Phase A
+         produced any severity=="error" diagnostics.
+         Each phase is itself a series of named passes (see Sections
+         22 and 23).  Passes within a phase are ordered and
+         interdependent as documented.
+
+   21.5  Non-goals
+         - The checker does not emit Go code.  That is the
+           code-generator's responsibility.
+         - The checker does not evaluate runtime values; it reasons
+           only about types, cardinalities, structural shape, and
+           the static contracts declared in source.
+         - The checker does not modify the AST.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 22 — PHASE A: LINTER PASSES
+   ------------------------------------------------------------ *)
+
+(*
+   Passes are numbered A1..An.  Each pass names its input
+   (AST nodes it visits) and the diagnostics it may emit.
+   ------------------------------------------------------------ *)
+
+(*
+   A1 — Symbol Collection
+        Input:   all assign_lhs nodes in the entire scope tree
+        Action:  Build a flat symbol table mapping
+                   (scope_path, ident_name) → SymbolRecord
+                 where SymbolRecord holds:
+                   name, aliases, cardinality, assign_oper,
+                   source location, kind (variable | function |
+                   scope | type | import)
+                 import_assign nodes whose LHS is
+                 V13ImportAssignInlineNode ("_") do NOT produce
+                 a SymbolRecord.  Their exported names are
+                 injected into the scope by Pass A2 instead.
+        Emits:
+          L001 error   Duplicate symbol in the same scope
+          L002 warning Symbol has more than 4 comma-separated
+                       aliases (readability advisory)
+
+   A2 — Import and Dependency Resolution
+        Input:   import_assign nodes, func_deps declarations
+        Action:  Each import_assign node carries one LHS and one or
+                 more targets (Targets []V13Node — spec/07_types_scope.sqg).
+                 Resolve every target path in every import_assign to
+                 a source unit.  Each resolved target produces one
+                 dependency edge registered in the compile-time graph
+                 (see spec/11_dependencies.sqg Section 11.4).
+                 Detect dependency cycles using DFS on the graph.
+
+                 LHS kind determines binding behaviour:
+                   Named import  (LHS is V13AssignLHSNode):
+                     Register the import name(s) in the symbol table
+                     as kind=import.  The resolved source unit is
+                     accessible via that binding.
+                   Wildcard import  (LHS is V13ImportAssignInlineNode, "_"):
+                     All names exported by each resolved source unit
+                     are injected directly into the current scope as
+                     individual SymbolRecords (kind=import, injected=true).
+                     No enclosing binding name is registered.
+                     Each injected name that collides with an existing
+                     symbol in the same scope emits L001.
+        Emits:
+          L003 error   Unresolvable import path (reported per target)
+          L004 error   Dependency cycle detected; lists the cycle path
+          L005 warning Import declared but never referenced
+                       (suppressed for wildcard "_" imports)
+          L021 warning Wildcard import ("_") used; all exported names
+                       injected into scope — use at your own peril
+
+   A3 — Scope Structural Completeness
+        Input:   scope_assign nodes
+        Action:  Verify:
+                   - Every scope declared with => (dependency chain)
+                     contains a function named "main"
+                     (spec/06_functions.sqg — compile error if absent).
+                   - Scope inject bindings (scope_inject) reference
+                     symbols that exist in the enclosing scope.
+        Emits:
+          L006 error   Dependency chain scope missing "main"
+          L007 error   Scope inject references undefined symbol
+          L008 warning Empty scope (no declarations inside braces)
+
+   A4 — Dead Code After Unconditional Return
+        Input:   func_unit body statement sequences
+        Action:  After an unconditional <- return (one not inside
+                 a & ^ branch), flag any further statements in
+                 the same block as unreachable.
+        Emits:
+          L009 warning Unreachable statement after unconditional <-
+
+   A5 — Unused Symbol Detection
+        Input:   symbol table (from A1 and A2), all ident_ref nodes
+        Action:  For each symbol, verify at least one ident_ref
+                 outside the symbol's own declaration uses it.
+                 Exceptions: "main" in chain scopes, exported
+                 names (names appearing in a type's names field),
+                 and symbols injected by a wildcard import
+                 (injected=true — these symbols are always
+                 considered "used" because the caller opted in
+                 to namespace pollution via "_").
+        Emits:
+          L010 warning Declared symbol never referenced
+          L011 info    Function parameter declared but never used
+
+   A6 — Naming Convention Checks
+        Input:   all ident_name nodes
+        Action:  Verify:
+                   - No identifier begins with an uppercase letter
+                     unless it is an intrinsic (validated in A9).
+                   - Version strings (assign_version) match the
+                     pattern [v]digits.digits.
+                   - No identifier is a reserved word
+                     (next, self, main, null, true, false, ok).
+        Emits:
+          L012 warning Identifier starts with uppercase (reserved
+                       for intrinsics)
+          L013 error   Identifier uses a reserved word
+
+   A7 — Bitfield Position Bounds
+        Input:   bitfield_decl nodes
+        Action:  For each bitfield_flag (name: uint8_position),
+                 verify position is within 0..(max_bits - 1)
+                 where max_bits is derived from bitfield_base:
+                   uint8→7, uint16→15, uint32→31, uint64→63.
+                 Verify no two flags in the same bitfield share
+                 the same position (grammar UNIQUE covers names;
+                 this covers position collisions).
+        Emits:
+          L014 error   Flag position exceeds base type capacity
+          L015 error   Duplicate bit position in bitfield
+
+   A8 — Array Literal Index Advisory
+        Input:   array subscript expressions (ident_ref[index])
+        Action:  If the subscript is an integer literal 0, flag it.
+                 Arrays in Squeeze are 1-based (spec/20_bootstrap.sqg
+                 Section 20.1).
+        Emits:
+          L016 warning Array subscript 0 used; arrays are 1-based
+
+   A9 — Intrinsic Name Validation
+        Input:   all uppercase ident_name tokens appearing in
+                 non-comment positions
+        Action:  Cross-check each against the registered intrinsic
+                 table.  An unknown UPPERCASE name that is not a
+                 bitfield_base or grammar keyword is flagged.
+        Emits:
+          L017 error   Unknown intrinsic name; not in registered table
+          L018 warning Intrinsic used but marked as unimplemented
+                       in the registration table
+
+   A10 — LHS_CALLER Context Validation
+        Input:   LHS_CALLER<…> directive nodes
+        Action:  LHS_CALLER may only appear inside an init: function
+                 body at the top level of a type definition block.
+                 Flag any occurrence elsewhere.
+        Emits:
+          L019 error   LHS_CALLER used outside an init: body
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 23 — PHASE B: TYPE-CHECKER PASSES
+   ------------------------------------------------------------ *)
+
+(*
+   Passes are numbered T1..Tn.  Phase B requires the symbol table
+   and resolved imports produced by Phase A passes A1–A3.
+   ------------------------------------------------------------ *)
+
+(*
+   T1 — Type Annotation Collection
+        Input:   all inspect_type annotations, type_declare nodes,
+                 args_decl nodes, func_header_assign nodes
+        Action:  Attach a TypeRef (a resolved reference to a known
+                 type) to every symbol in the symbol table that has
+                 an explicit annotation.  For untyped symbols, set
+                 TypeRef = UNRESOLVED (to be inferred in T2).
+                 Register all user-declared type definition blocks
+                 from pkg/lib/*.sqz and user source.
+        Emits:
+          T001 error   Annotation references unknown type name
+
+   T2 — Type Inference
+        Input:   all assignment nodes whose symbol has TypeRef = UNRESOLVED
+        Action:  Propagate types bottom-up:
+                   - constant → infer narrowest literal type
+                     (e.g. 42 → uint8, "hello" → string,
+                      true → boolean)
+                   - calc_unit → infer from operand types and
+                     operator rules
+                   - ident_ref → resolve from symbol table
+                   - object_final → infer field types recursively
+                   - array_final → infer element type; flag
+                     heterogeneous arrays unless type is @?
+                   - func call → infer from callee's return type
+                 Emit UNRESOLVED when inference cannot determine a
+                 type (usually caught as T002).
+        Emits:
+          T002 error   Cannot infer type; annotation required
+          T003 warning Inferred type is @? (any); consider annotating
+
+   T3 — Mutability Enforcement
+        Input:   all assignment nodes, symbol table assign_oper
+        Action:  For every write to a symbol (assign_mutable "=",
+                 incr_assign_mutable "+=", etc.), verify the symbol
+                 was bound with assign_mutable or assign_immutable
+                 with an increment operator.
+                 Immutable bindings (":") must not be assigned after
+                 the initial declaration.
+                 Read-only references (":~") must not be written at all.
+        Emits:
+          T004 error   Write to immutable binding ":"
+          T005 error   Write to read-only reference ":~"
+
+   T4 — Cardinality Tracking
+        Input:   symbol table cardinalities, assignment nodes,
+                 function call argument positions
+        Action:  Verify:
+                   - A 1..1 symbol is never assigned null.
+                   - A 0..1 symbol used in a position requiring
+                     1..1 must be guarded (wrapped in a null check
+                     `!= null & …` before use).
+                   - A 1..m symbol used where 1..1 is required must
+                     go through an aggregation or indexing step first.
+                   - Function return cardinality matches the
+                     receiving symbol's declared cardinality.
+        Emits:
+          T006 error   Null assigned to 1..1 (non-optional) symbol
+          T007 warning Possibly-null 0..1 value used without null guard
+          T008 error   1..m collection used where scalar 1..1 expected
+
+   T5 — Function Argument Type and Count Checking
+        Input:   all function call sites (ident_ref "(" args… ")")
+        Action:  Resolve the callee in the symbol table.  Verify:
+                   - Argument count matches the declared -> param list.
+                   - Each argument's inferred type is assignable to
+                     the declared parameter type.
+                   - Stream arguments (>>) match func_stream_args types.
+        Emits:
+          T009 error   Wrong number of arguments
+          T010 error   Argument type incompatible with parameter type
+          T011 error   Stream argument type incompatible
+
+   T6 — Return Type Consistency
+        Input:   all func_unit bodies, their <- return expressions
+        Action:  Collect the inferred types of all <- expressions
+                 in a function body.  Verify they are all mutually
+                 assignable to a single common type.
+                 If the function has an explicit return type
+                 annotation, verify each <- expression matches it.
+        Emits:
+          T012 error   Inconsistent return types across <- branches
+          T013 error   Return type incompatible with declared annotation
+
+   T7 — Conditional Branch Type Consistency  (& ^)
+        Input:   all logic_expr nodes using logic_and / logic_exclusive_or
+                 in value position (i.e. the & ^ conditional idiom)
+        Action:  The trueExpr (after &) and the falseExpr (after ^)
+                 must produce types that are mutually assignable.
+                 If ^ is absent, the expression may produce null;
+                 this is only valid when the receiving symbol is 0..1.
+        Emits:
+          T014 error   Incompatible types in & ^ branches
+          T015 warning & expression without ^ branch; result may be
+                       null — receiving symbol must be 0..1
+
+   T8 — Operator Type Compatibility
+        Input:   all calc_unit nodes (numeric_expr, string_expr,
+                 compare_expr, logic_expr)
+        Action:  Verify:
+                   - numeric_oper (+, -, *, **, /, %) applied only
+                     to numeric types.
+                   - string_oper (+) applied only to string types.
+                   - compare_oper (==, !=, <, <=, >, >=) applied to
+                     compatible and orderable types.
+                   - > >= < <= only on orderable types (not boolean,
+                     not @?, not object, not array, not table).
+                   - not_oper (!) applied only to boolean types.
+                   - ~  regexp match applied only to string types.
+        Emits:
+          T016 error   Numeric operator applied to non-numeric type
+          T017 error   String operator applied to non-string type
+          T018 error   Comparison operator applied to incompatible types
+          T019 error   Order comparison on non-orderable type
+          T020 error   Logical NOT applied to non-boolean type
+          T021 error   Regexp match applied to non-string type
+
+   T9 — Range Constraint Validation  (><)
+        Input:   all range constraint expressions (value >< range)
+        Action:  Verify:
+                   - The left operand type is orderable.
+                   - The range bounds are type-compatible with the
+                     left operand (e.g. integer >< 0..100 is valid;
+                     string >< 0..100 is not).
+                   - The range expression is a valid func_fixed_num_range
+                     or equivalent range literal.
+        Emits:
+          T022 error   Range constraint on non-orderable type
+          T023 error   Range bounds type incompatible with constrained value
+
+   T10 — §grammar_type Reference Resolution
+         Input:   all §ident_ref nodes inside -> param declarations
+                  and init: bodies
+         Action:  Verify each §name refers to a known grammar
+                  production rule name (from the V13 grammar rule
+                  registry).  The registry is populated by the
+                  parser and passed to the checker as input.
+         Emits:
+           T024 error   §name does not resolve to a known grammar rule
+
+   T11 — Stream Iterator Type Flow  (>>)
+         Input:   all iterator_oper (>>) nodes
+         Action:  Verify:
+                    - The iterated collection has a known element type.
+                    - The loop variable type (if annotated) is
+                      compatible with the element type.
+                    - >> elem: @? is allowed but emits T025.
+                  Special: >> elem: @? inside a loop body that
+                  performs typed operations on elem is a latent
+                  type error caught at T5/T8.
+         Emits:
+           T025 info    Stream variable typed as @? (untyped iteration)
+           T026 error   Stream variable type incompatible with
+                        collection element type
+
+   T12 — Table Schema Consistency
+         Input:   table_init nodes, key_columns declarations
+         Action:  Verify:
+                    - All key_col types are unique_key-typed.
+                    - key_columns entries are a subset of declared
+                      columns (by name or positional type).
+                    - Each table_row has the same field count as the
+                      columns declaration.
+                    - Row value types are compatible with the
+                      corresponding column type in order.
+         Emits:
+           T027 error   Key column type is not a unique_key type
+           T028 error   Key column not present in table columns
+           T029 error   Row field count does not match column count
+           T030 warning Row value type incompatible with column type
+
+   T13 — Tree Type Homogeneity (partial static verification)
+         Input:   tree_init, keyed_tree_init, sorted_tree_init nodes
+                  whose type: annotation is not @?
+         Action:  Walk all tree_node / tree_node_keyed literals in
+                  the same tree_init block.  Verify that each
+                  tree_value's inferred type is assignable to the
+                  declared type annotation.  Cannot verify ident_ref
+                  nodes fully (runtime contract); emit T031 as info.
+         Emits:
+           T031 info    Tree type annotation @T; node values validated
+                        where literal (ident_ref nodes deferred to runtime)
+           T032 warning Tree node value type incompatible with
+                        declared tree type annotation
+
+   T14 — Sorted Tree Key Sortability
+         Input:   sorted_tree_init nodes
+         Action:  Verify that the key type used in tree_node_sorted
+                  nodes is in the sortable subset of unique_key:
+                  uuid_v4, nano_id, and hash_key are excluded.
+                  Allowed: integer_key, string_key, timestamp_key,
+                  sequence_key, ulid, uuid_v7, etc.
+         Emits:
+           T033 error   Sorted tree uses non-sortable key type
+
+   T15 — Method Existence on Typed Receivers
+         Input:   all method call expressions (ident_ref "." method_name)
+         Action:  Resolve the receiver type from the symbol table.
+                  Look up method_name in the type's method registry
+                  (loaded from pkg/lib/*.sqz descriptors).
+                  Flag calls to methods that do not exist on the
+                  resolved type.
+         Emits:
+           T034 error   Method does not exist on receiver type
+           T035 warning Receiver type is @?; method existence
+                        cannot be verified statically
+
+   T16 — Pipeline Stage Type Flow
+         Input:   PIPELINE scope declarations
+         Action:  Treat each stage as a function.  Verify that the
+                  output type of stage N is assignable to the input
+                  type of stage N+1.  The first stage's input and
+                  last stage's output are the pipeline's declared
+                  interface.
+         Emits:
+           T036 error   Pipeline stage output type incompatible with
+                        next stage input type
+
+   T17 — on_error Handler Coverage Advisory
+         Input:   all func_unit bodies that contain operations
+                  classified as "fatal" severity by the error model
+                  (spec/10_error_handler.sqg Section 11.3)
+         Action:  Verify that at least one on_error handler registered
+                  in the same scope handles severity "fatal".
+                  This is advisory — the runtime always logs and
+                  terminates on unhandled fatal events, but having
+                  no handler suppresses cleanup code.
+         Emits:
+           T037 warning Fatal-severity path exists with no registered
+                        fatal on_error handler in scope
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 24 — SYMBOL TABLE STRUCTURE
+   ------------------------------------------------------------ *)
+
+(*
+   24.1  SymbolRecord
+         Each entry in the symbol table holds:
+           name          string          — primary ident_name
+           aliases       []string        — comma-declared alt names
+           cardinality   string          — e.g. "1..1", "0..1", "1..m"
+           assign_oper   string          — ":" | "=" | ":~" | "+:" etc.
+           kind          SymbolKind      — Variable | Function | Scope |
+                                          TypeDef | Import | Parameter
+           type_ref      TypeRef         — resolved type or UNRESOLVED
+           scope_path    string          — dot-separated path from root
+           location      SourceLocation  — file, line, col
+           is_exported   bool            — appears in a type's names field
+
+   24.2  TypeRef
+         Either:
+           BuiltinType   — one of the primitive types (string, boolean,
+                          uint8..uint128, decimal8..decimal128, etc.)
+           LibType       — a type loaded from pkg/lib/*.sqz
+           UserType      — a user-defined type in the same scope tree
+           AnyType       — @? explicitly
+           UNRESOLVED    — not yet inferred (set by T1, cleared by T2)
+           NULL_TYPE     — the type of the literal null
+
+   24.3  Scope tree
+         The symbol table is organised as a tree mirroring the
+         scope nesting in source.  Each scope node holds:
+           - its own symbol map
+           - a reference to its parent scope
+           - a list of child scope nodes
+         Lookup walks up to the root until the name is found.
+
+   24.4  Cardinality representation
+         Stored as a struct { lo uint, hi uint } where:
+           "1..1"  → { 1, 1 }
+           "0..1"  → { 0, 1 }
+           "1..m"  → { 1, MaxUint }
+           "0..m"  → { 0, MaxUint }
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 25 — DIAGNOSTIC SEVERITY AND REPORTING
+   ------------------------------------------------------------ *)
+
+(*
+   25.1  Severity levels
+           "error"   — must be resolved before code generation proceeds.
+                       The code generator refuses to run with any errors.
+           "warning" — should be resolved; code generation can proceed
+                       but the warning is included in the build report.
+           "info"    — advisory; no impact on build.
+
+   25.2  Diagnostic code ranges
+           L001–L099   Linter (Phase A)
+           L020        Unknown type name in @TypeName (Pass A11, Section 29)
+           L021        Wildcard import "_" used (Pass A2)
+           T001–T037   Type-checker (Phase B, passes T1–T17)
+           T038        @? call-site narrowing (Pass T18, Section 27)
+           T039–T041   Structural subtyping (Pass T19, Section 28)
+           T042        Named argument label mismatch (T5 amendment, Section 29)
+
+   25.3  Report format
+         Default output is a line per diagnostic:
+           <file>:<line>:<col>  [<code>] <severity>: <message>
+
+         JSON output (--format=json flag) emits a JSON array of
+         diagnostic objects matching the structure in Section 21.3.
+
+   25.4  Exit codes
+         0  — no diagnostics at severity "error"
+         1  — one or more diagnostics at severity "error"
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 26 — CHECKER ARCHITECTURE (GO IMPLEMENTATION)
+   ------------------------------------------------------------ *)
+
+(*
+   26.1  Package layout
+           pkg/checker/
+             checker.go          — top-level Run(ast, opts) entry point
+             symbol_table.go     — SymbolRecord, TypeRef, scope tree
+             phase_a.go          — Phase A pass runner
+             phase_b.go          — Phase B pass runner
+             passes/
+               a1_symbols.go     — Pass A1
+               a2_imports.go     — Pass A2
+               a3_scopes.go      — Pass A3
+               a4_deadcode.go    — Pass A4
+               a5_unused.go      — Pass A5
+               a6_naming.go      — Pass A6
+               a7_bitfield.go    — Pass A7
+               a8_indexing.go    — Pass A8
+               a9_intrinsics.go  — Pass A9
+               a10_lhscaller.go  — Pass A10
+               t1_annotations.go — Pass T1
+               t2_inference.go   — Pass T2
+               t3_mutability.go  — Pass T3
+               t4_cardinality.go — Pass T4
+               t5_args.go        — Pass T5
+               t6_returns.go     — Pass T6
+               t7_branches.go    — Pass T7
+               t8_operators.go   — Pass T8
+               t9_ranges.go      — Pass T9
+               t10_grammar.go    — Pass T10
+               t11_streams.go    — Pass T11
+               t12_tables.go     — Pass T12
+               t13_trees.go      — Pass T13
+               t14_sorted.go     — Pass T14
+               t15_methods.go    — Pass T15
+               t16_pipeline.go   — Pass T16
+               t17_onerror.go    — Pass T17
+               t18_any_narrowing.go — Pass T18 (moved to Section 27)
+               t19_structural.go    — Pass T19 (moved to Section 28)
+             intrinsics/
+               registry.go       — registered intrinsic name → signature map
+             diagnostic.go       — Diagnostic struct and severity constants
+             reporter.go         — text and JSON output formatters
+
+   26.2  Pass interface
+         Every pass implements:
+           type Pass interface {
+               Name()   string
+               Run(ctx *CheckContext) []Diagnostic
+           }
+         CheckContext carries:
+           - the AST root
+           - the symbol table (read-write for Phase A passes A1–A3;
+             read-only for all subsequent passes)
+           - the intrinsic registry
+           - the lib type registry
+           - the grammar rule registry (for §-reference resolution)
+
+   26.3  Pass execution contract
+         - A pass must not modify the AST.
+         - A pass must not terminate early on first error; it must
+           collect all diagnostics it can detect before returning.
+         - A pass that depends on an earlier pass must declare that
+           dependency by name; the runner enforces ordering.
+
+   26.4  Incremental checking (future)
+         For IDE integration, passes should support a dirty-file
+         mode where only AST subtrees rooted at changed nodes are
+         re-checked.  The symbol table must support incremental
+         invalidation by scope path.  This is not required for the
+         initial implementation but the pass interface is designed
+         to accommodate it.
+
+   26.5  CLI entry point
+           cmd/check/main.go
+           Usage:
+             squeeze check [--format=text|json] [--warn-as-error] <file|dir>
+           Flags:
+             --format      output format; default "text"
+             --warn-as-error  treat warnings as errors for CI use
+             --skip-passes  comma-separated list of pass codes to skip
+
+   26.6  Additional pass files for Sections 27, 28, and 29
+               passes/
+                 t18_any_narrowing.go  — Pass T18
+                 t19_structural.go     — Pass T19
+                 a11_lib_names.go      — Pass A11
+           pkg/checker/
+             lib_registry.go      — LibTypeRecord, MethodRecord,
+                                    ParamRecord, FieldRecord structs
+             lib_loader.go        — lib mini-parser, populates
+                                    CheckContext.LibRegistry
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 27 — @? CALL-SITE TYPE NARROWING
+   ------------------------------------------------------------ *)
+
+(*
+   27.1  Motivation
+         Methods defined with @? parameters are not permanently
+         untyped.  @? is an explicit opt-out of annotation at the
+         definition site — it means "I accept any type here".
+         At the call site, the actual argument always has a concrete
+         type (inferred or annotated).  The checker must resolve the
+         @? parameter to that concrete type for the duration of the
+         call so that downstream type checks inside the method body
+         (T5, T8) can be verified.
+
+         This mechanism is called call-site type narrowing.  It is
+         not full generics — the narrowed binding is local to the
+         single call expression and does not alter the method
+         definition in the symbol table.
+
+   27.2  Receiver injection
+         When a method is called on a typed receiver:
+           myTree.find( -> predicate: count > 5 )
+         the checker:
+           1. Resolves receiver type → @tree.
+           2. Looks up method find on @tree.
+           3. Finds parameter predicate: @?.
+           4. Infers the actual argument's type from the call site
+              (here: a compare_expr → boolean).
+           5. Records a CallSiteBinding:
+                { param: "predicate", narrowed_type: boolean }
+              attached to this specific call expression in the AST.
+           6. Uses the narrowed type for all further checks on this
+              call (T5 argument checks, T8 operator checks).
+
+         The narrowed type does NOT propagate back into the method
+         definition.  Two calls to the same @? method may narrow
+         to different types; each is checked independently.
+
+   27.3  Intrinsic @? parameters
+         Intrinsics (UPPERCASE builtins) also declare their
+         parameter types.  An intrinsic parameter typed @? in the
+         registry is narrowed by the same call-site mechanism.
+         Example: TREE_FIND<t, pred> — pred is @? in the registry;
+         narrowed to the actual predicate type at each call site.
+
+   27.4  Limits of static narrowing
+         If the actual argument is itself @? (e.g. a variable with
+         no type annotation), narrowing cannot be completed at
+         compile time.  In this case:
+           - The call is permitted (it is valid Squeeze).
+           - Pass T18 emits T038 (info) to flag the unresolved site.
+         No error is raised because @? is a legal first-class type.
+
+   Pass T18 — @? Call-Site Type Narrowing
+        Input:   all method call and intrinsic call expressions
+                 where any parameter is declared as @? in the
+                 method or intrinsic registry
+        Action:  For each @? parameter, infer the actual argument
+                 type from the call site and record a CallSiteBinding
+                 on the call AST node.  If the actual argument is
+                 also @?, record the binding as UNRESOLVED and emit
+                 T038.  Pass all narrowed bindings to T5 for
+                 compatibility checking.
+        Emits:
+          T038 info   @? parameter could not be narrowed at this
+                      call site; actual argument is also @?
+        Ordering:
+          Must run after T2 (type inference) and before T5
+          (argument checking), so that T5 sees narrowed types
+          rather than raw @?.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 28 — STRUCTURAL SUBTYPING FOR OBJECT SUPERSETS
+   ------------------------------------------------------------ *)
+
+(*
+   28.1  Motivation
+         Squeeze objects are structural, not nominal.  An object
+         produced by object_merge_tail (+) or referenced via
+         TYPE_OF is a superset of its base.  Like TypeScript,
+         Go interfaces, and OCaml, Squeeze should accept an object
+         with more fields wherever a base object type is expected,
+         provided all required fields are present with compatible types.
+
+         Conversely, object_omit_tail (-) produces a subset.  Using
+         a subset where the base type is expected must be an error if
+         any required field was omitted.
+
+   28.2  Structural compatibility rule (assignability)
+         Object A is structurally compatible with (assignable to)
+         object type B if and only if:
+           - For every field  name: type  declared in B,
+             A has a field with the same name whose type is
+             assignable to B's field type.
+           - A may have additional fields not declared in B.
+             Extra fields are always accepted (open-world assumption).
+
+         This is standard structural subtyping
+         (also called "duck typing" in dynamic languages).
+
+   28.3  Superset produced by object_merge_tail
+         Given:
+           base     = [ x: 1, y: 2 ]
+           extended = base + [ z: 3 ]       (* fields: x, y, z *)
+
+           (p @base) move: <- ( ... )        (* requires x, y *)
+           extended.move()                   (* VALID: x and y present *)
+
+         The checker verifies that extended's field set is a superset
+         of @base's required fields.  The extra field z is ignored
+         for the purposes of the compatibility check.
+
+   28.4  Subset produced by object_omit_tail
+         Given:
+           reduced = base - y               (* fields: x only *)
+           reduced.move()                   (* ERROR: y is missing *)
+
+         The checker must detect that the required field y was
+         removed.  Pass T19 emits T040 for this case.
+
+   28.5  Interaction with @?
+         A field typed @? in the base type B accepts any type in
+         the corresponding field of A — including A having a more
+         specific type.  This is consistent with call-site
+         narrowing (Section 27).
+
+   28.6  Interaction with cardinality
+         Field presence (28.2) is checked structurally.  If a field
+         in B is declared 0..1 (optional), A is not required to
+         carry that field at all.  If B declares 1..1, A must carry
+         the field.
+
+   28.7  Type inference for merged objects
+         When T2 infers the type of an object_merge_or_omit
+         expression, the result type is recorded in the symbol table
+         as a MergedObjectType with:
+           base_type   — the TypeRef of the left-hand object
+           added_fields  — @array of { name, type } from merge tails
+           removed_fields — @array of field names from omit tails
+         This explicit representation allows T19 to accurately check
+         all downstream uses of the merged object without re-analysing
+         the merge expression at each call site.
+
+   Pass T19 — Object Structural Subtyping
+        Input:   all assignment nodes and function call argument
+                 positions where the expected type is an object type
+                 (LibType, UserType, or MergedObjectType) and the
+                 actual value's type is also an object type
+        Action:
+          For each such assignment or argument:
+            1. Collect the required field set of the expected type
+               (all 1..1 fields from its declaration).
+            2. Collect the actual field set of the provided object
+               (from its MergedObjectType record or direct
+               object_init declaration).
+            3. For each required field:
+               a. Verify the field is present in the actual object.
+               b. Verify the field's type is assignable to the
+                  required type (using the same assignability rules
+                  as T5, including @? narrowing from Section 27).
+            4. Extra fields in the actual object are accepted
+               silently (no diagnostic).
+            5. For object_omit_tail results: verify no removed
+               field was 1..1 in the base type.
+        Emits:
+          T039 error   Required field missing in object argument
+                       (field name and expected type reported)
+          T040 error   object_omit_tail removed a required (1..1)
+                       field from the base object type
+          T041 warning Field type in superset object is a narrower
+                       subtype than required; assignment is valid
+                       but worth reviewing (info for tooling)
+        Ordering:
+          Must run after T2 (type inference provides MergedObjectType
+          records) and after T18 (narrowed @? bindings available).
+          Runs concurrently with T5 (both check argument compatibility;
+          T19 handles structural object cases, T5 handles scalar/named
+          type cases).
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 29 — STANDARD LIBRARY REGISTRY
+   ------------------------------------------------------------ *)
+
+(*
+   29.1  Motivation
+         Sections 22 and 23 frequently reference the "lib type
+         registry" and "lib registry" without defining what those
+         registries contain or how they are populated.  This section
+         closes that gap by:
+           a. Defining the LibTypeRecord and related structs that
+              the registry holds.
+           b. Defining a new linter pass A11 that validates
+              @TypeName references against the registry.
+           c. Amending Pass T5 to verify named -> parameter labels
+              at call sites, not just argument count and types.
+           d. Specifying how the registry is built (lib loader).
+
+   29.2  LibTypeRecord structure
+         Each entry in the lib type registry holds:
+
+           LibTypeRecord {
+               primary_name    string         — e.g. "array", "tree",
+                                                "bitfield"
+               aliases         []string       — comma-declared alt names
+                                                from the names: field
+               cardinality     string         — always "1..1" for lib
+                                                types
+               internal_fields []FieldRecord  — fields declared inside
+                                                the data: [ … ] block
+               methods         []MethodRecord — all (self @Type) m:
+                                                entries in the .sqz file
+               version         string         — from the ver: field
+               source_file     string         — e.g. "pkg/lib/array.sqz"
+           }
+
+           FieldRecord {
+               name     string  — field name as declared in data: [ … ]
+               type_ref TypeRef — the field's declared type annotation;
+                                  UNRESOLVED if unannotated
+           }
+
+           MethodRecord {
+               name        string        — method identifier
+               receiver    string        — name of the receiver param
+                                           (always "self" by convention)
+               params      []ParamRecord — -> parameter list, in order
+               return_type TypeRef       — inferred from the <- expression
+                                           in the method body, or
+                                           UNRESOLVED if not present
+           }
+
+           ParamRecord {
+               label       string  — the -> parameter name; used for
+                                     named-argument label verification
+                                     in Pass T5 (see Section 29.4)
+               type_ref    TypeRef — declared type; @? becomes AnyType
+               cardinality string  — default "1..1"; overridden if
+                                     the declaration includes a
+                                     cardinality suffix
+           }
+
+   29.3  Registry loading order and lib loader
+         The checker loads the standard library before analysing
+         user source:
+
+           1. Glob pkg/lib/*.sqz (or a configured lib path).
+           2. For each file, invoke the lib mini-parser.
+              The mini-parser only needs to extract:
+                - names: / ver: header fields
+                - data: [ … ] field declarations
+                - (self @Type) method: signatures (param names,
+                  param types, return type)
+              It does NOT execute init: bodies at load time.
+           3. Construct one LibTypeRecord per type found.
+           4. Register every record into CheckContext.LibRegistry
+              keyed by primary_name and each alias.
+           5. Lib loading completes before Phase A begins so that
+              A11 and T1 both see a fully populated registry.
+
+         CheckContext extension:
+           LibRegistry  map[string]*LibTypeRecord
+             — keyed by every name and alias
+
+         The lib loader is implemented in pkg/checker/lib_loader.go.
+         Its structs are defined in pkg/checker/lib_registry.go.
+
+   29.4  Amendment to Pass T5 — Named parameter label checking
+         The existing T5 checks argument count and argument types
+         (Section 23, T5).  Squeeze method calls may supply arguments
+         by the -> parameter label rather than by position.  T5 is
+         amended to add a third check:
+
+           When a call site supplies a named argument
+             foo( -> label: value )
+           and the callee's MethodRecord declares a ParamRecord with
+           the same positional slot, verify that the supplied label
+           matches ParamRecord.label exactly.  A mismatch indicates
+           a typo or stale code referencing a renamed parameter.
+
+         Label checking rules:
+           - If the call site uses purely positional arguments
+             (no -> prefix), label checking is skipped for that call.
+           - If any argument uses the -> label syntax, ALL arguments
+             in that call are expected to use it (Squeeze does not
+             mix positional and named styles in one call).
+           - Labels are case-sensitive.
+           - @? parameters have labels in the registry and are
+             subject to label checking just like typed parameters.
+
+         New diagnostic emitted by T5:
+           T042 error   Argument label does not match declared
+                        -> parameter name
+                        (reports supplied label and expected label)
+
+   29.5  Pass A11 — Standard Library Type Name Resolution
+         Complements T1's type annotation collection pass.
+         Runs in Phase A (linter) so that any @TypeName reference
+         that is simply misspelled is caught early, before the
+         heavier Phase B passes begin.
+
+           A11 — Standard Library Type Name Resolution
+                Input:   all inspect_type annotations (@TypeName)
+                         appearing anywhere in user source
+                Action:  For each @TypeName, verify that TypeName
+                         resolves to one of:
+                           a. A BuiltinType (string, boolean, uint8,
+                              decimal64, etc.)
+                           b. A LibType present in CheckContext.LibRegistry
+                              under that name or alias.
+                           c. A user-defined TypeDef symbol already
+                              collected in the symbol table by A1.
+                         If none of the above match, emit L020.
+                Emits:
+                  L020 error   Unknown type name in @TypeName annotation
+                Ordering:
+                  Must run after A1 (symbol table populated with
+                  user-defined types) and after the lib loader has
+                  populated CheckContext.LibRegistry (which happens
+                  before Phase A; see Section 29.3).
+                  Must run before T1 so that T1 never encounters an
+                  @TypeName it cannot resolve.
+
+   29.6  Diagnostic code range updates
+         Appended to Section 25.2:
+           L020        Unknown type name (Pass A11)
+           T042        Named argument label mismatch (T5 amendment)
+
+   29.7  Package layout additions
+         Appended to Section 26.1:
+           pkg/checker/
+             lib_registry.go      — LibTypeRecord, MethodRecord,
+                                    ParamRecord, FieldRecord structs
+             lib_loader.go        — glob pkg/lib/*.sqz, invoke
+                                    mini-parser, populate
+                                    CheckContext.LibRegistry
+           passes/
+             a11_lib_names.go     — Pass A11
+
+   29.8  Completeness summary
+         With Sections 27 (call-site narrowing), 28 (structural
+         subtyping), and 29 (lib registry + A11 + T5 label check),
+         the checker is complete with respect to:
+           - All @? parameters being resolved at each call site
+             (T18).
+           - Object supersets being accepted wherever the base type
+             is required (T19).
+           - Every @TypeName in user source being verified against
+             the full type universe: builtins, lib types, and
+             user-defined types (A11 + T1).
+           - Named -> parameter labels being verified at call sites
+             (T5 amendment, T042).
+           - The standard library's structure and method signatures
+             being formally documented in the checker's own registry
+             (LibTypeRecord in lib_registry.go, loaded by
+             lib_loader.go).
+         The checker therefore provides full static coverage of the
+         type contracts expressed in Squeeze V13 source, including
+         those that span user code and the standard library.
+*)
