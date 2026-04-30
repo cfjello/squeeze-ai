@@ -37,19 +37,27 @@
      TREE_MERGE<t, other>            — new tree: other's root grafted as child
    *)
 
-keyed_tree, keyed_tree_final: {
+(col : @std.collections)  keyed_tree, keyed_tree_final: {
     names, n, 1..m: ["keyed_tree", "keyed_tree_final"]
-    card,  c:       1..1
-    type,  t:       $
-    data,  d:       [ type: @?, root: null ]
-    ver,   v:       "v0.0"
+    map:     col.map
+    filter:  col.filter
+    first:   col.first
+    last:    col.last
+    count:   col.count
+    collect: col.collect
+    - (
+        card,  c:       1..1
+        type,  t:       $
+        data,  d:       [ type: @?, root: null ]
+        ver,   v:       "v0.0"
 
-    init: <- (
-        -> raw: §keyed_tree_final
-        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
-             card:  LHS_CALLER<§assign_lhs.cardinality>,
-             type:  $,
-             data:  raw ]
+        init: <- (
+            -> raw: §keyed_tree_final
+            <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+                 card:  LHS_CALLER<§assign_lhs.cardinality>,
+                 type:  $,
+                 data:  raw ]
+        )
     )
 
 
@@ -58,32 +66,32 @@ keyed_tree, keyed_tree_final: {
        --------------------------------------------------------------- *)
 
     (* node_count — total number of nodes in the tree. *)
-    (t @keyed_tree) node_count: <- (
+    (t : @keyed_tree) node_count: <- (
         <- TREE_NODE_COUNT<t>
     )
 
     (* depth — maximum depth from root to any leaf.  Root alone = 1. *)
-    (t @keyed_tree) depth: <- (
+    (t : @keyed_tree) depth: <- (
         <- TREE_DEPTH<t>
     )
 
     (* is_empty — true when the tree has no root node. *)
-    (t @keyed_tree) is_empty: <- (
+    (t : @keyed_tree) is_empty: <- (
         <- t.data.root == null
     )
 
     (* root_value — the value at the root node. *)
-    (t @keyed_tree) root_value: <- (
+    (t : @keyed_tree) root_value: <- (
         <- TREE_ROOT_VALUE<t>
     )
 
     (* children_count — number of direct children of the root node. *)
-    (t @keyed_tree) children_count: <- (
+    (t : @keyed_tree) children_count: <- (
         <- TREE_CHILDREN_COUNT<t>
     )
 
     (* is_leaf — true when the root has no children. *)
-    (t @keyed_tree) is_leaf: <- (
+    (t : @keyed_tree) is_leaf: <- (
         <- TREE_CHILDREN_COUNT<t> == 0
     )
 
@@ -93,12 +101,12 @@ keyed_tree, keyed_tree_final: {
        --------------------------------------------------------------- *)
 
     (* to_depth_first — @array of node values in DFS pre-order. *)
-    (t @keyed_tree) to_depth_first: <- (
+    (t : @keyed_tree) to_depth_first: <- (
         <- [ type: $, data: TREE_DFS<t> ]
     )
 
     (* to_breadth_first — @array of node values in BFS level-order. *)
-    (t @keyed_tree) to_breadth_first: <- (
+    (t : @keyed_tree) to_breadth_first: <- (
         <- [ type: $, data: TREE_BFS<t> ]
     )
 
@@ -108,33 +116,33 @@ keyed_tree, keyed_tree_final: {
        --------------------------------------------------------------- *)
 
     (* contains_key — true if any node in the tree carries key. *)
-    (t @keyed_tree) contains_key: <- (
+    (t : @keyed_tree) contains_key: <- (
         -> key: @?
         <- TREE_GET_NODE<t, key> != null
     )
 
     (* get_node — full node record { key, value, children } for key,
        or null when not found. *)
-    (t @keyed_tree) get_node: <- (
+    (t : @keyed_tree) get_node: <- (
         -> key: @?
         <- TREE_GET_NODE<t, key>
     )
 
     (* get_value — value field of the node identified by key, or null. *)
-    (t @keyed_tree) get_value: <- (
+    (t : @keyed_tree) get_value: <- (
         -> key: @?
         node = TREE_GET_NODE<t, key>
         <- ( node == null ) & null ^ node.value
     )
 
     (* get_keys — @array of every key present in the tree (DFS order). *)
-    (t @keyed_tree) get_keys: <- (
+    (t : @keyed_tree) get_keys: <- (
         <- [ type: $, data: TREE_GET_KEYS<t> ]
     )
 
     (* parent_key — unique_key of the parent of the node identified by key.
        Returns null when key is the root or is not found. *)
-    (t @keyed_tree) parent_key: <- (
+    (t : @keyed_tree) parent_key: <- (
         -> key: @?
         <- TREE_PARENT_KEY<t, key>
     )
@@ -146,7 +154,7 @@ keyed_tree, keyed_tree_final: {
 
     (* with_child — new keyed_tree with node appended as a direct child
        of the root.  node must carry a key not yet present in the tree. *)
-    (t @keyed_tree) with_child: <- (
+    (t : @keyed_tree) with_child: <- (
         -> node: @?
         <- [ type: $, data: TREE_WITH_CHILD_OF<t, t.data.root.key, node> ]
     )
@@ -154,7 +162,7 @@ keyed_tree, keyed_tree_final: {
     (* with_child_of — new keyed_tree with node inserted as a direct child
        of the node identified by parent_key.
        node must carry a key not yet present in the tree. *)
-    (t @keyed_tree) with_child_of: <- (
+    (t : @keyed_tree) with_child_of: <- (
         -> parent_key: @?
         -> node: @?
         <- [ type: $, data: TREE_WITH_CHILD_OF<t, parent_key, node> ]
@@ -162,7 +170,7 @@ keyed_tree, keyed_tree_final: {
 
     (* without_key — new keyed_tree with the node identified by key and its
        entire subtree removed.  Returns the tree unchanged when key is absent. *)
-    (t @keyed_tree) without_key: <- (
+    (t : @keyed_tree) without_key: <- (
         -> key: @?
         <- [ type: $, data: TREE_WITHOUT_KEY<t, key> ]
     )
@@ -170,7 +178,7 @@ keyed_tree, keyed_tree_final: {
     (* merge — new keyed_tree with other's root grafted as a direct child
        of this tree's root.  All keys across both trees must remain unique;
        the runtime raises an error on conflict. *)
-    (t @keyed_tree) merge: <- (
+    (t : @keyed_tree) merge: <- (
         -> other: @keyed_tree
         <- [ type: $, data: TREE_MERGE<t, other> ]
     )
@@ -181,13 +189,13 @@ keyed_tree, keyed_tree_final: {
        --------------------------------------------------------------- *)
 
     (* to_json — JSON object representation of the full tree. *)
-    (t @keyed_tree) to_json: <- (
+    (t : @keyed_tree) to_json: <- (
         <- TREE_TO_JSON<t>
     )
 
     (* to_string — indented text representation; children indented
        two spaces per level below their parent. *)
-    (t @keyed_tree) to_string: <- (
+    (t : @keyed_tree) to_string: <- (
         <- TREE_TO_STRING<t>
     )
 }

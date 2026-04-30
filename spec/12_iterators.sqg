@@ -229,14 +229,17 @@
 
          iterator_yield_stmt = func_stmt iterator_oper ;
 
-         "result >>" (postfix form — ">>" at end of statement, followed by NL or EOF)
-         yields one value from the current loop body to the downstream consumer.
+         "result >>" (postfix form — ">>" at end of statement, followed by NL, EOF,
+         or a closing bracket "}" or ")") yields one value from the current loop body
+         to the downstream consumer.
          It does NOT exit the loop or the enclosing func_unit.
          After the yield, the loop continues with the next iteration.
 
-         Parsed as: <any valid func_stmt> followed immediately by ">>" then NL/EOF.
-         Disambiguation: if ">>" is followed by a non-NL token, the parser treats
+         Parsed as: <any valid func_stmt> followed immediately by ">>" then NL/EOF/bracket.
+         Disambiguation: if ">>" is followed by any other non-NL token, the parser treats
          the whole expression as a func_stream_loop (Role C binding) instead.
+         Note: closing brackets "}" and ")" are NOT consumed by ParseIteratorYieldStmt —
+         they remain for the enclosing block parser.
 
          A func_unit that contains "result >>" statements implicitly becomes an
          iterator source itself and may be chained with ">>" downstream.
@@ -470,7 +473,7 @@
 
    (* Completed work items:
       1.  iterator_source, iterator_yield_stmt, assign_iterator rules
-          added to parser_v13_functions.go.
+          added to parser_v15_functions.go.
           iterator_return_stmt ("<<") was superseded by postfix iterator_yield_stmt
           ("result >>") as described in Sections 12.1 and 12.5; V13_ITER_RETURN
           token was never published in a stable release and has been removed.

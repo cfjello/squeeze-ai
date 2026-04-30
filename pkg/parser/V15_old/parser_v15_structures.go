@@ -611,7 +611,7 @@ func (p *V13Parser) parseTableCol() (*V13TableColNode, error) {
 	line, col := p.cur().Line, p.cur().Col
 
 	// inspect_type starts with @, @?, TYPE_OF — try type-only first
-	if p.cur().Type == V13_AT_IDENT || p.cur().Type == V13_ANY_TYPE || p.cur().Type == V13_TYPE_OF {
+	if p.cur().Type == V13_AT || p.cur().Type == V13_ANY_TYPE || p.cur().Type == V13_TYPE_OF {
 		it, err := p.ParseInspectType()
 		if err != nil {
 			return nil, err

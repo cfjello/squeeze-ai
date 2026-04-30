@@ -18,19 +18,22 @@
      TO_JSON<val>                — JSON-serialise a single value
    *)
 
-array, array_final: {
-    names, n, 1..m: ["array", "array_final"]
-    card,  c:       1..1
-    type,  t:       $
-    data,  d:       []
-    ver,   v:       "v0.0"
+(col : @std.collections)  array, array_final : {
+    names,n , 1..2: ["array", "array_final"]
+    _: col
+    - (
+        card,  c:       1..1
+        type,  t:       $
+        data,  d:       @?     (* raw uniform array; assigned by init from §array_final *)
+        ver,   v:       "v0.0"
 
-    init: <- (
-        -> raw: §array_final
-        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
-             card:  LHS_CALLER<§assign_lhs.cardinality>,
-             type:  $,
-             data:  raw ]
+        init: <- (
+            -> raw: §array_final
+            <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+                 card:  LHS_CALLER<§assign_lhs.cardinality>,
+                 type:  $,
+                 data:  raw ]
+        )
     )
 
 
@@ -39,18 +42,18 @@ array, array_final: {
        --------------------------------------------------------------- *)
 
     (* length — number of elements *)
-    (arr @array) length: <- (
+    (arr : @array) length: <- (
         <- LENGTH<arr.data>
     )
 
     (* first — element at index 1; null when the array is empty *)
-    (arr @array) first: <- (
+    (arr : @array) first: <- (
         ( LENGTH<arr.data> > 0 ) & <- arr.data[1]
         <- null
     )
 
     (* last — element at the final index; null when the array is empty *)
-    (arr @array) last: <- (
+    (arr : @array) last: <- (
         n: LENGTH<arr.data>
         ( n > 0 ) & <- arr.data[n]
         <- null
@@ -64,7 +67,7 @@ array, array_final: {
     (* sub_array — new @array from start to end (1-based, inclusive).
        Negative indices count from the end: -1 is the last element.
        Returns nothing (no-op) when the range falls outside bounds. *)
-    (arr @array) sub_array: <- (
+    (arr : @array) sub_array: <- (
         -> start: integer
         -> end:   integer
         n:     LENGTH<arr.data>
@@ -76,13 +79,29 @@ array, array_final: {
             <- [ type: $, card: arr.card,
                  data:  SUB_RANGE sub_range<arr.data> ]
         )
-    )
+        
 
+    ) 
+    
+    (* Exception commented out for now: ^ (
+        (* exception handling *) 
+        -> @exceptions: @?        
+        exceptions >> (
+            -> ex : @?
+
+            (* Do Nothing for now *) 
+
+        )
+    )
+    *) 
+
+
+    
     (* sub_array_range — convenience form that accepts a 1-based range literal,
        e.g. arr.sub_array_range(2..5).
        Unpacks the range into its lo and hi endpoints and delegates entirely to
        sub_array, which owns all bounds-checking and negative-index handling. *)
-    (arr @array) sub_array_range: <- (
+    (arr : @array) sub_array_range: <- (
         -> r: §func_fixed_num_range
         <- arr.sub_array(r.lo, r.hi)
     )
@@ -94,11 +113,11 @@ array, array_final: {
 
     (* index_of — 1-based index of the first matching element, or 0
        when absent.  Linear scan: O(n). *)
-    (arr @array) index_of: <- (
+    (arr : @array) index_of: <- (
         -> value: @?
         i = 0
         arr.data >> (
-            >> elem: @?
+            -> elem: @?
             i +:1
             ( elem == value ) & <- i
         )
@@ -106,7 +125,7 @@ array, array_final: {
     )
 
     (* contains — true when value is present in the array. *)
-    (arr @array) contains: <- (
+    (arr : @array) contains: <- (
         -> value: @?
         <- arr.index_of(value) > 0
     )
@@ -117,7 +136,7 @@ array, array_final: {
        --------------------------------------------------------------- *)
 
     (* reverse — new @array with elements in reverse order. *)
-    (arr @array) reverse: <- (
+    (arr : @array) reverse: <- (
         <- [ type: $, card: arr.card, data: ARRAY_REVERSE<arr.data> ]
     )
 
@@ -129,12 +148,12 @@ array, array_final: {
     (* to_string — every element coerced to string and joined with sep.
        Distinct from collections.join, which requires the input to be a
        collection of strings.  Uses CAST string<elem> for coercion. *)
-    (arr @array) to_string: <- (
+    (arr : @array) to_string: <- (
         -> sep: string
         result = ""
         first  = true
         arr.data >> (
-            >> elem: @?
+            -> elem: @?
             sep_now = first & "" ^ sep
             ( first ) & first = false
             result = result + sep_now + CAST string<elem>
@@ -144,11 +163,11 @@ array, array_final: {
 
     (* to_json — JSON array string: "[v1, v2, ...]".
        Delegates element formatting to TO_JSON<> for correct quoting. *)
-    (arr @array) to_json: <- (
+    (arr : @array) to_json: <- (
         result = "["
         first  = true
         arr.data >> (
-            >> elem: @?
+            -> elem: @?
             sep_now = first & "" ^ ", "
             ( first ) & first = false
             result = result + sep_now + TO_JSON<elem>

@@ -72,18 +72,42 @@ type V13AssignLHSNode struct {
 	Annotations []V13AssignAnnotation
 }
 
-// V13AssignRHSNode  assign_rhs = constant | calc_unit
-type V13AssignRHSNode struct {
+// V13AssignRhsItemNode  assign_rhs_item = constant | calc_unit | cardinality
+// Extended via EXTEND<assign_rhs_item> in spec/04_objects.sqg, spec/06_functions.sqg,
+// spec/09_stuctures.sqg — adds array_final, object_final, inspect_type, self_ref,
+// table_final, tree variants, set_final, enum_final, graph_final, bitfield_final.
+type V13AssignRhsItemNode struct {
 	V13BaseNode
-	Value V13Node // *V13ConstantNode | *V13CalcUnitNode | structural form
+	Value V13Node // *V13ConstantNode | *V13CalcUnitNode | *V13CardinalityNode | structural form
 }
 
-// V13AssignmentNode  assignment = assign_lhs assign_oper assign_rhs
+// V13AssignRhsChainTerm is one element in an assign_rhs_chain.
+type V13AssignRhsChainTerm struct {
+	Oper string // "" for first item; "&", "|", "^" for subsequent
+	Item *V13AssignRhsItemNode
+}
+
+// V13AssignRhsChainNode  assign_rhs_chain = assign_rhs_item logic_oper assign_rhs_item { logic_oper assign_rhs_item }
+// Used when structural items (arrays, objects, etc.) are joined with logic operators,
+// e.g.  data = [1,2] & [3,4]  or  result = objectA | objectB.
+type V13AssignRhsChainNode struct {
+	V13BaseNode
+	Terms []V13AssignRhsChainTerm
+}
+
+// V13AssignRHSNode  assign_rhs = assign_rhs_item | assign_rhs_chain
+type V13AssignRHSNode struct {
+	V13BaseNode
+	Value V13Node // *V13AssignRhsItemNode | *V13AssignRhsChainNode
+}
+
+// V13AssignmentNode  assignment = [ private_modifier ] assign_lhs assign_oper assign_rhs
 type V13AssignmentNode struct {
 	V13BaseNode
-	LHS  *V13AssignLHSNode
-	Oper *V13AssignOperNode
-	RHS  *V13AssignRHSNode
+	Private bool
+	LHS     *V13AssignLHSNode
+	Oper    *V13AssignOperNode
+	RHS     *V13AssignRHSNode
 }
 
 // =============================================================================
@@ -270,13 +294,21 @@ func V13isExprContinuation(t V13TokenType) bool {
 	return false
 }
 
-// ParseAssignRHS parses:  assign_rhs = constant | calc_unit | structural forms
+// ParseAssignRhsItem parses:  assign_rhs_item = constant | calc_unit | cardinality
 //
-// Structural forms (via EXTEND<assign_rhs>) are tried before falling back to
-// calc_unit so that they bind eagerly.
-func (p *V13Parser) ParseAssignRHS() (*V13AssignRHSNode, error) {
+// Extended via EXTEND<assign_rhs_item> (spec/04_objects.sqg, spec/06_functions.sqg,
+// spec/09_stuctures.sqg, etc.):
+//
+//	| inspect_type     (@typename, @?, §ident)
+//	| self_ref         ($)
+//	| array_final, object_final, table variants, set, enum, graph, bitfield
+//	| return_func_unit ("<-" func_unit)
+func (p *V13Parser) ParseAssignRhsItem() (*V13AssignRhsItemNode, error) {
 	tok := p.cur()
 	line, col := tok.Line, tok.Col
+	wrap := func(v V13Node) *V13AssignRhsItemNode {
+		return &V13AssignRhsItemNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: v}
+	}
 
 	// Pure-literal tokens that unambiguously begin a constant.
 	switch tok.Type {
@@ -288,16 +320,38 @@ func (p *V13Parser) ParseAssignRHS() (*V13AssignRHSNode, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: c}, nil
+		return wrap(c), nil
 
 	case V13_INTEGER, V13_DECIMAL:
+		// Cardinality has priority over bare integer when followed by ".." (e.g. 1..1, 0..m)
+		if p.peek(1).Type == V13_DOTDOT {
+			saved := p.savePos()
+			if card, err := p.ParseCardinality(); err == nil {
+				return wrap(card), nil
+			}
+			p.restorePos(saved)
+		}
 		saved := p.savePos()
 		if c, err := p.ParseConstant(); err == nil {
 			if !V13isExprContinuation(p.cur().Type) {
-				return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: c}, nil
+				return wrap(c), nil
 			}
 		}
 		p.restorePos(saved)
+
+	case V13_ANY_TYPE, V13_SECTION, V13_AT:
+		// inspect_type as standalone assign_rhs_item: @typename, @?, §ident
+		// EXTEND<assign_rhs_item> = | inspect_type  (spec/06_functions.sqg)
+		it, err := p.ParseInspectType()
+		if err != nil {
+			return nil, err
+		}
+		return wrap(it), nil
+
+	case V13_DOLLAR:
+		// self_ref = "$"  — EXTEND<assign_rhs_item> = | self_ref  (spec/06_functions.sqg)
+		p.advance()
+		return wrap(&V13SelfRefNode{V13BaseNode: V13BaseNode{Line: line, Col: col}}), nil
 
 	case V13_PLUS, V13_MINUS:
 		next := p.peek(1)
@@ -305,14 +359,14 @@ func (p *V13Parser) ParseAssignRHS() (*V13AssignRHSNode, error) {
 			saved := p.savePos()
 			if c, err := p.ParseConstant(); err == nil {
 				if !V13isExprContinuation(p.cur().Type) {
-					return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: c}, nil
+					return wrap(c), nil
 				}
 			}
 			p.restorePos(saved)
 		}
 	}
 
-	// ---- EXTEND<assign_rhs> structural forms ----
+	// ---- EXTEND<assign_rhs_item> structural forms ----
 
 	// V13 structures: set {…}, enum ENUM[…], bitfield BITFIELD …[…]
 	// These are tried before array_final to avoid mis-parsing { as array element.
@@ -320,21 +374,21 @@ func (p *V13Parser) ParseAssignRHS() (*V13AssignRHSNode, error) {
 	case V13_LBRACE:
 		saved := p.savePos()
 		if sf, err := p.ParseSetFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: sf}, nil
+			return wrap(sf), nil
 		}
 		p.restorePos(saved)
 
 	case V13_ENUM:
 		saved := p.savePos()
 		if ef, err := p.ParseEnumFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: ef}, nil
+			return wrap(ef), nil
 		}
 		p.restorePos(saved)
 
 	case V13_BITFIELD:
 		saved := p.savePos()
 		if bf, err := p.ParseBitfieldFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: bf}, nil
+			return wrap(bf), nil
 		}
 		p.restorePos(saved)
 	}
@@ -345,81 +399,77 @@ func (p *V13Parser) ParseAssignRHS() (*V13AssignRHSNode, error) {
 		// Try table_final → tree variants → object_final → array_final (most-to-least specific).
 		saved := p.savePos()
 		if tf, err := p.ParseTableFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: tf}, nil
+			return wrap(tf), nil
 		}
 		p.restorePos(saved)
 
 		saved = p.savePos()
 		if kf, err := p.ParseKeyedTreeFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: kf}, nil
+			return wrap(kf), nil
 		}
 		p.restorePos(saved)
 
 		saved = p.savePos()
 		if sf, err := p.ParseSortedTreeFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: sf}, nil
+			return wrap(sf), nil
 		}
 		p.restorePos(saved)
 
 		saved = p.savePos()
 		if stf, err := p.ParseStringTreeFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: stf}, nil
+			return wrap(stf), nil
 		}
 		p.restorePos(saved)
 
 		saved = p.savePos()
 		if trf, err := p.ParseTreeFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: trf}, nil
+			return wrap(trf), nil
 		}
 		p.restorePos(saved)
 
 		saved = p.savePos()
 		if gf, err := p.ParseGraphFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: gf}, nil
+			return wrap(gf), nil
 		}
 		p.restorePos(saved)
 
 		saved = p.savePos()
 		if of, err := p.ParseObjectFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: of}, nil
+			return wrap(of), nil
 		}
 		p.restorePos(saved)
 
 		if af, err := p.ParseArrayFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: af}, nil
+			return wrap(af), nil
 		}
 
 	case V13_UNIFORM:
 		saved := p.savePos()
 		if tf, err := p.ParseTableFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: tf}, nil
+			return wrap(tf), nil
 		}
 		p.restorePos(saved)
 		saved = p.savePos()
 		if of, err := p.ParseObjectFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: of}, nil
+			return wrap(of), nil
 		}
 		p.restorePos(saved)
 
 	case V13_TYPE_OF:
 		saved := p.savePos()
 		if tf, err := p.ParseTableFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: tf}, nil
+			return wrap(tf), nil
 		}
 		p.restorePos(saved)
 		saved = p.savePos()
 		if af, err := p.ParseArrayFinal(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: af}, nil
+			return wrap(af), nil
 		}
 		p.restorePos(saved)
 
 	// Function forms.
 	case V13_RETURN_STMT:
 		// Mode-3 deferred template: "<-" tmpl_quoted (spec 14.2)
-		// Try this before ParseReturnFuncUnit because "<-" followed by a
-		// backtick string never matches a func_unit.
-		// We peek at the token AFTER "<-" by saving, advancing past "<-",
-		// checking cur(), then restoring — avoid peek(n) which is BOF-sensitive.
 		{
 			peeked := p.savePos()
 			p.advance() // step past "<-"
@@ -429,31 +479,30 @@ func (p *V13Parser) ParseAssignRHS() (*V13AssignRHSNode, error) {
 				nextTok.Type == V13_EMPTY_STR_T {
 				saved := p.savePos()
 				if dt, err := p.ParseTmplDeferred(); err == nil {
-					return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: dt}, nil
+					return wrap(dt), nil
 				}
 				p.restorePos(saved)
 			}
 		}
 		saved := p.savePos()
 		if rfu, err := p.ParseReturnFuncUnit(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: rfu}, nil
+			return wrap(rfu), nil
 		}
 		p.restorePos(saved)
 
 	case V13_LPAREN:
 		saved := p.savePos()
 		if fu, err := p.ParseFuncUnit(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: fu}, nil
+			return wrap(fu), nil
 		}
 		p.restorePos(saved)
 	}
 
 	// Pipeline call: col >>map(f) desugars to map(col, f).
-	// Tried before calc_unit so that >> is consumed by the pipeline parser, not left dangling.
 	{
 		saved := p.savePos()
 		if pc, err := p.ParsePipelineCall(); err == nil {
-			return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: pc}, nil
+			return wrap(pc), nil
 		}
 		p.restorePos(saved)
 	}
@@ -463,14 +512,79 @@ func (p *V13Parser) ParseAssignRHS() (*V13AssignRHSNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: cu}, nil
+	return wrap(cu), nil
+}
+
+// ParseAssignRhsChain parses:  assign_rhs_chain = assign_rhs_item logic_oper assign_rhs_item { logic_oper assign_rhs_item }
+//
+// Handles structural items (arrays, objects, …) joined by logic operators,
+// e.g.  data = [1,2] & [3,4]  or  result = objA | objB.
+// NOTE: when all items are calc_units, ParseAssignRhsItem greedily consumes the
+// whole chain via logic_expr_list, so this method only triggers when at least one
+// item is a structural form that calc_unit cannot absorb.
+func (p *V13Parser) ParseAssignRhsChain() (*V13AssignRhsChainNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	first, err := p.ParseAssignRhsItem()
+	if err != nil {
+		return nil, err
+	}
+	// Require at least one logic_oper — distinguish from a bare assign_rhs_item.
+	oper := V13logicOper(p.cur().Type)
+	if oper == "" {
+		return nil, p.errAt("assign_rhs_chain: expected logic operator after first item")
+	}
+	terms := []V13AssignRhsChainTerm{{Oper: "", Item: first}}
+	for {
+		oper = V13logicOper(p.cur().Type)
+		if oper == "" {
+			break
+		}
+		p.advance()
+		item, err := p.ParseAssignRhsItem()
+		if err != nil {
+			return nil, fmt.Errorf("assign_rhs_chain: %w", err)
+		}
+		terms = append(terms, V13AssignRhsChainTerm{Oper: oper, Item: item})
+	}
+	return &V13AssignRhsChainNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Terms: terms}, nil
+}
+
+// ParseAssignRHS parses:  assign_rhs = assign_rhs_item | assign_rhs_chain  (V15)
+//
+// Tries assign_rhs_chain first (requires logic_oper between structural items);
+// falls back to assign_rhs_item which handles all single-value forms including
+// calc_unit chains consumed via logic_expr_list.
+func (p *V13Parser) ParseAssignRHS() (*V13AssignRHSNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+
+	// Try chain first.
+	saved := p.savePos()
+	if chain, err := p.ParseAssignRhsChain(); err == nil {
+		return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: chain}, nil
+	}
+	p.restorePos(saved)
+
+	// Fall back to single item.
+	item, err := p.ParseAssignRhsItem()
+	if err != nil {
+		return nil, err
+	}
+	return &V13AssignRHSNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: item}, nil
 }
 
 // ---------- assignment ----------
 
-// ParseAssignment parses:  assignment = assign_lhs assign_oper assign_rhs
+// ParseAssignment parses:  assignment = [ private_modifier ] assign_lhs assign_oper assign_rhs
 func (p *V13Parser) ParseAssignment() (*V13AssignmentNode, error) {
 	line, col := p.cur().Line, p.cur().Col
+
+	// optional private_modifier = "-"
+	private := false
+	if p.cur().Type == V13_MINUS {
+		private = true
+		p.advance()
+	}
+
 	lhs, err := p.ParseAssignLHS()
 	if err != nil {
 		return nil, err
@@ -485,6 +599,7 @@ func (p *V13Parser) ParseAssignment() (*V13AssignmentNode, error) {
 	}
 	return &V13AssignmentNode{
 		V13BaseNode: V13BaseNode{Line: line, Col: col},
+		Private:     private,
 		LHS:         lhs,
 		Oper:        oper,
 		RHS:         rhs,

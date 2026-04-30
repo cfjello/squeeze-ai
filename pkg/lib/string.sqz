@@ -1,43 +1,45 @@
 
 string, string_quoted: { 
         names, n, 1..m : [ "string", "string_quoted"]
-        card,  c       : 1..1
-        type,  t       : $ 
-        data,  d       : ""
-        ver,   v       : "v0.0"
-        quote, q:      '"'
+        - (
+            card,  c       : 1..1
+            type,  t       : $ 
+            data,  d       : ""
+            ver,   v       : "v0.0"
+            quote, q:      '"'
 
-        init: <- (
-            -> q_str: §string_quoted                               
-            quote= q_str[1]                             
-            char_array, 1..m: ... q_str
-            end: LENGTH<char_array> - 1
-            sub_range: 2..end
-            stringIt =  CAST string<SUB_RANGE sub_range<char_array>>           
-            <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: stringIt ]
+            init: <- (
+                -> q_str: §string_quoted                               
+                quote= q_str[1]                             
+                char_array, 1..m: ... q_str
+                end: LENGTH<char_array> - 1
+                sub_range: 2..end
+                stringIt =  CAST string<SUB_RANGE sub_range<char_array>>           
+                <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: stringIt ]
+            )
         )
 
-        (s @string) copy: <- (
+        (s : @string) copy: <- (
             <- [ type: $, quote: s.quote, data: s.data, card: s.card]
         )
 
-        (s @string) trim: <- (
+        (s : @string) trim: <- (
             trimIt = s.data
             trimIt =~ /^[ \t]+|[ \t]+$/gm
             <- trimIt
         ) 
 
-        (s @string) quote: <- (
+        (s : @string) quote: <- (
             -> quote_char: §char
             <- quote_char + s.data + quote_char 
         )
 
-        (s @string) length: <- ( 
+        (s : @string) length: <- ( 
             char_array, 1..m: ... s.data
             <-  LENGTH<char_array>
         )
 
-        (s @string) substr: <- ( 
+        (s : @string) substr: <- ( 
             -> start = integer , end = integer 
             char_array, 1..m: ... s.data
             length: LENGTH<char_array>
@@ -57,7 +59,7 @@ string, string_quoted: {
            e.g. s.substr_range(3..7).
            Unpacks the range into its lo and hi endpoints and delegates entirely to
            substr, which owns all bounds-checking and negative-index handling. *)
-        (s @string) substr_range: <- (
+        (s : @string) substr_range: <- (
             -> r: §func_fixed_num_range
             <- s.substr(r.lo, r.hi)
         )

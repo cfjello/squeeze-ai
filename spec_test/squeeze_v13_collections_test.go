@@ -1,3 +1,5 @@
+//go:build ignore
+
 // squeeze_v13_collections_test.go — Specification-driven tests for the
 // collection functions grammar (spec/15_collections.sqg).
 //

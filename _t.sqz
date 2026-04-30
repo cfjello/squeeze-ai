@@ -1,0 +1,4 @@
+(col : @std.collections)  foo: {
+    names: ["array", "array_final"]
+    x: 1
+}

@@ -8,7 +8,7 @@ include "./03_assignment.sqg";
 empty_array_decl     = "[]" ;
 func_stream_decl     = ">>" ;
 func_regexp_decl     = "//" ;
-empty_scope_decl    = "{}";
+empty_scope_decl     = "{}";
 func_string_decl     = "\"\"" | "''" | "``";
 empty_decl           = empty_array_decl | func_stream_decl | func_regexp_decl | empty_scope_decl | func_string_decl;
 
@@ -16,31 +16,32 @@ empty_decl           = empty_array_decl | func_stream_decl | func_regexp_decl | 
     Data Arrays
     Arrays and Nested Arrays containing values, but no functions 
 ------------------------------------------------------------ *)
-array_value          = constant  | range | ident_ref | calc_unit | array_final | object_final ;
-array_begin          = "[";
-array_end            = "]";
+array_begin     = "[";
+array_end       = "]";
 
-values_list          = array_value  { ","  array_value};
+
+spread_oper           = "...";
+spread_array          = spread_oper ( string | digits | integer | date | date_time | time | time_stamp );   
+
+values_list     =   statement  { ","  statement};
 array_uniform   =   array_begin 
-                        UNIFORM INFER<( values_list |  array_uniform )>
+                        UNIFORM INFER<( values_list | spread_array | array_uniform )>
                         [","] 
                     array_end;    
-(* V12 added empty_array_typed *)
+
 empty_array_typed = ident_ref empty_array_decl;       
 
-(* V12 modified array_list *)
-array_list      =   array_uniform | empty_array_typed;
-
-array_append_tail     = "+" array_uniform { "+" array_uniform } ;
+array_list           =   array_uniform | empty_array_typed;
+array_append_tail    = "+" array_uniform { "+" array_uniform } ;
 array_omit_tail      = "-" integer { "," integer };
+
 array_final          = ( TYPE_OF array_list<ident_ref> | array_list ) { array_append_tail | array_omit_tail };
 
-split_oper           = "...";
-split_array          = split_oper ( string | digets | integer | date | date_time | time | time_stamp );           
+lookup_idx_expr      =  integer | num_expr_chain | TYPE_OF integer<ident_ref>;
 
-lookup_idx_expr      =  integer | numeric_expr | string | string_expr | TYPE_OF integer<ident_ref>|  TYPE_OF string<ident_ref>;
+array_lookup         = TYPE_OF array_final<ident_ref> array_begin lookup_idx_expr array_end { array_begin lookup_idx_expr array_end }; 
 
-array_lookup         = TYPE_OF array_final<ident_ref> "[" lookup_idx_expr "]";
+
 
 (* ------------------------------------------------------------
      Data Objects - Associative Arrays. 
@@ -48,33 +49,21 @@ array_lookup         = TYPE_OF array_final<ident_ref> "[" lookup_idx_expr "]";
 ------------------------------------------------------------ *)
 
 object_init          =  array_begin 
-                            UNIFORM INFER<assign_lhs assign_oper array_value  { "," assign_lhs assign_oper array_value }>
+                            UNIFORM INFER< assignment { "," assignment }>
                             [","]  
                         array_end; 
 
 object_merge_tail    = "+" ( TYPE_OF object_init<ident_ref> | object_init )  { "+" ( TYPE_OF object_init<ident_ref> | object_init ) };
 object_omit_tail     = "-" (ident_name | lookup_idx_expr) { "," (ident_name | lookup_idx_expr) }; 
+
 object_merge_or_omit = UNIFORM INFER<
     ( TYPE_OF object_init<ident_ref> | object_init )
-    ( object_merge_tail | object_omit_tail )
->;
-(* V12 modified object_final *)
-object_final         = object_init | object_merge_or_omit | empty_array_typed;
-object_lookup        = TYPE_OF object_final<ident_ref> [ "[" lookup_idx_expr "]" ];
+    ( object_merge_tail | object_omit_tail ) >;
 
-(* ------------------------------------------------------------
-    Tables 
-    Tables containing values, but no functions
------------------------------------------------------------- *)
+object_final   = object_init | object_merge_or_omit | empty_array_typed;
 
-(* V13 removed table rules: 
-table_header         = UNIFORM string<( array_uniform | TYPE_OF array_uniform<ident_ref> )>;
-table_row            = array_final | object_final;
-table_objects        = UNIFORM INFER<table_row  { "," table_row }>; 
-table_init           = table_header table_objects | object_final; (* object_final deliver both the table_header names and the first table_row *)
-table_ins_tail       = "+" ( TYPE_OF table_row<ident_ref> | table_row )  { "+" ( TYPE_OF table_row<ident_ref> | table_row ) };
-table_final          = ( TYPE_OF table_init<ident_ref> | table_init ) table_ins_tail { table_ins_tail };
-*) 
+lookup_txt_expr = string | string_expr_chain | TYPE_OF string<ident_ref>;
+object_lookup   = TYPE_OF object_final<ident_ref> array_begin lookup_txt_expr array_end { array_begin lookup_txt_expr array_end }; 
 
-(* V13 removed table-final from  EXTEND<assign_rhs> *)
-EXTEND<assign_rhs>   = | array_final | object_final;
+collection = range | array_final; 
+EXTEND<statement> = | array_final | object_final | array_lookup | object_lookup;

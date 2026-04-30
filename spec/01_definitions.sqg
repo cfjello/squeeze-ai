@@ -1,10 +1,12 @@
-(* V10 - read ./00_directives.sqg for Parser Instructions *)
+(* V17 - read ./00_directives.sqg for Parser Instructions *)
 
 (* whitespace *)
 comment_begin = "(*" ;
 comment_end   =  "*)" ;
 comment_txt   = /(?:(?!\(\*|\*\))[\s\S])*/ ;
-comment = comment_begin comment_txt { comment } comment_end ; 
+comment = comment_begin comment_txt { comment } comment_end; 
+comment_TBD_stub = comment_begin " TBD_STUB " comment_end; 
+
 
 NL  = /([ \t]*[\r\n]+)+/ | BOF;
 EOL = NL | ";" | comment | EOF;
@@ -35,7 +37,7 @@ CAST<uint64> = uint128;
 (* Note: float32/float64 support NaN, Infinity, -Infinity and inexact arithmetic.
    They are distinct from the fixed-point decimal types above. *)
 nan          = "NaN";
-infinity     = "+Infinity" | "-Infinity" | "Infinity";
+infinity     = "Infinity";
 float32      = TYPE_OF float32<decimal | nan | infinity>;
 float64      = TYPE_OF float64<decimal | nan | infinity>;
 
@@ -61,7 +63,7 @@ CAST<decimal64>  = decimal128;
 
 
 (* char: a single Unicode code point, written as a single-quoted single character *)
-char = "'" /(?<value>[\s\S])/ "'";
+(* char = "'" /(?<value>[\s\S])/ "'"; *) 
 
 
 (* Date/Time types
@@ -105,15 +107,19 @@ duration      = digits duration_unit { digits duration_unit };
 single_quoted    = "'" /(?<value>(\\'|[^'])+)/  "'" ;
 double_quoted    = "\"" /(?<value>(\\"|[^"])+)/ "\"" ;
 string_quoted    = single_quoted | double_quoted;
-(* V13 added new rule *)
+(* 
 string_unquoted  = UNQUOTE<string_quoted>;
+*)
 
+(*
 tmpl_stmt        = func_call_chain | calc_unit | ident_ref | constant ;
 tmpl_expr        = "§(" tmpl_stmt ")";
+*)
 tmpl_text        = /(?:(?!§\(|`)[\s\S])*)/  
-tmpl_quoted      = "`" ( tmpl_text | tmpl_expr )  { ( tmpl_text | tmpl_expr ) } "`";
-(* V13 added new rule *)
+tmpl_quoted      = "`" tmpl_text "`";
+(* 
 tmpl_unquoted    = UNQUOTE<tmpl_quoted>;
+*)
 
 (* Regexp *)
 (* XRegExp flags:
@@ -128,7 +134,7 @@ tmpl_unquoted    = UNQUOTE<tmpl_quoted>;
    A — astral          (XRegExp) enables matching of Unicode astral plane code points (U+10000 and above)
 *)
 regexp_flags = "g" | "i" | "m" | "s" | "u" | "y" | "x" | "n" | "A";
-regexp       = "/" TYPE_OF XRegExp</.*/> "/" [ regexp_flags { regexp_flags } ];
+regexp_expr  = "/" TYPE_OF XRegExp</.*/> "/" [ regexp_flags { regexp_flags } ];
 
 (* boolean  *)
 boolean       = "true" | "false";
@@ -208,15 +214,18 @@ seq_id   = seq_id16 | seq_id32 | seq_id64;
 
 (* --- Composite key: two or more values forming a unique compound key
    Parenthesised tuple syntax distinguishes it from array_final.
-   Uniqueness across the tuple is a runtime/schema concern. *)
+   Uniqueness across the tuple is a runtime/schema concern.
 composite_key = "(" array_value "," array_value { "," array_value } ")";
+*)
 
-(* --- Union of all unique key types --- *)
+(* --- Union of all unique key types --- 
 unique_key = uuid | uuid_v7 | ulid | snowflake_id | nano_id | hash_key | seq_id | composite_key;
+*)
+unique_key = uuid | uuid_v7 | ulid | snowflake_id | nano_id | hash_key | seq_id ;
 
 (* --- Hashable types: deterministic, equality-comparable values suitable as hash inputs.
    Excludes float32/float64 (inexact arithmetic makes them non-deterministic as hash inputs),
-   and also excludes null, regexp, tmpl_quoted. *)
+   and also excludes null, regexp_expr, tmpl_quoted. *)
 hashable = string_quoted | integer | boolean
          | date | time | date_time | time_stamp | duration
          | unique_key;
@@ -233,4 +242,4 @@ file_url  = /^file:\/\/(?:\/[^\s\0]+|\.\.\/[^\s\0]+|\.\/[^\s\0]+)$/;
 
 string = single_quoted | double_quoted | tmpl_quoted;
 
-constant = numeric_const | string | char | regexp | boolean | null | date | time | date_time | time_stamp | uuid | http_url | file_url;
+constant = numeric_const | string |  regexp_expr | boolean | null | date | time | date_time | time_stamp | unique_key | http_url | file_url;

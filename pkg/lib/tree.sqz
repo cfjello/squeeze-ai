@@ -31,19 +31,25 @@
      TREE_TO_STRING<t>            — indented text representation
    *)
 
-tree, tree_final: {
+(col : @std.collections)  tree, tree_final: {
     names, n, 1..m: ["tree", "tree_final"]
-    card,  c:       1..1
-    type,  t:       $
-    data,  d:       [ type: @?, root: null ]
-    ver,   v:       "v0.0"
+    map:     col.map
+    filter:  col.filter
+    count:   col.count
+    collect: col.collect
+    - (
+        card,  c:       1..1
+        type,  t:       $
+        data,  d:       [ type: @?, root: null ]
+        ver,   v:       "v0.0"
 
-    init: <- (
-        -> raw: §tree_final
-        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
-             card:  LHS_CALLER<§assign_lhs.cardinality>,
-             type:  $,
-             data:  raw ]
+        init: <- (
+            -> raw: §tree_final
+            <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+                 card:  LHS_CALLER<§assign_lhs.cardinality>,
+                 type:  $,
+                 data:  raw ]
+        )
     )
 
 
@@ -52,32 +58,32 @@ tree, tree_final: {
        --------------------------------------------------------------- *)
 
     (* node_count — total number of nodes in the tree. *)
-    (t @tree) node_count: <- (
+    (t : @tree) node_count: <- (
         <- TREE_NODE_COUNT<t>
     )
 
     (* depth — maximum depth from root to any leaf.  Root alone = 1. *)
-    (t @tree) depth: <- (
+    (t : @tree) depth: <- (
         <- TREE_DEPTH<t>
     )
 
     (* is_empty — true when the tree has no root node. *)
-    (t @tree) is_empty: <- (
+    (t : @tree) is_empty: <- (
         <- t.data.root == null
     )
 
     (* root_value — the value held at the root node. *)
-    (t @tree) root_value: <- (
+    (t : @tree) root_value: <- (
         <- TREE_ROOT_VALUE<t>
     )
 
     (* children_count — number of direct children of the root node. *)
-    (t @tree) children_count: <- (
+    (t : @tree) children_count: <- (
         <- TREE_CHILDREN_COUNT<t>
     )
 
     (* is_leaf — true when the root has no children. *)
-    (t @tree) is_leaf: <- (
+    (t : @tree) is_leaf: <- (
         <- TREE_CHILDREN_COUNT<t> == 0
     )
 
@@ -88,13 +94,13 @@ tree, tree_final: {
 
     (* to_depth_first — @array of node values in DFS pre-order.
        Root is always first; leaves are last within each subtree. *)
-    (t @tree) to_depth_first: <- (
+    (t : @tree) to_depth_first: <- (
         <- [ type: $, data: TREE_DFS<t> ]
     )
 
     (* to_breadth_first — @array of node values in BFS level-order.
        Root is first; all children of a node precede their grandchildren. *)
-    (t @tree) to_breadth_first: <- (
+    (t : @tree) to_breadth_first: <- (
         <- [ type: $, data: TREE_BFS<t> ]
     )
 
@@ -104,13 +110,13 @@ tree, tree_final: {
        --------------------------------------------------------------- *)
 
     (* find — first value (DFS) for which predicate returns true, or null. *)
-    (t @tree) find: <- (
+    (t : @tree) find: <- (
         -> predicate: @?
         <- TREE_FIND<t, predicate>
     )
 
     (* find_all — @array of all values for which predicate returns true, DFS order. *)
-    (t @tree) find_all: <- (
+    (t : @tree) find_all: <- (
         -> predicate: @?
         <- [ type: $, data: TREE_FIND_ALL<t, predicate> ]
     )
@@ -122,14 +128,14 @@ tree, tree_final: {
 
     (* with_child — new tree with node appended as a direct child of the root.
        Mirrors the grammar's + operator. *)
-    (t @tree) with_child: <- (
+    (t : @tree) with_child: <- (
         -> node: @?
         <- [ type: $, data: TREE_WITH_CHILD<t, node> ]
     )
 
     (* map — new tree with every node value replaced by fn(value).
        Tree structure (parent-child relationships) is preserved exactly. *)
-    (t @tree) map: <- (
+    (t : @tree) map: <- (
         -> fn: @?
         <- [ type: $, data: TREE_MAP<t, fn> ]
     )
@@ -137,7 +143,7 @@ tree, tree_final: {
     (* prune — new tree with every subtree removed whose root value
        satisfies predicate.  The matched node and all its descendants
        are excluded from the result. *)
-    (t @tree) prune: <- (
+    (t : @tree) prune: <- (
         -> predicate: @?
         <- [ type: $, data: TREE_PRUNE<t, predicate> ]
     )
@@ -148,13 +154,13 @@ tree, tree_final: {
        --------------------------------------------------------------- *)
 
     (* to_json — JSON object representation of the full tree. *)
-    (t @tree) to_json: <- (
+    (t : @tree) to_json: <- (
         <- TREE_TO_JSON<t>
     )
 
     (* to_string — indented text representation; children are indented
        two spaces per level below their parent. *)
-    (t @tree) to_string: <- (
+    (t : @tree) to_string: <- (
         <- TREE_TO_STRING<t>
     )
 }

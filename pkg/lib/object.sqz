@@ -15,27 +15,36 @@
      obj.to_array()     — iterator of [key: k, value: v] records
 
    Intrinsics used (UPPERCASE builtins):
-     LENGTH<obj>          — count of key-value pairs
-     OBJ_HAS<obj, key>    — O(1) boolean key-presence check
-     OBJ_KEYS<obj>        — sorted @array of all keys
-     OBJ_VALUES<obj>      — @array of values in key-sorted order
-     OBJ_TO_ARRAY<obj>    — @array of [key: k, value: v] records
-     TO_JSON<val>         — JSON-serialise a single value
+     LENGTH<obj>                  — count of key-value pairs
+     OBJ_HAS<obj, key>            — O(1) boolean key-presence check
+     OBJ_KEYS<obj>                — sorted @array of all keys
+     OBJ_VALUES<obj>              — @array of values in key-sorted order
+     OBJ_TO_ARRAY<obj>            — @array of [key: k, value: v] records
+     OBJ_WITH_KEY<obj, key, val>  — new @object with key → val upserted
+     OBJ_WITHOUT_KEY<obj, key>    — new @object with key removed
+     TO_JSON<val>                 — JSON-serialise a single value
    *)
 
-object, object_final: {
-    names, n, 1..m: ["object", "object_final"]
-    card,  c:       1..1
-    type,  t:       $
-    data,  d:       []
-    ver,   v:       "v0.0"
+(col : @std.collections)  object, object_final: {
+    names: ["object", "object_final"]
+    map:     col.map
+    filter:  col.filter
+    reduce:  col.reduce
+    count:   col.count
+    collect: col.collect
+    - (
+        card,  c:       1..1
+        type,  t:       $
+        data,  d:       @?     (* raw associative map; assigned by init from §object_final *)
+        ver,   v:       "v0.0"
 
-    init: <- (
-        -> raw: §object_final
-        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
-             card:  LHS_CALLER<§assign_lhs.cardinality>,
-             type:  $,
-             data:  raw ]
+        init: <- (
+            -> raw: §object_final
+            <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+                 card:  LHS_CALLER<§assign_lhs.cardinality>,
+                 type:  $,
+                 data:  raw ]
+        )
     )
 
 
@@ -44,19 +53,19 @@ object, object_final: {
        --------------------------------------------------------------- *)
 
     (* length — number of key-value pairs. *)
-    (obj @object) length: <- (
+    (obj : @object) length: <- (
         <- LENGTH<obj.data>
     )
 
     (* contains_key — O(1) hash check; true when key is present. *)
-    (obj @object) contains_key: <- (
+    (obj : @object) contains_key: <- (
         -> key: string
         <- OBJ_HAS<obj.data, key>
     )
 
     (* get — safe key access; returns default when the key is absent.
        Avoids a guarded double-lookup at every call site. *)
-    (obj @object) get: <- (
+    (obj : @object) get: <- (
         -> key:     string
         -> default: @?
         ( OBJ_HAS<obj.data, key> ) & <- obj.data[key]
@@ -70,21 +79,21 @@ object, object_final: {
 
     (* get_keys — @array of all keys in sorted order.
        Sorted order guarantees repeatable iteration and JSON output. *)
-    (obj @object) get_keys: <- (
+    (obj : @object) get_keys: <- (
         <- OBJ_KEYS<obj.data>
     )
 
     (* get_values — @array of all values ordered by sorted key.
        Use this as the input to collection pipelines when only values
        are needed. *)
-    (obj @object) get_values: <- (
+    (obj : @object) get_values: <- (
         <- OBJ_VALUES<obj.data>
     )
 
     (* to_array — converts to an @array of [key: k, value: v] records
        in sorted key order.  Enables full collection-generic pipelines
        over key-value pairs via collections.sqz. *)
-    (obj @object) to_array: <- (
+    (obj : @object) to_array: <- (
         <- OBJ_TO_ARRAY<obj.data>
     )
 
@@ -96,7 +105,7 @@ object, object_final: {
     (* to_json — JSON object string: '{"k1": v1, "k2": v2, ...}'.
        Keys are emitted in sorted order for deterministic output.
        Delegates value formatting to TO_JSON<> for correct quoting. *)
-    (obj @object) to_json: <- (
+    (obj : @object) to_json: <- (
         keys:  obj.get_keys()
         result = "{"
         first  = true
@@ -108,5 +117,26 @@ object, object_final: {
         )
         result = result + "}"
         <- result
+    )
+
+
+    (* ---------------------------------------------------------------
+       Functional mutation — return a new @object, never mutates obj
+       --------------------------------------------------------------- *)
+
+    (* with_key — new @object with key → val upserted.
+       Adds the key when absent; replaces the value when present. *)
+    (obj : @object) with_key: <- (
+        -> key: string
+        -> val: @?
+        <- [ type: $, data: OBJ_WITH_KEY<obj.data, key, val> ]
+    )
+
+    (* without_key — new @object with key removed.
+       Returns obj unchanged when key is not present. *)
+    (obj : @object) without_key: <- (
+        -> key: string
+        ( ! OBJ_HAS<obj.data, key> ) & <- obj
+        <- [ type: $, data: OBJ_WITHOUT_KEY<obj.data, key> ]
     )
 }

@@ -83,11 +83,19 @@ type V13EmptyArrayTypedNode struct {
 	Ref *V13IdentRefNode
 }
 
+// V13PlainArrayNode  plain_array = "[" array_value { "," array_value } "]"
+// A bracket-enclosed list of constants / ident_refs with no UNIFORM INFER<> wrapper.
+// Used by lib header fields (names:) and wherever a literal list is needed.
+type V13PlainArrayNode struct {
+	V13BaseNode
+	Items []*V13ArrayValueNode
+}
+
 // V13ArrayFinalNode  array_final = ( TYPE_OF array_list<ident_ref> | array_list ) { tails }
 type V13ArrayFinalNode struct {
 	V13BaseNode
 	TypeRef *V13TypeOfRefNode // non-nil for TYPE_OF form
-	List    V13Node           // *V13ArrayUniformNode | *V13EmptyArrayTypedNode
+	List    V13Node           // *V13ArrayUniformNode | *V13EmptyArrayTypedNode | *V13PlainArrayNode
 	Tails   []V13Node         // *V13ArrayAppendTailNode | *V13ArrayOmitTailNode
 }
 
@@ -148,6 +156,31 @@ type V13ObjectLookupNode struct {
 	V13BaseNode
 	Object *V13TypeOfRefNode
 	Index  *V13LookupIdxExprNode // nil when absent
+}
+
+// V13LhsCallerNode  LHS_CALLER<§assign_lhs.ident_name|cardinality>
+// A bootstrap directive that resolves at parse time to either the list of
+// identifier names or the cardinality declared on the left-hand side of the
+// enclosing assignment.
+// Path is the dotted argument path, e.g. "assign_lhs.ident_name" or
+// "assign_lhs.cardinality".
+type V13LhsCallerNode struct {
+	V13BaseNode
+	Path string // "assign_lhs.ident_name" | "assign_lhs.cardinality"
+}
+
+// V13BootstrapCallNode  UPPERCASE_IDENT [pre_arg] "<" ident_ref ">"
+// Represents an angle-bracket bootstrap/intrinsic call such as:
+//   LENGTH<arr.data>            — element count
+//   ARRAY_REVERSE<arr.data>     — reverse copy
+//   TO_JSON<elem>               — JSON serialise
+//   SUB_RANGE sub_range<arr>    — sub-range slice (pre_arg = "sub_range")
+//   CAST string<val>            — widen/coerce (pre_arg = "string")
+type V13BootstrapCallNode struct {
+	V13BaseNode
+	Name   string // e.g. "LENGTH", "ARRAY_REVERSE", "CAST"
+	PreArg string // optional IDENT appearing between Name and "<"
+	Arg    V13Node
 }
 
 // V13TableHeaderNode  table_header = UNIFORM string<( array_uniform | TYPE_OF array_uniform<ident_ref> )>
@@ -343,7 +376,7 @@ func (p *V13Parser) ParseEmptyArrayTyped() (*V13EmptyArrayTypedNode, error) {
 	return &V13EmptyArrayTypedNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Ref: ref}, nil
 }
 
-// ParseArrayList parses:  array_list = array_uniform | empty_array_typed
+// ParseArrayList parses:  array_list = array_uniform | empty_array_typed | plain_array
 func (p *V13Parser) ParseArrayList() (V13Node, error) {
 	if p.cur().Type == V13_IDENT {
 		saved := p.savePos()
@@ -352,7 +385,44 @@ func (p *V13Parser) ParseArrayList() (V13Node, error) {
 		}
 		p.restorePos(saved)
 	}
+	saved := p.savePos()
+	if pa, err := p.ParsePlainArray(); err == nil {
+		return pa, nil
+	}
+	p.restorePos(saved)
 	return p.ParseArrayUniform()
+}
+
+// ParsePlainArray parses:  plain_array = "[" array_value { "," array_value } "]"
+func (p *V13Parser) ParsePlainArray() (*V13PlainArrayNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	if _, err := p.expect(V13_LBRACKET); err != nil {
+		return nil, err
+	}
+	node := &V13PlainArrayNode{V13BaseNode: V13BaseNode{Line: line, Col: col}}
+	if p.cur().Type == V13_RBRACKET {
+		p.advance()
+		return node, nil
+	}
+	first, err := p.ParseArrayValue()
+	if err != nil {
+		return nil, err
+	}
+	node.Items = append(node.Items, first)
+	for p.cur().Type == V13_COMMA {
+		saved := p.savePos()
+		p.advance()
+		v, err := p.ParseArrayValue()
+		if err != nil {
+			p.restorePos(saved)
+			break
+		}
+		node.Items = append(node.Items, v)
+	}
+	if _, err := p.expect(V13_RBRACKET); err != nil {
+		return nil, err
+	}
+	return node, nil
 }
 
 // ---------- array_final ----------
@@ -495,6 +565,15 @@ func (p *V13Parser) ParseLookupIdxExpr() (*V13LookupIdxExprNode, error) {
 			return nil, err
 		}
 		return &V13LookupIdxExprNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: se}, nil
+	}
+
+	// ident_ref used as a numeric index: arr.data[n], arr.data[i+1], etc.
+	if p.cur().Type == V13_IDENT {
+		ne, err := p.ParseNumericExpr()
+		if err != nil {
+			return nil, err
+		}
+		return &V13LookupIdxExprNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: ne}, nil
 	}
 
 	return nil, p.errAt(fmt.Sprintf("expected lookup index expression, got %s %q", p.cur().Type, p.cur().Value))
@@ -781,6 +860,144 @@ func (p *V13Parser) ParseObjectLookup() (*V13ObjectLookupNode, error) {
 
 // ---------- array_value ----------
 
+// ParseLhsCaller parses:  LHS_CALLER "<" "§" ident_name "." ident_name ">"
+// It is a bootstrap look-behind directive that resolves to the ident_name(s)
+// or cardinality from the LHS of the enclosing assignment at parse time.
+func (p *V13Parser) ParseLhsCaller() (*V13LhsCallerNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	tok := p.cur()
+	if tok.Type != V13_IDENT || tok.Value != "LHS_CALLER" {
+		return nil, p.errAt(fmt.Sprintf("expected LHS_CALLER, got %s %q", tok.Type, tok.Value))
+	}
+	p.advance() // consume LHS_CALLER
+	if _, err := p.expect(V13_LT); err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(V13_SECTION); err != nil {
+		return nil, err
+	}
+	first := p.cur()
+	if first.Type != V13_IDENT {
+		return nil, p.errAt(fmt.Sprintf("expected ident after § in LHS_CALLER, got %s %q", first.Type, first.Value))
+	}
+	p.advance()
+	if _, err := p.expect(V13_DOT); err != nil {
+		return nil, err
+	}
+	second := p.cur()
+	if second.Type != V13_IDENT {
+		return nil, p.errAt(fmt.Sprintf("expected ident after . in LHS_CALLER path, got %s %q", second.Type, second.Value))
+	}
+	p.advance()
+	if _, err := p.expect(V13_GT); err != nil {
+		return nil, err
+	}
+	return &V13LhsCallerNode{
+		V13BaseNode: V13BaseNode{Line: line, Col: col},
+		Path:        first.Value + "." + second.Value,
+	}, nil
+}
+
+// isBootstrapCallName returns true when s is an all-uppercase identifier
+// that introduces an angle-bracket bootstrap intrinsic call
+// (LENGTH, ARRAY_REVERSE, TO_JSON, SUB_RANGE, etc.).  LHS_CALLER is
+// handled separately by ParseLhsCaller because its argument uses §.
+func isBootstrapCallName(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for _, r := range s {
+		if !((r >= 'A' && r <= 'Z') || r == '_') {
+			return false
+		}
+	}
+	return s != "LHS_CALLER" // handled by its own parser
+}
+
+// looksLikeBootstrapCall returns true when the current position looks like the
+// start of a bootstrap intrinsic call:
+//   UPPERCASE_IDENT "<" …                         — e.g. LENGTH<arr>
+//   UPPERCASE_IDENT IDENT "<" …                   — e.g. SUB_RANGE sub<arr>
+// Also true when the current token is the CAST keyword:
+//   V13_CAST IDENT "<" …                          — e.g. CAST string<val>
+func (p *V13Parser) looksLikeBootstrapCall() bool {
+	tok := p.cur()
+	switch tok.Type {
+	case V13_IDENT:
+		if !isBootstrapCallName(tok.Value) {
+			return false
+		}
+		next := p.peek(1)
+		if next.Type == V13_LT {
+			return true
+		}
+		if next.Type == V13_IDENT && p.peek(2).Type == V13_LT {
+			return true
+		}
+	case V13_CAST:
+		next := p.peek(1)
+		if next.Type == V13_LT {
+			return true
+		}
+		if next.Type == V13_IDENT && p.peek(2).Type == V13_LT {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseBootstrapCall parses:
+//
+//	bootstrap_call = ( UPPERCASE_IDENT | CAST ) [ IDENT ] "<" ident_ref ">"
+//
+// Covers LENGTH<arr.data>, ARRAY_REVERSE<arr>, TO_JSON<elem>,
+// SUB_RANGE sub_range<arr>, CAST string<val>, etc.
+func (p *V13Parser) ParseBootstrapCall() (*V13BootstrapCallNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	tok := p.cur()
+
+	var name string
+	switch tok.Type {
+	case V13_IDENT:
+		if !isBootstrapCallName(tok.Value) {
+			return nil, p.errAt(fmt.Sprintf("expected uppercase bootstrap call name, got %q", tok.Value))
+		}
+		name = tok.Value
+	case V13_CAST:
+		name = "CAST"
+	default:
+		return nil, p.errAt(fmt.Sprintf("expected uppercase IDENT or CAST for bootstrap call, got %s", tok.Type))
+	}
+	p.advance()
+
+	// Optional IDENT pre-arg that appears between the call name and "<".
+	var preArg string
+	if p.cur().Type == V13_IDENT && p.peek(1).Type == V13_LT {
+		preArg = p.cur().Value
+		p.advance()
+	}
+
+	if _, err := p.expect(V13_LT); err != nil {
+		return nil, err
+	}
+
+	ref, err := p.ParseIdentRef()
+	if err != nil {
+		return nil, err
+	}
+
+	if _, err := p.expect(V13_GT); err != nil {
+		return nil, err
+	}
+
+	return &V13BootstrapCallNode{
+		V13BaseNode: V13BaseNode{Line: line, Col: col},
+		Name:        name,
+		PreArg:      preArg,
+		Arg:         ref,
+	}, nil
+}
+
 // ParseArrayValue parses:
 //
 //	array_value = constant | range | ident_ref | calc_unit | array_final | object_final
@@ -849,6 +1066,34 @@ func (p *V13Parser) ParseArrayValue() (*V13ArrayValueNode, error) {
 	case V13_DOLLAR:
 		p.advance()
 		return wrap(&V13SelfRefNode{V13BaseNode: V13BaseNode{Line: line, Col: col}}), nil
+
+	case V13_IDENT:
+		// Bootstrap look-behind directive: LHS_CALLER<§assign_lhs.ident_name|cardinality>
+		if p.cur().Value == "LHS_CALLER" && p.peek(1).Type == V13_LT {
+			node, err := p.ParseLhsCaller()
+			if err != nil {
+				return nil, err
+			}
+			return wrap(node), nil
+		}
+		// General uppercase angle-bracket intrinsic: LENGTH<arr>, SUB_RANGE x<arr>, etc.
+		if p.looksLikeBootstrapCall() {
+			node, err := p.ParseBootstrapCall()
+			if err != nil {
+				return nil, err
+			}
+			return wrap(node), nil
+		}
+		saved := p.savePos()
+		if c, err := p.ParseConstant(); err == nil {
+			return wrap(c), nil
+		}
+		p.restorePos(saved)
+		cu, err := p.ParseCalcUnit()
+		if err != nil {
+			return nil, err
+		}
+		return wrap(cu), nil
 
 	default:
 		saved := p.savePos()

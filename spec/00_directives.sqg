@@ -157,6 +157,13 @@
         also appears in (or resolves to a member of) the named rule's result.
         Parser fails the AST node if any element is not present in rule_name.
         Example:  key_columns = SUBSET_OF<table_columns>< "[" key_col { "," key_col } "]" >;
+
+   2.19 RETURN_TYPE_OF 
+        RETURN_TYPE_OF token< function call >
+        Checks that the return type of the function is of the named type.
+        The token parameter may be replaced by "INFER" —
+        the parser then deduces the type automatically.
+        Example:  numeric_stmt = RETURN_TYPE_OF numeric_const<func_unit>;
 *)
 
 

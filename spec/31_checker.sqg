@@ -124,15 +124,20 @@
                        injected into scope — use at your own peril
 
    A3 — Scope Structural Completeness
-        Input:   scope_assign nodes
+        Input:   scope_assign nodes, func_deps declarations,
+                 func_assign nodes with func_inject
         Action:  Verify:
-                   - Every scope declared with => (dependency chain)
-                     contains a function named "main"
+                   - Every object_final symbol that is referenced in
+                     any func_deps declaration in the same scope has
+                     a corresponding static method named "store_ctrl"
+                     (a func_assign with func_inject targeting that
+                     object_final) in the same scope
                      (spec/06_functions.sqg — compile error if absent).
                    - Scope inject bindings (scope_inject) reference
                      symbols that exist in the enclosing scope.
         Emits:
-          L006 error   Dependency chain scope missing "main"
+          L006 error   Dependency chain object_final missing "store_ctrl"
+                       static method
           L007 error   Scope inject references undefined symbol
           L008 warning Empty scope (no declarations inside braces)
 
@@ -148,7 +153,8 @@
         Input:   symbol table (from A1 and A2), all ident_ref nodes
         Action:  For each symbol, verify at least one ident_ref
                  outside the symbol's own declaration uses it.
-                 Exceptions: "main" in chain scopes, exported
+                 Exceptions: "store_ctrl" static methods in chain scopes,
+                 exported
                  names (names appearing in a type's names field),
                  and symbols injected by a wildcard import
                  (injected=true — these symbols are always
@@ -166,7 +172,10 @@
                    - Version strings (assign_version) match the
                      pattern [v]digits.digits.
                    - No identifier is a reserved word
-                     (next, self, main, null, true, false, ok).
+                     (next, self, store_ctrl, null, true, false, ok).
+                     Note: "store_ctrl" is reserved within any scope
+                     that participates in a dependency chain; A6
+                     flags any non-chain use of it as a plain ident.
         Emits:
           L012 warning Identifier starts with uppercase (reserved
                        for intrinsics)
@@ -211,6 +220,85 @@
                  Flag any occurrence elsewhere.
         Emits:
           L019 error   LHS_CALLER used outside an init: body
+
+   A-EX1 — Custom Exception Kind Collision
+        Input:   custom_exception_decl nodes (spec/16_exceptions.sqg)
+        Action:  Verify that each user-declared exception kind name
+                 does not collide with any built-in exception kind
+                 (the 14 recoverable and 7 fatal kinds enumerated
+                 in spec/16_exceptions.sqg Section 16.3).
+        Emits:
+          L022 error   Custom exception kind collides with built-in name
+
+   A-EX2 — Catch Handler Return Type Compatibility
+        Input:   the handler func_unit on the RHS of catch_oper (^)
+                 inside func_unit_with_catch, caught_group, caught_scope
+        Action:  Verify that the handler's first declared parameter is
+                 typed @exception.  Verify that the handler's effective
+                 return type is compatible with the enclosing guarded
+                 expression's declared return type.  A handler on a void
+                 function may return @? or nothing.
+        Emits:
+          L023 error   Catch handler first parameter must be @exception
+          L023 error   Catch handler return type incompatible with
+                       enclosing function return type
+
+   A-EX3 — Fatal Exception Substitute Return
+        Input:   handler func_unit nodes on the RHS of catch_oper (^)
+                 whose resolved @exception kind has fatal severity
+        Action:  A handler for a fatal exception kind may log the
+                 event but must not return a substitute value.
+                 The handler body must end with a call to ex.propagate().
+        Emits:
+          L024 error   Catch handler for fatal exception kind must call
+                       ex.propagate() (no substitute return permitted)
+
+   W-EX1 — Empty Catch Handler Body
+        Input:   all handler func_unit nodes on the RHS of catch_oper (^)
+        Action:  If the handler body contains no statements the
+                 exception is silently swallowed.  Warn.
+        Emits:
+          L025 warning Empty catch handler body — exception silently
+                       swallowed
+
+   W-EX2 — Fatal Kind Catch Unreachability
+        Input:   handler func_unit nodes on the RHS of catch_oper (^)
+                 whose @exception first parameter is constrained to a
+                 built-in fatal kind (OOM, stack overflow, etc.)
+        Action:  Fatal built-in exceptions bypass local ^ handlers
+                 entirely (see spec/16_exceptions.sqg Section 16.10.4).
+                 Catching a known built-in fatal kind is unreachable.
+        Emits:
+          L026 warning Catch handler for built-in fatal kind is
+                       unreachable — fatal exceptions bypass catch
+*)
+
+(*
+   A-VIS — Private Visibility Enforcement
+        Input:   all ident_ref nodes across all scopes
+        Action:  For each ident_ref that resolves to a binding marked
+                 private (declared via private_item or inside a
+                 private_block), verify that the reference site is
+                 within the same parent scope that declares the
+                 private binding.
+
+                 "Same parent scope" means the immediately enclosing
+                 scope_assign body in which the private_item or
+                 private_block appears.  Methods on a type defined in
+                 the same scope_assign body may reference private
+                 bindings of that scope (including other private
+                 methods via self.private_method()).
+
+                 Private bindings at parser_root level are rejected
+                 by the parser (not permitted by the grammar), so
+                 A-VIS only operates on bindings nested inside a
+                 scope_assign body.
+
+        Emits:
+          L027 error   Reference to private binding '<name>' from
+                       outside its declaring scope
+          L028 warning Private binding '<name>' declared but never
+                       referenced within its scope (dead private)
 *)
 
 
@@ -445,7 +533,7 @@
    T17 — on_error Handler Coverage Advisory
          Input:   all func_unit bodies that contain operations
                   classified as "fatal" severity by the error model
-                  (spec/10_error_handler.sqg Section 11.3)
+                  (spec/10_error_handler.sqg Section 10.2.3)
          Action:  Verify that at least one on_error handler registered
                   in the same scope handles severity "fatal".
                   This is advisory — the runtime always logs and
@@ -518,6 +606,8 @@
            L001–L099   Linter (Phase A)
            L020        Unknown type name in @TypeName (Pass A11, Section 29)
            L021        Wildcard import "_" used (Pass A2)
+           L022–L026   Exception handling checks (Phase A, passes A-EX1–W-EX2)
+           L027–L028   Private visibility checks (Phase A, pass A-VIS)
            T001–T037   Type-checker (Phase B, passes T1–T17)
            T038        @? call-site narrowing (Pass T18, Section 27)
            T039–T041   Structural subtyping (Pass T19, Section 28)
@@ -558,6 +648,7 @@
                a8_indexing.go    — Pass A8
                a9_intrinsics.go  — Pass A9
                a10_lhscaller.go  — Pass A10
+               a_ex.go           — Passes A-EX1, A-EX2, A-EX3, W-EX1, W-EX2
                t1_annotations.go — Pass T1
                t2_inference.go   — Pass T2
                t3_mutability.go  — Pass T3

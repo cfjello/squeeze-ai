@@ -29,9 +29,11 @@
 
 log_target, lt: {
     names, n, 1..m : ["log_target", "lt"]
-    card,  c       : 1..1
-    type,  t       : $
-    ver,   v       : "v0.0"
+    - (
+        card,  c       : 1..1
+        type,  t       : $
+        ver,   v       : "v0.0"
+    )
 
     kind,   k   : "stdout"  (* "stdout" | "file" | "http" *)
     format, fmt : "json"    (* "json" | "text" *)
@@ -48,7 +50,7 @@ log_target, lt: {
     batch_size   : 100      (* flush when queue reaches N entries *)
     auth_header  : ""       (* "Bearer <token>" — empty = no auth *)
 
-    init: <- (
+    - init: <- (
         -> k:   §string_quoted,
            fmt: §string_quoted,
            p:   §string_quoted,
@@ -76,7 +78,7 @@ log_target, lt: {
 
     (* Return a copy with file rotation parameters overridden.
        Go: reconfigure the lumberjack.Logger bound to this target. *)
-    (lt @log_target) with_rotation: <- (
+    (lt : @log_target) with_rotation: <- (
         -> size_mb: §integer, age_days: §integer, backups: §integer
         <- [
             type:         $,
@@ -95,7 +97,7 @@ log_target, lt: {
 
     (* Return a copy with HTTP delivery parameters overridden.
        Go: reconfigure the http.Client and batcher goroutine for this target. *)
-    (lt @log_target) with_http_opts: <- (
+    (lt : @log_target) with_http_opts: <- (
         -> timeout: §integer, batch: §integer, auth: §string_quoted
         <- [
             type:         $,
@@ -120,9 +122,11 @@ log_target, lt: {
 
 log_entry, le: {
     names, n, 1..m : ["log_entry", "le"]
-    card,  c       : 1..1
-    type,  t       : $
-    ver,   v       : "v0.0"
+    - (
+        card,  c       : 1..1
+        type,  t       : $
+        ver,   v       : "v0.0"
+    )
 
     level,     lvl : "info"  (* "debug" | "info" | "warn" | "error" *)
     message,   msg : ""
@@ -130,7 +134,7 @@ log_entry, le: {
     fields,    fld : {}      (* arbitrary key-value context — Go: []slog.Attr *)
     error_ref, er  : @?      (* optional attached @error_event *)
 
-    init: <- (
+    - init: <- (
         -> lvl: §string_quoted,
            msg: §string_quoted,
            fld: §object_final,
@@ -166,15 +170,17 @@ log_entry, le: {
 
 logger, log: {
     names, n, 1..m : ["logger", "log"]
-    card,  c       : 1..1
-    type,  t       : $
-    ver,   v       : "v0.0"
+    - (
+        card,  c       : 1..1
+        type,  t       : $
+        ver,   v       : "v0.0"
+    )
 
     min_level, lvl : "info"  (* minimum level to emit: "debug" | "info" | "warn" | "error" *)
     targets,   tgts: []      (* @log_target[] — registered output targets *)
     queue_cap       : 4096   (* Go: buffered chan capacity per target — never blocks caller *)
 
-    init: <- (
+    - init: <- (
         -> lvl: §string_quoted
         lvl >< ["debug", "info", "warn", "error"]
         <- [
@@ -190,14 +196,14 @@ logger, log: {
     (* Return a new logger with the given target appended.
        Immutable update — original logger is unchanged.
        Go: launch a worker goroutine for the new target channel. *)
-    (l @logger) add_target: <- (
+    (l : @logger) add_target: <- (
         -> tgt: @log_target
         <- [ type: $, min_level: l.min_level, targets: l.targets + [tgt], queue_cap: l.queue_cap ]
     )
 
     (* Internal — dispatch entry to all registered targets asynchronously.
        Go: non-blocking send on each target's buffered chan; drop silently on full. *)
-    (l @logger) _emit: <- (
+    (l : @logger) _emit: <- (
         -> entry: @log_entry
         l.targets >> tgt (
             tgt.next & (
@@ -211,7 +217,7 @@ logger, log: {
     (* Log at an explicit level with structured fields.
        The entry is level-gated against min_level before _emit is called.
        Level ordering: debug < info < warn < error. *)
-    (l @logger) log: <- (
+    (l : @logger) log: <- (
         -> lvl: §string_quoted, msg: §string_quoted, fld: §object_final
         lvl >< ["debug", "info", "warn", "error"]
         entry: log_entry[ lvl, msg, fld, @? ]
@@ -226,23 +232,23 @@ logger, log: {
 
     (* Convenience shorthand — delegates to log *)
 
-    (l @logger) debug: <- (
+    (l : @logger) debug: <- (
         -> msg: §string_quoted, fld: §object_final
         l.log[ "debug", msg, fld ]
     )
 
-    (l @logger) info: <- (
+    (l : @logger) info: <- (
         -> msg: §string_quoted, fld: §object_final
         l.log[ "info", msg, fld ]
     )
 
-    (l @logger) warn: <- (
+    (l : @logger) warn: <- (
         -> msg: §string_quoted, fld: §object_final
         l.log[ "warn", msg, fld ]
     )
 
     (* error variant also accepts an optional @error_event for structured capture *)
-    (l @logger) error: <- (
+    (l : @logger) error: <- (
         -> msg: §string_quoted, fld: §object_final, er: @error_event
         entry: log_entry[ "error", msg, fld, er ]
         l._emit[ entry ]
@@ -250,7 +256,7 @@ logger, log: {
 
     (* Flush — drain all target queues synchronously.
        Go: write sentinel on each chan, block until worker ACK via done chan. *)
-    (l @logger) flush: <- (
+    (l : @logger) flush: <- (
         l.targets >> tgt (
             tgt.next & SINK_FLUSH<tgt>
         )

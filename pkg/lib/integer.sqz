@@ -17,28 +17,30 @@
 
 integer, unsigned_int: {
     names, n, 1..m: ["integer", "unsigned_int"]
-    card,  c:       1..1
-    type,  t:       $
-    data,  d:       [ sign: '+', value: 0 ]
-    ver,   v:       "v0.0"
+    - (
+        card,  c:       1..1
+        type,  t:       $
+        data,  d:       [ sign: '+', value: 0 ]
+        ver,   v:       "v0.0"
 
-    (* init — parse a raw integer literal, record the sign separately,
-       and store the magnitude in the narrowest fitting unsigned type. *)
-    init: <- (
-        -> raw: §integer
-        sign: §char '+'
-        ( raw < 0 ) & sign: §char '-'
+        (* init — parse a raw integer literal, record the sign separately,
+           and store the magnitude in the narrowest fitting unsigned type. *)
+        init: <- (
+            -> raw: §integer
+            sign: §char '+'
+            ( raw < 0 ) & sign: §char '-'
 
-        (* magnitude: absolute value *)
-        mag: raw
-        ( raw < 0 ) & mag: 0 - raw
+            (* magnitude: absolute value *)
+            mag: raw
+            ( raw < 0 ) & mag: 0 - raw
 
-        (* select narrowest container *)
-        ( mag <= 255 )                                      & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint8   mag ] ]
-        ( mag <= 65535 )                                    & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint16  mag ] ]
-        ( mag <= 4294967295 )                               & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint32  mag ] ]
-        ( mag <= 18446744073709551615 )                     & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint64  mag ] ]
-        <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint128 mag ] ]
+            (* select narrowest container *)
+            ( mag <= 255 )                                      & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint8   mag ] ]
+            ( mag <= 65535 )                                    & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint16  mag ] ]
+            ( mag <= 4294967295 )                               & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint32  mag ] ]
+            ( mag <= 18446744073709551615 )                     & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint64  mag ] ]
+            <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, value: uint128 mag ] ]
+        )
     )
 
 
@@ -47,27 +49,27 @@ integer, unsigned_int: {
        --------------------------------------------------------------- *)
 
     (* abs — magnitude as a non-negative integer. *)
-    (n @integer) abs: <- (
+    (n : @integer) abs: <- (
         <- [ type: $, data: [ sign: '+', value: n.data.value ] ]
     )
 
     (* sign — returns "+" or "-" as a string. *)
-    (n @integer) sign: <- (
+    (n : @integer) sign: <- (
         <- CAST string<n.data.sign>
     )
 
     (* is_zero — true when the value is exactly 0. *)
-    (n @integer) is_zero: <- (
+    (n : @integer) is_zero: <- (
         <- n.data.value == 0
     )
 
     (* is_positive — true when value > 0. *)
-    (n @integer) is_positive: <- (
+    (n : @integer) is_positive: <- (
         <- n.data.sign == '+' & n.data.value > 0
     )
 
     (* is_negative — true when value < 0. *)
-    (n @integer) is_negative: <- (
+    (n : @integer) is_negative: <- (
         <- n.data.sign == '-'
     )
 
@@ -77,7 +79,7 @@ integer, unsigned_int: {
        --------------------------------------------------------------- *)
 
     (* in_range — true when n falls within the given numeric range. *)
-    (n @integer) in_range: <- (
+    (n : @integer) in_range: <- (
         -> r: §func_fixed_num_range
         <- n >< r
     )
@@ -89,14 +91,14 @@ integer, unsigned_int: {
 
     (* to_string — decimal string representation.
        Positive values are returned without a leading "+". *)
-    (n @integer) to_string: <- (
+    (n : @integer) to_string: <- (
         mag_str: CAST string<n.data.value>
         ( n.data.sign == '-' ) & <- '-' + mag_str
         <- mag_str
     )
 
     (* to_string_radix — convert to a string in the given base (2, 8, 10, or 16). *)
-    (n @integer) to_string_radix: <- (
+    (n : @integer) to_string_radix: <- (
         -> base: integer
         mag_str: INT_TO_STRING<n.data.value, base>
         ( n.data.sign == '-' ) & <- '-' + mag_str
@@ -109,7 +111,7 @@ integer, unsigned_int: {
        --------------------------------------------------------------- *)
 
     (* to_json — JSON representation (unquoted integer literal). *)
-    (n @integer) to_json: <- (
+    (n : @integer) to_json: <- (
         <- n.to_string()
     )
 }

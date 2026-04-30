@@ -41,11 +41,14 @@
            - Stored as a versioned entry inside the named graph node (see Section 12).
 
          Example:
-           processed_orders, proc_ord: {
-               main: <- (
-                   => [ orders: incoming.data, processed_at: NOW_ISO8601 ]
-               )
-           }
+           processed_orders, proc_ord = [
+               orders:       [],
+               processed_at: ""
+           ]
+
+           (processed_orders) store_ctrl: <- (
+               => [ orders: incoming.data, processed_at: NOW_ISO8601 ]
+           )
 
    11.4  PARSER RESPONSIBILITY
          After parsing all scope_assign / func_scope_assign declarations the parser
@@ -102,9 +105,9 @@
          this node last used when it executed.
 
    13.2  Dirty detection is a RUNTIME check performed immediately before each
-         node's main function is called.  It is NOT a compile-time concern.
+         node's "store_ctrl" method is called.  It is NOT a compile-time concern.
 
-   13.3  Algorithm for node N before calling N.main():
+   13.3  Algorithm for node N before calling N.store_ctrl():
            for each dep D in N's immediate dependencies:
                if D.current > N.last_executed_with[D]:
                    N is dirty → must re-execute
@@ -144,15 +147,16 @@
 
    14.3  Execution order — leaf-first, async:
          Execution proceeds in dependency order: leaf nodes first.
-         Each node waits asynchronously for all its dependencies to complete
-         before calling its own main function.
-         Nodes that are not dirty (Section 13) or are set_static (and already
-         executed) are skipped — their cached version is used directly.
+         Each node waits asynchronously for all its dependencies to
+         complete before calling its own "store_ctrl" static method.
+         Nodes that are not dirty (Section 13) or are set_static (and
+         already executed) are skipped — their cached version is used.
 
    14.4  Published data immutability:
-         When a node's main function calls func_store_stmt, the published version
-         is immediately immutable.  Dependent nodes that received a pointer to the
-         previous version are not affected.
+         When a node's "store_ctrl" method calls func_store_stmt (=>),
+         the published version is immediately immutable.  Dependent
+         nodes that received a pointer to the previous version are
+         not affected.
 
    14.5  Completion:
          The chain is complete once the target node itself has published a new
@@ -161,10 +165,11 @@
    14.6  Error handling:
          Any error during execution emits an error_event routed to the Global
          Error Handler (spec/10_error_handler.sqg).  Applicable resumption modes:
-           - retry_function:   re-run the failing node's main function
+           - retry_function:   re-run the failing node's "store_ctrl" method
            - re_execute_chain: re-run the entire dependency chain from scratch
-                               using the "main" re-entry convention
-                               (spec/06_functions.sqg — "Dependency chain main convention")
+                               using the "store_ctrl" re-entry convention
+                               (spec/06_functions.sqg — "Dependency chain
+                               store_ctrl entry/re-entry convention")
 *)
 
 

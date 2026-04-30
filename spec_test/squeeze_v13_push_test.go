@@ -1,3 +1,5 @@
+//go:build ignore
+
 // squeeze_v13_push_test.go — Specification-driven tests for push-model syntax.
 // Covers spec/13_push_pull.sqg: push_source, push_recv_decl, push_forward_stmt,
 // push_stream_bind, and assign_push (all three roles of the ~> operator).

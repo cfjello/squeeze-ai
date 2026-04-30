@@ -13,6 +13,7 @@ std, standard_library = {
          enum.sqz         : enum, enum_final
          error.sqz        : error_event, err_ev
          graph.sqz        : graph, graph_final
+         hmap.sqz         : hmap, hmap_final
          integer.sqz      : integer, unsigned_int
          iterators.sqz    : iterator_record, iterators
          keyed_tree.sqz   : keyed_tree, keyed_tree_final
@@ -20,6 +21,7 @@ std, standard_library = {
          object.sqz       : object, object_final
          push.sqz         : push_record, push
          sorted_tree.sqz  : sorted_tree, sorted_tree_final
+         store.sqz        : store
          string.sqz       : string, string_quoted
          string_tree.sqz  : string_tree, string_tree_final
          table.sqz        : table, table_final
@@ -34,6 +36,7 @@ std, standard_library = {
        "file://./enum.sqz",
        "file://./error.sqz",
        "file://./graph.sqz",
+       "file://./hmap.sqz",
        "file://./integer.sqz",
        "file://./iterators.sqz",
        "file://./keyed_tree.sqz",
@@ -41,6 +44,7 @@ std, standard_library = {
        "file://./object.sqz",
        "file://./push.sqz",
        "file://./sorted_tree.sqz",
+       "file://./store.sqz",
        "file://./string.sqz",
        "file://./string_tree.sqz",
        "file://./table.sqz",

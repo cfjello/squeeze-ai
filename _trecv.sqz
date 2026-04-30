@@ -1,0 +1,5 @@
+(col : @std.collections)  arr : {
+    (a @arr) length: <- (
+        <- 42
+    )
+}

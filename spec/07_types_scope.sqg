@@ -12,27 +12,98 @@ type_parents = TYPE_OF array_final<"parents" | "p">;
 *)
 
 
-
-
+(* V14 modified This whole file *)
 
 (* ------------------------------------------------------------
       Some scope examples: 
 ------------------------------------------------------------ *)
 extend_scope_oper = "+=" ;
-
-scope_inject      = "(" assign_lhs assign_immutable ident_ref  { ","  assign_lhs assign_immutable ident_ref  } ")";
+(* V14 modified scope_inject *)
+scope_inject      = "(" assign_lhs assign_immutable ( ( [ type_prefix ] ident_ref ) | any_type ) { ","  assign_lhs assign_immutable ( ( [ type_prefix ] ident_ref ) | any_type ) } ")";
 
 (* Use at your own peril *)
-import_assign_inline =  "_" ;
+scope_assign_inline  =  "_" ;
 
-import_assign     = ( assign_lhs | import_assign_inline )  assign_immutable ( http_url | file_url ) { "," ( http_url | file_url ) } ;
+import_assign       =  EOL [ private_modifier] ( assign_lhs | scope_assign_inline )  assign_immutable ( http_url | file_url ) { "," ( http_url | file_url ) } ;
 
-scope_assign      = [ scope_inject ] assign_lhs ( equal_assign | extend_scope_oper ) 
-                    scope_begin  
-                         ( import_assign | assignment | scope_assign ) { ( EOL | "," ) ( import_assign | assignment | scope_assign ) }
-                    scope_end;
+other_inline_assign =  EOL [ private_modifier] scope_assign_inline assign_oper assign_rhs;
 
-parser_root       = import_assign | scope_assign; (* Grammer entry point *)
+(* ------------------------------------------------------------
+   Private visibility modifier
+   A "-" prefix on any scope body item marks it as private to the
+   enclosing scope.  Not permitted at parser_root level.
+
+   private_modifier  — the literal "-" token.
+   private_item      — a single body item made private.
+   private_block     — a "( ... )" or "{ ... }" grouping all of whose
+                       contents are implicitly private.  No nested
+                       private_block inside another private_block.
+   -------------------------------------------------------------- *)
+(* V14 moved  private_modifier to 03_assignment.sqg 
+private_modifier = "-";
+*)
+
+(* V14 removed these AI generated rules
+private_item  = private_modifier
+                ( import_assign | other_inline_assign | assignment
+                | scope_with_catch | scope_assign );
+
+private_block = private_modifier
+                ( group_begin
+                      ( import_assign | other_inline_assign | assignment
+                      | scope_with_catch | scope_assign )
+                      { ( EOL | "," )
+                        ( import_assign | other_inline_assign | assignment
+                        | scope_with_catch | scope_assign ) }
+                  group_end
+                | scope_begin
+                      ( import_assign | other_inline_assign | assignment
+                      | scope_with_catch | scope_assign )
+                      { ( EOL | "," )
+                        ( import_assign | other_inline_assign | assignment
+                        | scope_with_catch | scope_assign ) }
+                  scope_end );
+
+receiver_clause       = "(" ident_name inspect_type ")";
+receiver_method_assign = receiver_clause assign_lhs assign_oper ( func_unit | scope_body ) [ catch_oper func_unit ];
+*) 
+
+
+
+func_inject =  group_begin ( 
+                  ( assign_lhs equal_assign  inspect_type [ empty_array_decl] ) 
+                  | ( assign_lhs  equal_assign ident_ref ) 
+                  )  
+                  { ","  ( assign_lhs equal_assign  inspect_type [ empty_array_decl] ) 
+                  | ( assign_lhs  equal_assign ident_ref )  } 
+               group_end;
+
+
+scope_body_item = import_assign | other_inline_assign | assignment;
+
+private_block   =  private_modifier
+                    ( ( group_begin scope_body_item { ( EOL | "," ) scope_body_item } group_end )
+                    | ( scope_begin scope_body_item { ( EOL | "," ) scope_body_item } scope_end ) );
+
+(* V14 added scope_body *)
+scope_body      = ( scope_begin  
+                         ( scope_body_item | private_block ) { ( EOL | "," ) ( scope_body_item | private_block ) }
+                  scope_end )
+                  { scope_body_catch };
+
+
+                     
+scope_assign      = [ scope_inject ] assign_lhs ( equal_assign | extend_scope_oper ) (scope_body  | empty_scope_decl ) ;  
+
+scope_merge_tail    = ( TYPE_OF scope_assign<ident_ref> | scope_assign ) "+" ( TYPE_OF scope_body<ident_ref> | scope_body)  { "+" ( TYPE_OF scope_body<ident_ref> | scope_body) };
+
+(* V14 added scope_final *)
+scope_final         = scope_assign | scope_merge_tail ;
+
+EXTEND<scope_body_item> = | scope_final;
+
+(* V14 modified parser_root *)
+parser_root       = import_assign | scope_final; (* Grammer entry point *)
 
 (* ------------------------------------------------------------
       func_scope_assign — function definition with explicit outer-scope

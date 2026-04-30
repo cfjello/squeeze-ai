@@ -48,19 +48,24 @@
      BF_TO_STRING<bf>            — "read | write" active flag names
    *)
 
-bitfield, bitfield_final: {
-    names, n, 1..m: ["bitfield", "bitfield_final"]
-    card,  c:       1..1
-    type,  t:       $
-    data,  d:       [ base: "uint8", flags: [], value: 0 ]
-    ver,   v:       "v0.0"
+(col : @std.collections)  bitfield, bitfield_final: {
+    names, n, 1..2: ["bitfield", "bitfield_final"]
+    filter:  col.filter
+    count:   col.count
+    collect: col.collect
+    - (
+        card,  c:       1..1
+        type,  t:       $
+        data,  d:       [ base: "uint8", flags: [], value: 0 ]
+        ver,   v:       "v0.0"
 
-    init: <- (
-        -> raw: §bitfield_final
-        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
-             card:  LHS_CALLER<§assign_lhs.cardinality>,
-             type:  $,
-             data:  raw ]
+        init: <- (
+            -> raw: §bitfield_final
+            <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+                 card:  LHS_CALLER<§assign_lhs.cardinality>,
+                 type:  $,
+                 data:  raw ]
+        )
     )
 
 
@@ -69,31 +74,31 @@ bitfield, bitfield_final: {
        --------------------------------------------------------------- *)
 
     (* flag_names — @array of all declared flag name strings. *)
-    (b @bitfield) flag_names: <- (
+    (b : @bitfield) flag_names: <- (
         result = []
         >> f: b.data.flags
-            >> elem: @?
+            -> elem: @?
             result = result + [ f.name ]
         <- [ type: $, data: result ]
     )
 
     (* flag_count — number of declared flags. *)
-    (b @bitfield) flag_count: <- (
+    (b : @bitfield) flag_count: <- (
         <- LENGTH<b.data.flags>
     )
 
     (* base_type — "uint8", "uint16", "uint32", or "uint64". *)
-    (b @bitfield) base_type: <- (
+    (b : @bitfield) base_type: <- (
         <- b.data.base
     )
 
     (* max_bits — maximum number of flag bits available: 8, 16, 32, or 64. *)
-    (b @bitfield) max_bits: <- (
+    (b : @bitfield) max_bits: <- (
         <- BF_MAX_BITS<b.data.base>
     )
 
     (* has_flag — true if name is a declared flag in this bitfield schema. *)
-    (b @bitfield) has_flag: <- (
+    (b : @bitfield) has_flag: <- (
         -> name: string
         <- BF_HAS_FLAG<b, name>
     )
@@ -104,29 +109,29 @@ bitfield, bitfield_final: {
        --------------------------------------------------------------- *)
 
     (* is_set — true if the named flag bit is currently 1. *)
-    (b @bitfield) is_set: <- (
+    (b : @bitfield) is_set: <- (
         -> name: string
         <- BF_IS_SET<b, name>
     )
 
     (* is_clear — true if the named flag bit is currently 0. *)
-    (b @bitfield) is_clear: <- (
+    (b : @bitfield) is_clear: <- (
         -> name: string
         <- ( BF_IS_SET<b, name> ) & false ^ true
     )
 
     (* active_flags — @array of names of all flags that are currently set. *)
-    (b @bitfield) active_flags: <- (
+    (b : @bitfield) active_flags: <- (
         <- [ type: $, data: BF_ACTIVE_FLAGS<b> ]
     )
 
     (* is_none — true if no flag bits are set (packed value == 0). *)
-    (b @bitfield) is_none: <- (
+    (b : @bitfield) is_none: <- (
         <- b.data.value == 0
     )
 
     (* is_all — true if every declared flag bit is set. *)
-    (b @bitfield) is_all: <- (
+    (b : @bitfield) is_all: <- (
         <- BF_IS_ALL<b>
     )
 
@@ -136,19 +141,19 @@ bitfield, bitfield_final: {
        --------------------------------------------------------------- *)
 
     (* set — new bitfield with the named flag bit forced to 1. *)
-    (b @bitfield) set: <- (
+    (b : @bitfield) set: <- (
         -> name: string
         <- [ type: $, data: BF_SET<b, name> ]
     )
 
     (* clear — new bitfield with the named flag bit forced to 0. *)
-    (b @bitfield) clear: <- (
+    (b : @bitfield) clear: <- (
         -> name: string
         <- [ type: $, data: BF_CLEAR<b, name> ]
     )
 
     (* toggle — new bitfield with the named flag bit flipped. *)
-    (b @bitfield) toggle: <- (
+    (b : @bitfield) toggle: <- (
         -> name: string
         <- [ type: $, data: BF_TOGGLE<b, name> ]
     )
@@ -162,19 +167,19 @@ bitfield, bitfield_final: {
 
     (* union — new bitfield with bits set in either self or other (OR).
        Equivalent to the grammar comment `Perms.read | Perms.write`. *)
-    (b @bitfield) union: <- (
+    (b : @bitfield) union: <- (
         -> other: @bitfield
         <- [ type: $, data: BF_UNION<b, other> ]
     )
 
     (* intersect — new bitfield with bits set in both self and other (AND). *)
-    (b @bitfield) intersect: <- (
+    (b : @bitfield) intersect: <- (
         -> other: @bitfield
         <- [ type: $, data: BF_INTERSECT<b, other> ]
     )
 
     (* difference — new bitfield with bits set in self but not in other (AND NOT). *)
-    (b @bitfield) difference: <- (
+    (b : @bitfield) difference: <- (
         -> other: @bitfield
         <- [ type: $, data: BF_DIFFERENCE<b, other> ]
     )
@@ -182,7 +187,7 @@ bitfield, bitfield_final: {
     (* complement — new bitfield with every declared flag bit inverted (NOT).
        Only bits that correspond to a declared flag are affected; all other
        bits remain 0 regardless of the base type width. *)
-    (b @bitfield) complement: <- (
+    (b : @bitfield) complement: <- (
         <- [ type: $, data: BF_COMPLEMENT<b> ]
     )
 
@@ -194,25 +199,25 @@ bitfield, bitfield_final: {
        --------------------------------------------------------------- *)
 
     (* none — new instance with all bits cleared (value == 0). *)
-    (b @bitfield) none: <- (
+    (b : @bitfield) none: <- (
         <- [ type: $, data: [ base: b.data.base, flags: b.data.flags, value: 0 ] ]
     )
 
     (* all — new instance with every declared flag bit set. *)
-    (b @bitfield) all: <- (
+    (b : @bitfield) all: <- (
         <- [ type: $, data: BF_OF<b, BF_ACTIVE_FLAGS<BF_COMPLEMENT<b.none>>> ]
     )
 
     (* of — new instance with exactly the named flags set, all others cleared.
        names is an @array of flag name strings. *)
-    (b @bitfield) of: <- (
+    (b : @bitfield) of: <- (
         -> names: @?
         <- [ type: $, data: BF_OF<b, names> ]
     )
 
     (* mask_of — new instance with only the single named flag bit set.
        Useful as a standalone mask value for manual intersect/union work. *)
-    (b @bitfield) mask_of: <- (
+    (b : @bitfield) mask_of: <- (
         -> name: string
         <- [ type: $, data: BF_MASK_OF<b, name> ]
     )
@@ -223,18 +228,18 @@ bitfield, bitfield_final: {
        --------------------------------------------------------------- *)
 
     (* to_uint — raw packed value as uint64 integer. *)
-    (b @bitfield) to_uint: <- (
+    (b : @bitfield) to_uint: <- (
         <- BF_TO_UINT<b>
     )
 
     (* to_json — JSON object: { "base": "uint8", "value": 3, "active": ["read","write"] } *)
-    (b @bitfield) to_json: <- (
+    (b : @bitfield) to_json: <- (
         <- BF_TO_JSON<b>
     )
 
     (* to_string — active flag names joined by " | ", e.g. "read | write".
        Returns "" when no flags are set. *)
-    (b @bitfield) to_string: <- (
+    (b : @bitfield) to_string: <- (
         <- BF_TO_STRING<b>
     )
 }

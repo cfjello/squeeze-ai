@@ -35,17 +35,19 @@
    ============================================================ *)
 
 dep_version, dv: {
-    names, n, 1..m : ["dep_version", "dv"]
-    card,  c       : 1..1
-    type,  t       : $
-    ver,   v       : "v0.0"
+    names: ["dep_version", "dv"]
+    - (
+        card,  c       : 1..1
+        type,  t       : $
+        ver,   v       : "v0.0"
+    )
 
     key,          k   : ""    (* UUIDv7 — sort key and identity of this version *)
     data,         d   : @?    (* published object_final — immutable after creation *)
     ref_count,    rc  : 0     (* active chains holding a pointer; Go: int64 atomic *)
     published_at, pat : ""    (* ISO-8601 — mirrors the timestamp embedded in key *)
 
-    init: <- (
+    - init: <- (
         -> d: §any_type
         k: NEW_UUID_V7
         <- [
@@ -61,20 +63,20 @@ dep_version, dv: {
 
     (* Increment ref_count atomically; return immutable data pointer.
        Go: ATOMIC_INC on rc; return pointer to d (never copied). *)
-    (v @dep_version) acquire: <- (
+    (v = @dep_version) acquire: <- (
         ATOMIC_INC<v.ref_count>
         <- v.data
     )
 
     (* Decrement ref_count atomically.
        Go: ATOMIC_DEC on rc. *)
-    (v @dep_version) release: <- (
+    (v = @dep_version) release: <- (
         ATOMIC_DEC<v.ref_count>
     )
 
     (* True when no chain holds a pointer to this version.
        Go: ATOMIC_LOAD(rc) == 0. *)
-    (v @dep_version) is_reclaimable: <- (
+    (v : @dep_version) is_reclaimable: <- (
         <- ATOMIC_LOAD<v.ref_count> == 0
     )
 }
@@ -86,9 +88,11 @@ dep_version, dv: {
 
 dep_node, dn: {
     names, n, 1..m : ["dep_node", "dn"]
-    card,  c       : 1..1
-    type,  t       : $
-    ver,   v       : "v0.0"
+    - (
+        card,  c       : 1..1
+        type,  t       : $
+        ver,   v       : "v0.0"
+    )
 
     name,            nm  : ""    (* ident_static_store_name this node is registered under *)
     is_static,       sta : false (* set_static flag — see spec/11_dependencies.sqg §13.5 *)
@@ -98,7 +102,7 @@ dep_node, dn: {
     current,         cur : ""    (* UUIDv7 of most-recently published version; "" = never published *)
     last_used,       lu  : {}    (* { dep_name: uuid_v7 } — version consumed per dep when last run *)
 
-    init: <- (
+    - init: <- (
         -> nm: §string_quoted, dep_list: §array
         nm != ""
         <- [
@@ -119,7 +123,7 @@ dep_node, dn: {
        deps_snapshot: object { dep_name: current_uuid_v7 } supplied by dep_graph.snapshot_deps.
        A node with no deps (leaf) is dirty iff it has never published (current == "").
        A set_static node that has already executed is never dirty. *)
-    (n @dep_node) is_dirty: <- (
+    (n : @dep_node) is_dirty: <- (
         -> deps_snapshot: §object_final
         n.is_static & n.static_executed & <- false
         n.current == ""                  & <- true   (* never published → always dirty *)
@@ -138,7 +142,7 @@ dep_node, dn: {
     (* Create a new dep_version, append it, update current.
        Returns the new version's UUIDv7 key.
        Go: append to versions slice (under a per-node RWMutex write lock); update current. *)
-    (n @dep_node) publish: <- (
+    (n : @dep_node) publish: <- (
         -> data: §any_type
         new_ver: dep_version[ data ]
         versions = n.versions + [new_ver]
@@ -155,7 +159,7 @@ dep_node, dn: {
     )
 
     (* Increment ref_count on the current version; return that version's data pointer. *)
-    (n @dep_node) acquire_current: <- (
+    (n : @dep_node) acquire_current: <- (
         n.current == "" & <- @?    (* nothing published yet *)
         n.versions >> v (
             v.next & v.value.key == n.current & <- v.value.acquire
@@ -164,7 +168,7 @@ dep_node, dn: {
     )
 
     (* Decrement ref_count on the named version. *)
-    (n @dep_node) release_version: <- (
+    (n : @dep_node) release_version: <- (
         -> key: §string_quoted
         n.versions >> v (
             v.next & v.value.key == key & v.value.release
@@ -173,7 +177,7 @@ dep_node, dn: {
 
     (* Async-delete versions that are reclaimable and not current.
        Go: launch a goroutine; filter versions slice under write lock. *)
-    (n @dep_node) gc_old_versions: <- (
+    (n : @dep_node) gc_old_versions: <- (
         ASYNC_CALL<{
             n.versions >> v (
                 v.next & v.value.key != n.current & v.value.is_reclaimable & (
@@ -185,7 +189,7 @@ dep_node, dn: {
 
     (* Record which dep versions were consumed in the last run.
        updates: object { dep_name: uuid_v7 } *)
-    (n @dep_node) record_last_used: <- (
+    (n : @dep_node) record_last_used: <- (
         -> updates: §object_final
         <- [
             type:            $,
@@ -207,25 +211,27 @@ dep_node, dn: {
 
 dep_graph, dg: {
     names, n, 1..m : ["dep_graph", "dg"]
-    card,  c       : 1..1
-    type,  t       : $
-    ver,   v       : "v0.0"
+    - (
+        card,  c       : 1..1
+        type,  t       : $
+        ver,   v       : "v0.0"
 
-    nodes, nd : {}   (* { name: @dep_node } — all registered nodes *)
+        nodes, nd : {}   (* { name: @dep_node } — all registered nodes *)
 
-    init: <- (
-        <- [
-            names: LHS_CALLER<§assign_lhs.ident_name>,
-            card:  LHS_CALLER<§assign_lhs.cardinality>,
-            type:  $,
-            nodes: {}
-        ]
+        init: <- (
+            <- [
+                names: LHS_CALLER<§assign_lhs.ident_name>,
+                card:  LHS_CALLER<§assign_lhs.cardinality>,
+                type:  $,
+                nodes: {}
+            ]
+        )
     )
 
     (* Register a new named node with its compile-time dep list.
        Emits error_event "duplicate_node" if name already registered.
        Cycle detection is deferred until has_cycle is called. *)
-    (g @dep_graph) register: <- (
+    (g : @dep_graph) register: <- (
         -> nm: §string_quoted, dep_list: §array
         nm != ""
         g.nodes[nm] != @?   (* already registered — error *)
@@ -238,7 +244,7 @@ dep_graph, dg: {
     )
 
     (* Return the dep_node for a name; error_event "unknown_node" if not found. *)
-    (g @dep_graph) get_node: <- (
+    (g : @dep_graph) get_node: <- (
         -> nm: §string_quoted
         node: g.nodes[nm]
         node == @?
@@ -248,7 +254,7 @@ dep_graph, dg: {
 
     (* Return { dep_name: dep_node.current } for all deps of the named node.
        Used by dep_node.is_dirty to compare stale vs. fresh versions. *)
-    (g @dep_graph) snapshot_deps: <- (
+    (g : @dep_graph) snapshot_deps: <- (
         -> nm: §string_quoted
         node: g.get_node[ nm ]
         snap: {}
@@ -265,7 +271,7 @@ dep_graph, dg: {
        Returns true if a cycle exists; should be called by the parser after
        all registrations are complete — a true result is a compile error.
        Go: TOPO_SORT returns an error when a cycle is present. *)
-    (g @dep_graph) has_cycle: <- (
+    (g : @dep_graph) has_cycle: <- (
         node_names: []
         edges:      []
         g.nodes >> entry (
@@ -283,7 +289,7 @@ dep_graph, dg: {
     (* Return a graph_final representation of the full dependency graph.
        Each graph node carries: name, current uuid_v7, dep count, is_static flag.
        Edges encode the func_deps directed relationships. *)
-    (g @dep_graph) as_graph_final: <- (
+    (g : @dep_graph) as_graph_final: <- (
         g_nodes: []
         g_edges: []
         g.nodes >> entry (
@@ -312,9 +318,11 @@ dep_graph, dg: {
 
 dep_chain, dc: {
     names, n, 1..m : ["dep_chain", "dc"]
-    card,  c       : 1..1
-    type,  t       : $
-    ver,   v       : "v0.0"
+    - (
+        card,  c       : 1..1
+        type,  t       : $
+        ver,   v       : "v0.0"
+    )
 
     chain_uuid,       uid  : ""        (* UUIDv7 stamp for this chain *)
     target,           tgt  : ""        (* name of the root node being updated *)
@@ -322,7 +330,7 @@ dep_chain, dc: {
     version_snapshot, vs   : {}        (* { name: uuid_v7 } captured at chain creation *)
     status,           stat : "pending" (* "pending" | "running" | "done" | "failed" *)
 
-    init: <- (
+    - init: <- (
         -> tgt: §string_quoted, g: @dep_graph
         tgt != ""
         uid: NEW_UUID_V7
@@ -342,7 +350,7 @@ dep_chain, dc: {
        reachable from c.target via func_deps edges.
        Also captures the version_snapshot (current uuid_v7 per dep) at this moment.
        Go: TOPO_SORT over the subgraph; reverse so leaves come first. *)
-    (c @dep_chain) build_order: <- (
+    (c : @dep_chain) build_order: <- (
         -> g: @dep_graph
         subgraph_nodes: [c.target]
         subgraph_edges: []
@@ -384,7 +392,7 @@ dep_chain, dc: {
        Any error emits an error_event, logs it via l, and sets status "failed".
        Go: each node runs in its own goroutine; AWAIT_ALL waits for all deps
            before the current node starts (fan-in pattern). *)
-    (c @dep_chain) execute: <- (
+    (c : @dep_chain) execute: <- (
         -> g: @dep_graph, l: @logger
         status = "running"
         err_occurred: false
@@ -431,7 +439,7 @@ dep_chain, dc: {
 
     (* Release all held version pointers and schedule GC on affected nodes.
        Called after execute() completes regardless of success or failure. *)
-    (c @dep_chain) finalize: <- (
+    (c : @dep_chain) finalize: <- (
         -> g: @dep_graph
         c.execution_order >> nm (
             nm.next & (
@@ -466,9 +474,11 @@ dep_chain, dc: {
 
 dependencies, deps: {
     names, n, 1..m : ["dependencies", "deps"]
-    card,  c       : 1..1
-    type,  t       : $
-    ver,   v       : "v0.0"
+    - (
+        card,  c       : 1..1
+        type,  t       : $
+        ver,   v       : "v0.0"
+    )
 
     (* 15.1 — Return the compile-time func_deps list for a named node. *)
     get_depends_on: <- (

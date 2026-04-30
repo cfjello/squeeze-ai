@@ -1,0 +1,686 @@
+(* ============================================================
+   spec/17_database.sqg  —  Squeeze V14 Database Interface
+   ============================================================
+
+   This file specifies the Squeeze V14 uniform database interface.
+   It covers:
+     — the @secret sealed credential type
+     — the @db_pool_config nested sub-scope
+     — the @db_connection configuration type and DSN generation
+     — the @db_session active session type (SQL execution surface)
+     — the @db_tx transaction handle type
+     — SQL parameter convention (@hmap)
+     — query result convention (@table with direct type mapping)
+     — the SQL type → Squeeze type mapping table
+     — driver string registry and linter convention
+     — exception integration (spec/16_exceptions.sqg)
+
+   Design decisions:
+     — Individual fields are canonical (Option B); DSN is generated
+       via to_dsn(), not stored.  parse_dsn(url) populates fields
+       from a URL string and is the only way to initialise from a DSN.
+     — Driver is a plain string; the linter warns on unknown values.
+     — @db_connection holds config only — no live connection.
+       conn.open() returns a @db_session (live, pooled).
+     — SQL methods live on @db_session and @db_tx, not on @db_connection.
+       A function that runs queries receives -> sess: @db_session,
+       keeping credentials out of the query-execution scope.
+     — query() always returns @table (0..n rows).
+       Single-row access uses @table methods (.row_at(1), .first()).
+     — SQL parameters are always @hmap (named) — never string
+       interpolation.  This is the primary SQL injection defence.
+     — Column types are mapped directly by the runtime (no JSON
+       intermediate); the mapping table is in Section 17.6.
+     — Transactions: autocommit (default), manual begin/commit/rollback,
+       and scoped transaction(fn) with auto-rollback via ^.
+
+   Relationship to other specs:
+     spec/16_exceptions.sqg — exception kinds io_error, timeout,
+       cancelled, invalid_argument apply to all database operations.
+     spec/10_error_handler.sqg — unhandled database exceptions
+       escalate to the global error handler as error_event values.
+
+   Related library files:
+     pkg/lib/table.sqz          — @table type (SELECT result)
+     pkg/lib/hmap.sqz           — @hmap type (SQL params, JSON columns)
+     pkg/lib/object.sqz         — @object type (single-row result)
+     pkg/lib/db.sqz             — all database types (TO BE WRITTEN)
+   ============================================================ *)
+
+
+include "./06_functions.sqg";
+include "./07_types_scope.sqg";
+include "./16_exceptions.sqg";
+
+
+(* ------------------------------------------------------------
+   SECTION 17.1 — THE @secret TYPE
+   ------------------------------------------------------------ *)
+
+(*
+   17.1.1  Purpose
+
+           @secret is a sealed wrapper around a plain string value.
+           Its sole purpose is to prevent accidental credential leakage
+           into logs, serialisation, @hmap contexts, or error_event.context
+           fields.
+
+   17.1.2  Instantiation
+
+             my_pw:  secret "correcthorsebatterystaple"
+
+           The value is stored internally; the string literal is never
+           retained in source metadata after compilation.
+
+   17.1.3  Methods
+
+             reveal()       — returns the raw string exactly once per
+                              call.  Intended only for passing to a
+                              driver DSN builder at connection time.
+             to_string()    — always returns the redacted placeholder
+                              "***" regardless of the stored value.
+                              This is the only serialisation path, so
+                              logging @secret values is always safe.
+
+   17.1.4  Linter rule (DB-S1)
+
+           The linter emits a warning if a @secret value appears as:
+             — a func_return_stmt return value
+             — a value inside an object_final or array_final literal
+             — an argument to any function other than the three
+               recognised driver DSN builder intrinsics.
+
+   17.1.5  Grammar note
+
+           @secret is a plain type annotation, not a keyword.
+           "secret" is not a reserved word.
+
+   Example:
+
+     db_pw: secret "mypassword"
+     dsn:   conn.to_dsn()          (* "***" appears in password position *)
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 17.2 — @db_pool_config  (NESTED SUB-SCOPE)
+   ------------------------------------------------------------ *)
+
+(*
+   17.2.1  @db_pool_config is a nested sub-scope inside @db_connection.
+           It groups connection-pool tuning parameters as a
+           first-class typed value.
+
+   17.2.2  Fields
+
+             max_open      — maximum number of concurrent open connections.
+                             0 means unlimited (driver default).
+             max_idle      — maximum number of idle connections kept warm
+                             in the pool between queries.
+             max_lifetime  — maximum time in seconds a connection may be
+                             reused before it is closed and replaced.
+                             0 means no limit.
+             max_idle_time — maximum time in seconds an idle connection
+                             is retained before being dropped from the pool.
+                             0 means no limit.
+
+   17.2.3  Defaults
+
+           The defaults ship sensible production values but are all
+           overridable.  A zero value in any field restores the Go
+           database/sql driver default for that parameter.
+
+   17.2.4  Mapping to Go database/sql
+
+             max_open      → sql.DB.SetMaxOpenConns(n)
+             max_idle      → sql.DB.SetMaxIdleConns(n)
+             max_lifetime  → sql.DB.SetConnMaxLifetime(d)
+             max_idle_time → sql.DB.SetConnMaxIdleTime(d)
+
+   Example (inline as nested sub-scope of db_connection):
+
+     pool = {
+         max_open:      25
+         max_idle:      5
+         max_lifetime:  300
+         max_idle_time: 60
+     }
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 17.3 — @db_connection  (CONFIGURATION)
+   ------------------------------------------------------------ *)
+
+(*
+   17.3.1  Purpose
+
+           @db_connection holds all configuration needed to open a
+           database connection.  It does NOT hold a live connection.
+           Call conn.open() to obtain an active @db_session.
+
+   17.3.2  Fields
+
+       DRIVER
+         driver        — string identifying the database driver.
+                         Known values: "postgres", "mysql", "sqlite3",
+                         "oracle", "mssql", "clickhouse", "duckdb".
+                         The linter (pass DB-D1) warns on unknown values.
+
+       CREDENTIALS
+         username, u   — login name (plain string).
+         password, pw  — login credential (@secret — Section 17.1).
+
+       SERVER COORDINATES
+         host,     h   — hostname or IP address string.
+                         "" or "localhost" → loopback.
+                         For SQLite: ignored (file-based driver).
+         port,     p   — TCP port integer.
+                         0 → driver default (5432 postgres, 3306 mysql,
+                         1521 oracle, 1433 mssql).
+                         For SQLite: ignored.
+         database, db  — database name, schema, SID, or file path.
+                         For SQLite: relative or absolute file path.
+
+       SCHEMA / SEARCH PATH
+         schema, sc    — default schema or search_path string.
+                         Postgres: sets search_path on each connection.
+                         MySQL: sets default schema at connect time.
+                         Oracle/SQLite: ignored.
+                         "" → driver default.
+
+       TLS / SSL
+         tls_mode      — "disable" | "require" | "verify-ca" | "verify-full".
+                         Default "disable".
+                         For SQLite: ignored.
+         tls_cert      — path string to the client certificate file.
+                         "" → none.
+         tls_key       — path string to the client private key file.
+                         "" → none.
+         tls_ca        — path string to the CA bundle file.
+                         "" → system CA pool.
+
+       TIMEOUTS
+         connect_timeout — seconds to wait for a connection to be
+                           established.  0 → driver default.
+         query_timeout   — default seconds before a query is cancelled.
+                           0 → no default limit (per-query override possible).
+
+       TRANSACTION DEFAULT
+         autocommit      — boolean.  true (default) → each exec() commits
+                           immediately without an explicit begin().
+                           false → caller must call sess.begin() and
+                           tx.commit() / tx.rollback() explicitly.
+
+       CONNECTION POOL
+         pool            — @db_pool_config nested sub-scope (Section 17.2).
+
+   17.3.3  DSN generation — to_dsn()
+
+           Builds a driver-specific DSN / connection URL string from
+           the canonical field values.  The password field is
+           accessed via pw.reveal() exactly once during this call.
+           The returned string is a plain @string; it is the caller's
+           responsibility not to log it.
+
+           Output formats by driver:
+
+             "postgres"   → postgres://user:pw@host:port/database?sslmode=tls_mode&search_path=schema
+             "mysql"      → user:pw@tcp(host:port)/database?tls=tls_mode
+             "sqlite3"    → file:database?cache=shared&mode=rwc
+             "oracle"     → oracle://user:pw@host:port/database
+             "mssql"      → sqlserver://user:pw@host:port?database=database
+
+   17.3.4  DSN parsing — parse_dsn(url)
+
+           Parses a driver URL string and populates the individual
+           fields.  The password segment is extracted and stored as
+           a @secret value automatically.  parse_dsn is the ONLY
+           authorised way to initialise a @db_connection from a URL.
+           The raw URL string is not retained after parsing.
+
+           Returns a new @db_connection with all fields set.
+           Raises invalid_argument (@exception) if the URL cannot
+           be parsed or the driver scheme is unrecognised.
+
+   17.3.5  Linter rule (DB-D1)
+
+           Input:  @db_connection node at type-check time.
+           Check:  driver field value is a known string literal.
+           Known:  "postgres", "mysql", "sqlite3", "oracle", "mssql",
+                   "clickhouse", "duckdb".
+           Action: W-DB1 warning (not an error) for unknown values —
+                   community drivers are a valid use case.
+
+   Example:
+
+     my_conn: db_connection [
+         driver:   "postgres"
+         username: "app_user"
+         password: secret "s3cr3t"
+         host:     "db.myapp.internal"
+         port:     5432
+         database: "orders"
+         schema:   "public"
+         tls_mode: "verify-full"
+         tls_ca:   "/etc/ssl/certs/myapp-ca.pem"
+         connect_timeout: 10
+         query_timeout:   30
+         autocommit:      true
+         pool = {
+             max_open:      25
+             max_idle:      5
+             max_lifetime:  300
+             max_idle_time: 60
+         }
+     ]
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 17.4 — @db_session  (ACTIVE SESSION / SQL SURFACE)
+   ------------------------------------------------------------ *)
+
+(*
+   17.4.1  Purpose
+
+           @db_session represents an active, pooled database session.
+           It is the SQL execution surface.  All query and exec
+           methods live here, not on @db_connection.
+
+           A function that only needs to run queries should declare:
+             -> sess: @db_session
+           This keeps @db_connection (and its credentials) out of the
+           query-execution scope entirely.
+
+   17.4.2  Lifecycle
+
+           Obtained by:
+             sess: conn.open()         (* opens / checks out from pool *)
+
+           Closed by:
+             sess.close()              (* returns connection to pool   *)
+
+           Liveness check:
+             sess.ping()               (* returns boolean              *)
+
+   17.4.3  SQL execution methods
+
+           QUERY — SELECT statements
+
+             sess.query(sql, params)   → @table
+
+               sql    — string containing the SQL statement.
+                        Named parameter placeholders use the colon
+                        prefix: :name  (normalised to driver-specific
+                        syntax by the runtime — $1 for postgres,
+                        ? for mysql/sqlite, :name for oracle).
+               params — @hmap of parameter bindings (Section 17.5).
+                        Pass hmap [] for parameterless queries.
+               Result — @table with fully typed columns (Section 17.6).
+                        Empty SELECT returns a zero-row @table with
+                        the correct column schema.
+
+           EXEC — INSERT / UPDATE / DELETE / DDL
+
+             sess.exec(sql, params)    → [ rows_affected: integer, last_id: string ]
+
+               sql    — string containing the SQL statement.
+               params — @hmap of parameter bindings.
+               Result — rows_affected: number of rows changed.
+                        last_id: driver last-insert-id as string
+                        ("" when not applicable, e.g. UPDATE/DELETE).
+
+   17.4.4  Transaction methods
+
+           Manual transaction:
+             tx:   sess.begin()
+                   (* returns @db_tx — Section 17.5 *)
+                   (* autocommit must be false, or begin() raises
+                      invalid_argument *)
+
+           Scoped auto-managed transaction:
+             result: sess.transaction( <- (
+                 -> tx: @db_tx
+                 tx.exec(insert_sql, p1)
+                 tx.exec(update_sql, p2)
+                 <- ok
+             )) ^ (
+                 -> ex: @exception
+                 ex.propagate()         (* triggers auto-rollback *)
+             )
+
+           The runtime commits tx automatically when the handler
+           func_unit returns a non-exception value.
+           The runtime rolls back tx automatically when the ^ handler
+           propagates or when the handler func_unit raises.
+
+   Example:
+
+     sess = {
+         _ := file://./db.sqz
+         conn: db_connection [ driver: "postgres", host: "localhost",
+                               username: "app", password: secret "pw",
+                               database: "mydb", autocommit: true,
+                               pool = { max_open: 10, max_idle: 2,
+                                        max_lifetime: 300, max_idle_time: 60 } ]
+         session: conn.open()
+         rows:    session.query("SELECT id, name FROM users WHERE active = :active",
+                                [ active: true ] )
+         session.close()
+         <- rows
+     }
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 17.5 — @db_tx  (TRANSACTION HANDLE)
+   ------------------------------------------------------------ *)
+
+(*
+   17.5.1  Purpose
+
+           @db_tx is a thin handle to an in-progress database
+           transaction.  It exposes the same SQL execution methods
+           as @db_session plus commit / rollback controls.
+
+           @db_tx is obtained from sess.begin() only — it cannot
+           be constructed directly.
+
+   17.5.2  SQL execution methods
+
+           tx.query(sql, params)    → @table
+           tx.exec(sql, params)     → [ rows_affected: integer, last_id: string ]
+
+           Identical semantics to @db_session (Section 17.4.3).
+           All statements issued through a @db_tx participate in
+           the same transaction.
+
+   17.5.3  Transaction control
+
+           tx.commit()              — commits the transaction.
+                                      Raises io_error on driver failure.
+
+           tx.rollback()            — rolls back the transaction.
+                                      Safe to call after commit() fails.
+                                      Raises io_error on driver failure.
+
+           tx.savepoint(name)       — creates a named savepoint.
+                                      name is a plain string identifier.
+                                      Supported by: postgres, oracle, mssql.
+                                      Raises invalid_argument on drivers
+                                      that do not support savepoints
+                                      (sqlite3 in WAL mode: supported;
+                                       mysql: supported).
+
+           tx.rollback_to(name)     — rolls back to the named savepoint
+                                      without ending the transaction.
+                                      Raises not_found if the savepoint
+                                      name does not exist.
+
+   17.5.4  Exception integration
+
+           All @db_tx methods are framed call sites (spec/16, Section 16.1.2).
+           The following exception kinds apply:
+             io_error         — driver-level failure (network, disk)
+             timeout          — query_timeout from @db_connection exceeded
+             cancelled        — context cancellation signal received
+             invalid_argument — bad SQL syntax, unknown savepoint name,
+                                begin() on autocommit session
+
+   Example (manual transaction):
+
+     process_transfer = {
+         -> from_id: string, to_id: string, amount: decimal
+         tx: sess.begin()
+         tx.exec("UPDATE accounts SET balance = balance - :amt WHERE id = :id",
+                 [ amt: amount, id: from_id ]) ^ {
+             -> ex: @exception
+             tx.rollback()
+             ex.propagate()
+         }
+         tx.exec("UPDATE accounts SET balance = balance + :amt WHERE id = :id",
+                 [ amt: amount, id: to_id ]) ^ {
+             -> ex: @exception
+             tx.rollback()
+             ex.propagate()
+         }
+         tx.commit()
+         <- ok
+     }
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 17.6 — SQL PARAMETER CONVENTION
+   ------------------------------------------------------------ *)
+
+(*
+   17.6.1  All SQL parameters are passed as an @hmap value.
+
+           Named placeholders in SQL strings use the `:name` prefix
+           regardless of the target driver.  The runtime translates
+           to the driver-native syntax at execution time:
+
+             Driver        Placeholder syntax
+             ----------    ------------------
+             postgres      $1, $2, … (positional, in key-sorted order)
+             mysql         ? (positional, in key-sorted order)
+             sqlite3       ?  or  :name  (both supported)
+             oracle        :name
+             mssql         @name
+
+   17.6.2  Parameterless queries
+
+           Pass hmap [] (empty @hmap) for SQL statements with no
+           parameters.  Passing a null or omitting the argument
+           raises invalid_argument.
+
+   17.6.3  SQL injection prevention
+
+           String interpolation inside an SQL argument is a linter
+           error (DB-SQL1):
+             — Any string concatenation (+) whose result is used as
+               the first argument of query() or exec() triggers DB-SQL1
+               if the concatenation involves a non-literal value.
+             — Only string literals and compile-time constants are
+               permitted in the sql argument position.
+
+   17.6.4  @hmap value types for parameters
+
+           Values in the parameter @hmap map to SQL types as follows
+           (inverse of Section 17.7):
+
+             string    → VARCHAR / TEXT
+             integer   → INTEGER / BIGINT
+             decimal   → NUMERIC / DECIMAL
+             boolean   → BOOLEAN (driver-normalised)
+             null      → NULL
+
+           Passing an @hmap, @array, @object, or @table as a
+           parameter value raises invalid_argument at runtime.
+           Struct types may be passed only to drivers that support
+           JSON column parameters (postgres JSONB, mysql JSON) — the
+           runtime calls HMAP_TO_JSON on the value automatically.
+
+   Example:
+
+     rows: sess.query(
+         "SELECT * FROM orders WHERE status = :status AND total > :min_total",
+         [ status: "pending", min_total: 100 ]
+     )
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 17.7 — SQL TYPE → SQUEEZE TYPE MAPPING
+   ------------------------------------------------------------ *)
+
+(*
+   17.7.1  The runtime applies a direct type mapping when constructing
+           the @table returned by query().  No JSON intermediate is used.
+           The mapping is indexed by (driver, sql_type_name) with a
+           fallback chain:
+             driver-specific → generic SQL family → string (safe fallback)
+
+   17.7.2  Mapping table
+
+     SQL family / type names              Squeeze type    Notes
+     -----------------------------------  ------------    ----------------------
+     VARCHAR, TEXT, CHAR, CLOB, UUID      string
+     NVARCHAR, NTEXT, NCHAR               string          Unicode; stored as-is
+     INTEGER, INT, INT4, TINYINT,         integer
+       SMALLINT, BIGINT, INT8, INT2
+     DECIMAL, NUMERIC, MONEY,             decimal
+       FLOAT, DOUBLE, REAL, FLOAT4,
+       FLOAT8, DOUBLE PRECISION
+     BOOLEAN, BOOL                        boolean         SQLite: 0/1 → false/true
+     DATE, DATETIME, TIMESTAMP,           string          ISO-8601 format
+       TIMESTAMPTZ, TIMESTAMP WITH
+       TIME ZONE, TIME, TIMETZ
+     JSON, JSONB                          @hmap           parsed via HMAP_FROM_JSON
+     ARRAY  (Postgres)                    @array          element type mapped recursively
+     BLOB, BYTEA, BINARY, VARBINARY,      string          base64-encoded
+       IMAGE, RAW
+     NULL  (column value)                 null
+     BIT, BIT VARYING                     string          binary digit string e.g. "1010"
+     INTERVAL                             string          ISO-8601 duration e.g. "PT1H30M"
+     ENUM  (MySQL, Postgres)              string          raw string value
+     ROWID, OID, XMIN, CTID              string          driver internal identifiers
+     unknown / unrecognised type          string          safe fallback; linter W-DB2
+
+   17.7.3  Date / time as string
+
+           All date and time types are mapped to an ISO-8601 string.
+           No @datetime type is introduced in this version.
+           The time-formatting methods on @string handle most
+           downstream use cases.  A dedicated @datetime type may be
+           added in a future version.
+
+   17.7.4  @table column schema after mapping
+
+           The @table returned by query() has fully typed columns —
+           column types are set from the mapping table above, not @?.
+           The type checker can reason about the result's column types
+           downstream.  If the driver reports insufficient type
+           information (e.g. dynamic SQL), the column type falls
+           back to string (safe fallback, linter W-DB2).
+
+   17.7.5  NULL columns
+
+           A NULL value in a column position is represented as null
+           in the @table cell.  The column type annotation on the
+           @table schema records the base type (e.g. string) — null
+           is a possible value for any column regardless of its
+           declared type in the SQL schema.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 17.8 — EXCEPTION INTEGRATION
+   ------------------------------------------------------------ *)
+
+(*
+   17.8.1  All @db_session and @db_tx method call sites are
+           automatically framed by the compiler (spec/16, Section 16.1.2).
+           No explicit framing is required in user code.
+
+   17.8.2  Database exception kinds
+
+           The following built-in exception kinds from spec/16 apply
+           to database operations:
+
+             io_error         — network error, connection drop,
+                                disk error on SQLite, driver error
+             timeout          — connect_timeout or query_timeout exceeded
+             cancelled        — context cancellation (e.g. process signal)
+             invalid_argument — bad SQL syntax, unknown savepoint,
+                                begin() on autocommit session,
+                                unrecognised parameter type
+             not_found        — rollback_to() with unknown savepoint name
+             duplicate_key    — INSERT violates unique / primary key constraint
+
+   17.8.3  Typical catch pattern
+
+           rows: sess.query(sql, params) ^ {
+               -> ex: @exception
+               ex.kind == "io_error"    & ex.retry(3)
+               ex.kind == "timeout"     & <- table []
+               ex.propagate()
+           }
+
+   17.8.4  Unhandled database exceptions
+
+           A database exception that is not resolved by any catch
+           handler, scope handler, or Policy Manager action escalates
+           to the global error handler (spec/10_error_handler.sqg)
+           as an @error_event with the same severity as the @exception.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 17.9 — DRIVER REGISTRY AND LINTER RULES
+   ------------------------------------------------------------ *)
+
+(*
+   17.9.1  Known driver strings (linter pass DB-D1)
+
+           "postgres"      — github.com/lib/pq  /  pgx
+           "mysql"         — github.com/go-sql-driver/mysql
+           "sqlite3"       — github.com/mattn/go-sqlite3
+           "oracle"        — github.com/godror/godror
+           "mssql"         — github.com/microsoft/go-mssqldb
+           "clickhouse"    — github.com/ClickHouse/clickhouse-go
+           "duckdb"        — github.com/marcboeker/go-duckdb
+
+           Community / third-party driver strings are valid string
+           values but trigger linter warning W-DB1.
+
+   17.9.2  Linter diagnostic codes
+
+           DB-S1   — @secret value used outside authorised position
+                     (Section 17.1.4)
+           DB-D1   — unknown driver string literal
+                     → W-DB1 warning
+           DB-SQL1 — dynamic string concatenation in sql argument
+                     position of query() or exec()
+                     → compile error (SQL injection risk)
+           DB-T1   — begin() called on an autocommit = true @db_session
+                     → W-DB3 warning at call site
+           DB-COL1 — driver returns insufficient type metadata;
+                     column type falls back to string
+                     → W-DB2 warning
+
+   17.9.3  No new reserved keywords
+
+           "secret", "db_connection", "db_session", "db_tx", and
+           "db_pool_config" are type names defined in pkg/lib/db.sqz.
+           They are not reserved words and may be used freely as
+           identifiers in other contexts.
+
+   17.9.4  Relationship to pkg/lib/db.sqz
+
+           All executable types described in this spec are implemented
+           in pkg/lib/db.sqz.  The types are:
+             @secret          — Section 17.1
+             @db_pool_config  — Section 17.2
+             @db_connection   — Section 17.3
+             @db_session      — Section 17.4
+             @db_tx           — Section 17.5
+
+           Intrinsics used (UPPERCASE builtins, to be defined):
+             DB_OPEN<conn>                    — opens pool, returns session handle
+             DB_CLOSE<sess>                   — returns connection to pool
+             DB_PING<sess>                    — liveness boolean
+             DB_QUERY<sess, sql, params>      — executes SELECT → raw result set
+             DB_EXEC<sess, sql, params>       — executes DML → rows_affected, last_id
+             DB_BEGIN<sess>                   — starts transaction → tx handle
+             DB_COMMIT<tx>                    — commits transaction
+             DB_ROLLBACK<tx>                  — rolls back transaction
+             DB_SAVEPOINT<tx, name>           — creates savepoint
+             DB_ROLLBACK_TO<tx, name>         — rolls back to savepoint
+             DB_TO_DSN<conn>                  — builds driver DSN string
+             DB_PARSE_DSN<url>                — parses DSN → connection fields
+             SECRET_NEW<str>                  — wraps string as @secret
+             SECRET_REVEAL<s>                 — returns raw string from @secret
+*)

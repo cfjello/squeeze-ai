@@ -1,0 +1,16 @@
+(* @storeName - The string name to use when storing (using the => operator). The storeName defaults to @typeName, but can be assigned another sore name in the func_header_params. *)
+inspect_store_name  =  TYPE_OF string<ident_ref "." type_prefix "storeName">; 
+
+inspect_type_name = type_prefix !WS! TYPE_OF string<ident_ref "." "typeName">;
+
+(* @data -  a mutable reference to the data part of you func_unit *)
+(* V12 removed inspect_data        =  ident_ref "." "@data" ; *)
+
+(* @type - returns the immutable @type reference of the ident_ref type.  Assigned by the parser *)
+(* V12 modified inspect_type        =  ident_ref "." "@type" ; *)
+
+(* V3  declare or assign of the enclosed @data object *)
+(* V12 removed  data_assign                 =  ident_ref "." "@data" assign_mutable ( object_final | array_final | constant ); *)
+(* V12 removed  store_name_assign           =  ident_ref "." "@storeName" assign_mutable string; *)
+(* V12 removed  func_header_buildin_params  = store_name_assign | data_assign; *) 
+(* V12 removed func_enclosure_params       = ( func_header_buildin_params | func_header_user_params ) { EOL ( func_header_buildin_params | func_header_user_params ) }; *)

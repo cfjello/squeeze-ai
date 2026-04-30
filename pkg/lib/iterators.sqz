@@ -58,13 +58,13 @@ iterators: {
        For async sources wrapped in ITER_CHAN, receives from the channel
        (blocks only when the buffer is empty — back-pressure from producer).
        When the source is exhausted, returns iterator_record with ok = false. *)
-    (it @iterators) next: <- (
+    (it : @iterators) next: <- (
         <- ITER_NEXT<it>
     )
 
     (* Decrement ref_count.  When ref_count reaches 0 and the source is
        not already exhausted, drain and close the underlying channel. *)
-    (it @iterators) close: <- (
+    (it = @iterators) close: <- (
         ATOMIC_DEC<it.ref_count>
         ( it.ref_count == 0 ) & ITER_CLOSE<it>
     )
@@ -73,7 +73,7 @@ iterators: {
        cap = 0  ->  unbuffered (Go chan with buffer size 1)
        cap > 0  ->  buffered prefetch channel of given capacity
        Transparent to user code; called reactively after metric observation. *)
-    (it @iterators) set_channel_cap: <- (
+    (it = @iterators) set_channel_cap: <- (
         -> cap: integer
         it.channel_cap = cap
         ITER_RESIZE<it, cap>

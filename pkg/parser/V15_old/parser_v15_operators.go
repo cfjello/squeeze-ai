@@ -41,11 +41,12 @@ type V13IdentPrefixNode struct {
 	Value string // "./" or "../" or "../../" …
 }
 
-// V13IdentRefNode  ident_ref = [ ident_prefix ] ident_dotted
+// V13IdentRefNode  ident_ref = [ ident_prefix ] ident_dotted [ "[" lookup_idx_expr "]" ]
 type V13IdentRefNode struct {
 	V13BaseNode
 	Prefix *V13IdentPrefixNode
 	Dotted *V13IdentDottedNode
+	Index  *V13LookupIdxExprNode // non-nil when subscript "[idx]" present
 }
 
 // V13TypeRefNode  type_ref = ident_name "." "@type"  (V13 new)
@@ -57,12 +58,13 @@ type V13TypeRefNode struct {
 
 // ---------- Numeric expressions ----------
 
-// V13SingleNumExprNode  single_num_expr = numeric_const | [ inline_incr ] ident_ref
+// V13SingleNumExprNode  single_num_expr = numeric_const | [ inline_incr ] ident_ref | bootstrap_call
 type V13SingleNumExprNode struct {
 	V13BaseNode
-	Literal    *V13NumericConstNode
-	InlineIncr string // "", "++" or "--"
-	IdentRef   *V13IdentRefNode
+	Literal       *V13NumericConstNode
+	InlineIncr    string // "", "++" or "--"
+	IdentRef      *V13IdentRefNode
+	BootstrapCall *V13BootstrapCallNode // non-nil for LENGTH<arr>, CAST x<v>, etc.
 }
 
 // V13NumExprTerm is one element of a num_expr_list chain.
@@ -363,6 +365,20 @@ func (p *V13Parser) ParseIdentRef() (*V13IdentRefNode, error) {
 		return nil, err
 	}
 	node.Dotted = dotted
+
+	// Optional array subscript: "[" lookup_idx_expr "]"
+	if p.cur().Type == V13_LBRACKET {
+		saved := p.savePos()
+		p.advance() // consume "["
+		idx, err := p.ParseLookupIdxExpr()
+		if err != nil || p.cur().Type != V13_RBRACKET {
+			p.restorePos(saved)
+		} else {
+			p.advance() // consume "]"
+			node.Index = idx
+		}
+	}
+
 	return node, nil
 }
 
@@ -378,10 +394,14 @@ func (p *V13Parser) ParseTypeRef() (*V13TypeRefNode, error) {
 	if _, err := p.expect(V13_DOT); err != nil {
 		return nil, err
 	}
-	// Expect the literal "@type" (an AT_IDENT with value "@type")
+	// Expect @ followed immediately by "type"
 	next := p.cur()
-	if next.Type != V13_AT_IDENT || next.Value != "@type" {
+	if next.Type != V13_AT {
 		return nil, p.errAt(fmt.Sprintf("expected @type, got %s %q", next.Type, next.Value))
+	}
+	p.advance() // consume @
+	if p.cur().Type != V13_IDENT || p.cur().Value != "type" {
+		return nil, p.errAt(fmt.Sprintf("expected 'type' after @, got %q", p.cur().Value))
 	}
 	p.advance()
 	return &V13TypeRefNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Name: name}, nil
@@ -416,6 +436,20 @@ func (p *V13Parser) ParseSingleNumExpr() (*V13SingleNumExprNode, error) {
 				Literal:     lit,
 			}, nil
 		}
+	}
+
+	// Uppercase angle-bracket intrinsic: LENGTH<arr.data>, CAST string<val>, etc.
+	// Must be tried before ParseIdentRef so that the "<" is not left for the
+	// caller to misinterpret as a comparison operator.
+	if p.looksLikeBootstrapCall() {
+		bc, err := p.ParseBootstrapCall()
+		if err != nil {
+			return nil, err
+		}
+		return &V13SingleNumExprNode{
+			V13BaseNode:   V13BaseNode{Line: line, Col: col},
+			BootstrapCall: bc,
+		}, nil
 	}
 
 	incr := V13inlineIncr(tok.Type)
@@ -728,6 +762,7 @@ func (p *V13Parser) ParseSingleLogicExpr() (*V13SingleLogicExprNode, error) {
 			node.StringVal = str
 			return node, nil
 		}
+		p.restorePos(saved)
 		return nil, p.errAt("expected numeric or string grouping in single_logic_expr")
 	}
 
@@ -836,6 +871,17 @@ func (p *V13Parser) ParseCalcUnit() (*V13CalcUnitNode, error) {
 			V13BaseNode: V13BaseNode{Line: line, Col: col},
 			Value:       &V13SelfRefNode{V13BaseNode: V13BaseNode{Line: line, Col: col}},
 		}, nil
+	}
+
+	// Uppercase angle-bracket intrinsic: LENGTH<arr>, CAST string<val>, etc.
+	// Must be intercepted here before ParseLogicExpr/ParseNumericExpr try to
+	// interpret the "&lt;" as a less-than comparison operator.
+	if p.looksLikeBootstrapCall() {
+		bc, err := p.ParseBootstrapCall()
+		if err != nil {
+			return nil, err
+		}
+		return &V13CalcUnitNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: bc}, nil
 	}
 
 	if V13isStringTok(tok.Type) {

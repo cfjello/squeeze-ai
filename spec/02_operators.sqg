@@ -1,58 +1,53 @@
-(* V10 - read ./00_directives.sqg for Parser Instructions *)
+(* V17 - read ./00_directives.sqg for Parser Instructions *)
 
 include "./01_definitions.sqg";
 
-(* V11 Identifiers can no longer have spaces within *) 
-ident_name       = /(?<value>[\p{L}][\p{L}0-9_]*)/;
+(* Identifiers can no longer have spaces within *) 
+ident_name  = /(?<value>[\p{L}][\p{L}0-9_]*)/;
 
-(* V1 Identifier References *)
+group_begin = "(";
+group_end   = ")";
 
-ident_dotted  = ident_name { "." ident_name };
+(* Identifier References *)
+
+ident_dotted  = ( ident_name ) { "." ident_name };
 ident_prefix  =  ( "../" { "../" } ) | ( "./" );
 ident_ref     = [ ident_prefix ]  ident_dotted; 
 
-(* V1 numeric expression *)
+(* numeric expression *)
 numeric_oper  = "+" | "-" | "*"  | "**" | "/" | "%" ;
 inline_incr   = "++" | "--" ;
 
-single_num_expr     = numeric_const | [ inline_incr ] TYPE_OF numeric_const<ident_ref>;
-num_expr_list       = single_num_expr { numeric_oper single_num_expr } ;
-num_grouping        = "(" ( num_expr_list | num_grouping )  { numeric_oper ( num_expr_list | num_grouping ) } ")";
-numeric_expr        = num_expr_list | num_grouping;
+single_num_expr = numeric_const | [ inline_incr ] TYPE_OF numeric_const<ident_ref>;
+num_expr_chain  = single_num_expr { numeric_oper single_num_expr } ;
+num_grouping    = group_begin ( num_expr_chain | num_grouping )  { numeric_oper ( num_expr_chain | num_grouping ) } group_end ;
+numeric_calc    = num_expr_chain | num_grouping;
 
-(* V1 string expression *)
-
+(* string expression *)
 string_oper          = "+";
-string_expr_list   =  string { string_oper string };
-string_grouping      =  "(" ( string_expr_list | string_grouping )  { string_oper ( string_expr_list | string_grouping ) } ")";
-string_expr          = string_expr_list | string_grouping;
+string_expr_chain    =  string { string_oper string };
+string_grouping      = group_begin ( string_expr_chain | string_grouping )  { string_oper ( string_expr_chain | string_grouping ) } group_end ;
+string_concat        = string_expr_chain | string_grouping;
 
-(* V1 Compare Expression *)
+
+(* Compare Expression *)
 compare_oper        = "!=" |  "==" | ">" | ">=" | "<"  | "<=" ;
-num_compare         = TYPE_OF boolean<numeric_expr compare_oper numeric_expr>;
-(* V13 modified string_compare *)
-string_compare      = TYPE_OF boolean<string_expr compare_oper ( string_expr | regexp ) >;
+num_compare         = TYPE_OF boolean< (num_expr_chain | num_grouping ) compare_oper ( single_num_expr | num_grouping) >;
+string_compare      = TYPE_OF boolean<string_expr_chain compare_oper ( string | string_grouping | regexp_expr ) >;
 
-(* V13 removed string_regexp_comp  = TYPE_OF boolean<string_expr "=~" regexp> ; *) 
+condition  = num_compare | string_compare; 
 
-(* V13 modified compare_expr *)
-compare_expr        = num_compare | string_compare; 
-
-
-               
+(* Logic *)
 not_oper            = "!";
 logic_and           = "&";
 logic_or            = "|";
 logic_exclusive_or  = "^";
-(* Modified *)
 logic_oper          = logic_and | logic_or | logic_exclusive_or ; 
-single_logic_expr   = [ not_oper ] ( ident_dotted | TYPE_OF boolean<ident_ref> | compare_expr ) | numeric_expr | string_expr;
-logic_expr_list     = single_logic_expr { logic_oper single_logic_expr };
-logic_grouping      = "(" ( logic_expr_list | logic_grouping )  { logic_oper ( logic_expr_list | logic_grouping ) } ")";
-logic_expr          = logic_expr_list | logic_grouping;
 
+single_logic_expr   = [ not_oper ] ( ident_dotted | TYPE_OF boolean<ident_ref> | condition ) | condition;
+logic_expr_chain     = single_logic_expr { logic_oper single_logic_expr };
+logic_grouping      = group_begin ( logic_expr_chain | logic_grouping )  { logic_oper ( logic_expr_chain | logic_grouping ) } group_end;
+logic_expr          = logic_expr_chain | logic_grouping;
 
-calc_unit           = numeric_expr | string_expr  |  logic_expr ;
-
-
-
+EXTEND<condition> = | logic_expr;
+statement = numeric_calc | string_concat;

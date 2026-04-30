@@ -93,8 +93,8 @@ table_ins_tail   = "+" ( TYPE_OF table_row<ident_ref> | table_row )
                        { "+" ( TYPE_OF table_row<ident_ref> | table_row ) };
 
 table_final      = ( TYPE_OF table_init<ident_ref> | table_init ) { table_ins_tail };
-
-EXTEND<assign_rhs> = | table_final;
+(* V15 modified *)
+EXTEND<assign_rhs_item> = | table_final;
 
 
 (* ------------------------------------------------------------
@@ -153,8 +153,8 @@ tree_ins_tail = "+" ( TYPE_OF tree_node<ident_ref> | tree_node )
                     { "+" ( TYPE_OF tree_node<ident_ref> | tree_node ) };
 
 tree_final    = ( TYPE_OF tree_init<ident_ref> | tree_init ) { tree_ins_tail };
-
-EXTEND<assign_rhs> = | tree_final;
+(* V15 modified *)
+EXTEND<assign_rhs_item> = | tree_final;
 
 
 (* ------------------------------------------------------------
@@ -182,8 +182,8 @@ string_tree_ins_tail = "+" ( TYPE_OF string_tree_node<ident_ref> | string_tree_n
                            { "+" ( TYPE_OF string_tree_node<ident_ref> | string_tree_node ) };
 
 string_tree_final    = ( TYPE_OF string_tree_init<ident_ref> | string_tree_init ) { string_tree_ins_tail };
-
-EXTEND<assign_rhs> = | string_tree_final;
+(* V15 modified *)
+EXTEND<assign_rhs_item> = | string_tree_final;
 
 
 (* ------------------------------------------------------------
@@ -215,8 +215,8 @@ keyed_tree_ins_tail = "+" ( TYPE_OF tree_node_keyed<ident_ref> | tree_node_keyed
                           { "+" ( TYPE_OF tree_node_keyed<ident_ref> | tree_node_keyed ) };
 
 keyed_tree_final    = ( TYPE_OF keyed_tree_init<ident_ref> | keyed_tree_init ) { keyed_tree_ins_tail };
-
-EXTEND<assign_rhs> = | keyed_tree_final;
+(* V15 modified *)
+EXTEND<assign_rhs_item> = | keyed_tree_final;
 
 
 (* ------------------------------------------------------------
@@ -251,8 +251,8 @@ sorted_tree_ins_tail = "+" ( TYPE_OF tree_node_sorted<ident_ref> | tree_node_sor
                            { "+" ( TYPE_OF tree_node_sorted<ident_ref> | tree_node_sorted ) };
 
 sorted_tree_final    = ( TYPE_OF sorted_tree_init<ident_ref> | sorted_tree_init ) { sorted_tree_ins_tail };
-
-EXTEND<assign_rhs> = | sorted_tree_final;
+(* V15 modified *)
+EXTEND<assign_rhs_item> = | sorted_tree_final;
 
 
 (* ------------------------------------------------------------
@@ -285,8 +285,8 @@ set_add_tail = "+" ( TYPE_OF set_init<ident_ref> | set_init )
 set_omit_tail = "-" set_value { "," set_value };
 
 set_final  = ( TYPE_OF set_init<ident_ref> | set_init ) { set_add_tail | set_omit_tail };
-
-EXTEND<assign_rhs> = | set_final;
+(* V15 modified *)
+EXTEND<assign_rhs_item> = | set_final;
 
 
 (* ------------------------------------------------------------
@@ -316,8 +316,8 @@ enum_decl     = "ENUM" enum_members;
 enum_extend   = "EXTEND" enum_members;
 
 enum_final    = ( TYPE_OF enum_decl<ident_ref> | enum_decl ) { enum_extend };
-
-EXTEND<assign_rhs> = | enum_final;
+(* V15 modified *)
+EXTEND<assign_rhs_item> = | enum_final;
 
 
 (* ------------------------------------------------------------
@@ -363,8 +363,8 @@ graph_add_tail = "+" ( TYPE_OF graph_init<ident_ref> | graph_init )
                     { "+" ( TYPE_OF graph_init<ident_ref> | graph_init ) };
 
 graph_final    = ( TYPE_OF graph_init<ident_ref> | graph_init ) { graph_add_tail };
-
-EXTEND<assign_rhs> = | graph_final;
+(* V15 modified *)
+EXTEND<assign_rhs_item> = | graph_final;
 
 
 (* ------------------------------------------------------------
@@ -395,4 +395,5 @@ bitfield_decl  = "BITFIELD" bitfield_base bitfield_flags;
 
 bitfield_final = TYPE_OF bitfield_decl<ident_ref> | bitfield_decl;
 
-EXTEND<assign_rhs> = | bitfield_final;
+(* V15 modified *)
+EXTEND<assign_rhs_item> = | bitfield_final;

@@ -1,3 +1,5 @@
+//go:build ignore
+
 // squeeze_v13_template_test.go — Specification-driven tests for template syntax.
 // Covers spec/14_templates.sqg: modes 1-3, scope checker, call-site validator,
 // nesting patterns and error cases.

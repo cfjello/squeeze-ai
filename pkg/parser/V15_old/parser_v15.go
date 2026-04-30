@@ -14,6 +14,7 @@ package parser
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"unicode"
@@ -272,7 +273,7 @@ var V13durationUnits = map[string]V13TokenType{
 func V13prevIsValue(t V13TokenType) bool {
 	switch t {
 	case V13_INTEGER, V13_DECIMAL, V13_STRING, V13_REGEXP,
-		V13_IDENT, V13_AT_IDENT, V13_TRUE, V13_FALSE, V13_NULL,
+		V13_IDENT, V13_TRUE, V13_FALSE, V13_NULL,
 		V13_NAN, V13_INFINITY,
 		V13_RPAREN, V13_RBRACKET, V13_RBRACE,
 		V13_INC, V13_DEC,
@@ -501,9 +502,10 @@ func (l *V13Lexer) V13scanIdentOrKeyword(line, col int) V13Token {
 	if tt, ok := V13keywords[value]; ok {
 		return l.V13makeTok(tt, value, line, col)
 	}
-	if tt, ok := V13durationUnits[value]; ok {
-		return l.V13makeTok(tt, value, line, col)
-	}
+	// NOTE: single-char duration units (s m h d w) are intentionally NOT mapped
+	// to V13_SEC/V13_MIN/V13_HR/V13_DAY/V13_WK here.  Those letters are valid
+	// identifier names (e.g.  data, d: @?).  ParseDuration recognises them by
+	// value after the fact.  Only the two-char "ms" keyword stays in V13keywords.
 	return l.V13makeTok(V13_IDENT, value, line, col)
 }
 
@@ -517,20 +519,9 @@ func (l *V13Lexer) V13scanAtIdent(line, col int) (V13Token, error) {
 		l.V13advance()
 		return l.V13makeTok(V13_ANY_TYPE, "@?", line, col), nil
 	}
-	if l.pos >= len(l.input) || !unicode.IsLetter(l.input[l.pos]) {
-		return l.V13makeTok(V13_AT, "@", line, col), nil
-	}
-	var sb strings.Builder
-	sb.WriteRune('@')
-	for l.pos < len(l.input) {
-		ch := l.input[l.pos]
-		if unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' {
-			sb.WriteRune(l.V13advance())
-		} else {
-			break
-		}
-	}
-	return l.V13makeTok(V13_AT_IDENT, sb.String(), line, col), nil
+	// Grammar: type_prefix = "@"  — emit bare V13_AT; the following ident_ref
+	// is scanned as a separate V13_IDENT token on the next lexer call.
+	return l.V13makeTok(V13_AT, "@", line, col), nil
 }
 
 // --------------------------------------------------------------------------
@@ -1307,9 +1298,48 @@ func (e *V13ParseError) Error() string {
 
 // V13Parser holds the parser state.
 type V13Parser struct {
-	tokens     []V13Token
-	pos        int
-	CastChains []V13CastDirective
+	tokens        []V13Token
+	pos           int
+	CastChains    []V13CastDirective
+	DebugFlag     bool   // enable parse trace output
+	debugDepth    int    // current nesting depth (internal)
+	unknownTokens []V13Token // tokens that no parse method could consume (debug only)
+}
+
+// EnableDebug turns on parse trace output for this parser.
+func (p *V13Parser) EnableDebug() { p.DebugFlag = true }
+
+// debugEnter prints entry for a parse rule and increments depth.
+// Returns a done func to be deferred; call it with the rule's error state.
+func (p *V13Parser) debugEnter(rule string) func(ok bool) {
+	if !p.DebugFlag {
+		return func(bool) {}
+	}
+	tok := p.cur()
+	indent := strings.Repeat("  ", p.debugDepth)
+	fmt.Fprintf(os.Stderr, "%s→ %s  [L%d:C%d  %s %q]\n",
+		indent, rule, tok.Line, tok.Col, tok.Type, tok.Value)
+	p.debugDepth++
+	return func(ok bool) {
+		p.debugDepth--
+		indent := strings.Repeat("  ", p.debugDepth)
+		status := "OK"
+		if !ok {
+			status = "FAIL"
+		}
+		fmt.Fprintf(os.Stderr, "%s← %s  %s\n", indent, rule, status)
+	}
+}
+
+// trackUnknown records a token that no parse method could consume.
+// Only active when DebugFlag is true.
+func (p *V13Parser) trackUnknown(tok V13Token) {
+	if !p.DebugFlag {
+		return
+	}
+	p.unknownTokens = append(p.unknownTokens, tok)
+	fmt.Fprintf(os.Stderr, "[UNKNOWN TOKEN] L%d:C%d  %s %q\n",
+		tok.Line, tok.Col, tok.Type, tok.Value)
 }
 
 // NewV13Parser creates a V13Parser from an already-tokenised slice.
@@ -1917,8 +1947,13 @@ func (p *V13Parser) ParseDuration() (*V13DurationNode, error) {
 		digits := p.cur().Value
 		p.advance()
 		unitTok := p.cur()
-		switch unitTok.Type {
-		case V13_MS, V13_SEC, V13_MIN, V13_HR, V13_DAY, V13_WK:
+		switch {
+		case unitTok.Type == V13_MS:
+			// "ms" — stays a keyword token via V13keywords
+			segs = append(segs, V13DurationSegment{Digits: digits, Unit: unitTok.Value})
+			p.advance()
+		case unitTok.Type == V13_IDENT && V13durationUnits[unitTok.Value] != 0:
+			// single-char units: s m h d w — emitted as V13_IDENT by the lexer
 			segs = append(segs, V13DurationSegment{Digits: digits, Unit: unitTok.Value})
 			p.advance()
 		default:

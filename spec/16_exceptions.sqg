@@ -1,0 +1,609 @@
+(* ============================================================
+   spec/16_exceptions.sqg  —  Squeeze V14 Exception Handling
+   ============================================================
+
+   This file specifies the Squeeze V14 structured exception system.
+   It covers:
+     — built-in exception kinds and their severity tiers
+     — the grammar extensions: catch_oper, func_unit_with_catch,
+       caught_group, caught_scope, scope_with_catch
+     — the handler return contract
+     — the compiler framing contract
+     — exception lookup precedence
+     — the Policy Manager protocol
+     — extension mechanism for user-defined exception kinds
+
+   Relationship to spec/10_error_handler.sqg:
+     spec/10 defines the GLOBAL error handler model (async, event-driven,
+     operating on error_event values).  spec/16 defines STRUCTURED
+     in-source exception handling (synchronous, interruption-based,
+     operating on @exception values).  The two mechanisms are
+     complementary; an exception that is not resolved by any catch
+     handler or Policy Manager action ultimately produces an error_event
+     and enters the global handler.
+
+   Related library files:
+     pkg/lib/error.sqz         — @error_event type (logging / async global handler)
+     pkg/lib/exceptions.sqz    — @exception type + built-in builder functions (TO BE WRITTEN)
+     pkg/lib/policy_manager.sqz — singleton Policy Manager (TO BE WRITTEN)
+
+   This file is intentionally non-executable — it documents grammar
+   rules and conventions only.  All executable types are in the lib files.
+   ============================================================ *)
+
+
+include "./06_functions.sqg";
+include "./07_types_scope.sqg";
+
+
+(* ------------------------------------------------------------
+   SECTION 16.1 — DESIGN GOALS
+   ------------------------------------------------------------ *)
+
+(*
+   16.1.1  Model B — interruption-based, compiler-framed
+
+           When a framed call raises an exception, normal execution
+           is interrupted.  Control transfers to the nearest applicable
+           catch handler.  The handler either:
+             a) Returns a type-compatible substitute value — the
+                guarded expression produces that value and execution
+                continues normally.
+             b) Calls `ex.propagate()` — the exception is re-raised and
+                the next handler in the lookup chain is tried.
+             c) Calls `ex.retry()` or `ex.retry(n)` — the runtime replays the
+                failing call up to n times (once for bare `ex.retry()`).
+             d) Falls through without a matching branch — identical
+                to calling `ex.propagate()` (see Section 16.7.3).
+
+   16.1.2  What is framed (compiler responsibility)
+
+           The compiler emits framing (a restore point + exception
+           routing wrapper) for:
+             — assignments whose RHS is a function call (func_call or
+               func_call_chain)
+             — stream iteration bodies (func_stream_loop)
+             — external resource calls (http://, file://, database
+               connections, any ident_ref resolved to an extern)
+           The compiler does NOT frame:
+             — pure value assignments (constant, object_final, array_final)
+             — type validation and initialisation of known typed items
+               (these are checked by the linter before execution; a
+               linter pass that passes gives a static guarantee — see
+               spec/21_checker.sqg, passes A1–A11)
+
+   16.1.3  Linter vs runtime responsibility
+
+           The linter (spec/21_checker.sqg) is responsible for
+           validating that all typed items are correctly initialised
+           before use.  Types that pass the linter therefore carry a
+           compile-time guarantee and do not need runtime framing.
+           Runtime framing applies to everything the linter cannot
+           prove safe statically.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 16.2 — EXCEPTION KINDS
+   ------------------------------------------------------------ *)
+
+(*
+   16.2.1  Recoverable exception kinds  (severity "recoverable" or "error")
+
+           These may be handled by a catch handler or a Policy Manager
+           action.  The handler is expected to supply a substitute value
+           or decide to propagate.
+
+           BUILT-IN RECOVERABLE KINDS:
+             "not_found"        — key / name / index does not exist in
+                                  a container (@hmap, @store, @table, @graph …)
+             "out_of_range"     — index or numeric value is outside the
+                                  valid bounds (array access, range check >< )
+             "type_mismatch"    — value delivered at runtime differs from
+                                  the declared type
+             "null_access"      — a null value was used where a concrete
+                                  value was required
+             "empty_collection" — operation requires at least one element
+                                  but the container is empty
+             "duplicate_key"    — key already exists where uniqueness is
+                                  required (register, dep_graph)
+             "invalid_argument" — argument fails a declared precondition
+                                  (e.g. keep < 1, empty string where name required)
+             "division_by_zero" — integer or decimal divide / modulo by zero
+             "overflow"         — numeric result exceeds the declared
+                                  magnitude container (uint8, uint64, …)
+             "underflow"        — numeric result falls below the minimum
+                                  for the declared container
+             "parse_error"      — string / input could not be decoded into
+                                  the expected type
+             "io_error"         — file or network read / write failed
+             "timeout"          — operation exceeded a declared or system
+                                  time limit
+             "cancelled"        — operation explicitly cancelled (e.g. via
+                                  a context cancellation signal)
+
+   16.2.2  Fatal exception kinds  (severity "fatal")
+
+           Fatal exceptions bypass ALL catch handlers and the Policy
+           Manager.  They are routed directly to the global error handler
+           (spec/10_error_handler.sqg), which logs and terminates.
+           A catch handler that receives a fatal exception MUST propagate
+           it; any attempt to return a substitute value for a fatal is a
+           compile error.
+
+           BUILT-IN FATAL KINDS:
+             "assertion_failed"  — an explicit invariant check was violated
+             "cycle_detected"    — the dependency graph contains a cycle;
+                                   execution order is undefined
+             "stack_overflow"    — recursion depth exceeded the runtime limit
+             "out_of_memory"     — runtime memory exhausted
+             "corrupted_state"   — an internal structural invariant is broken
+                                   (e.g. store version maps inconsistent)
+             "unimplemented"     — a required intrinsic or method is not
+                                   available in this runtime build
+             "runtime_panic"     — underlying Go runtime panic caught at
+                                   the Squeeze function boundary
+
+   16.2.3  Extension mechanism
+
+           User code and library modules may declare additional exception
+           kinds by calling the builder function `make_exception` (defined
+           in pkg/lib/exceptions.sqz) with a custom kind string.  Custom
+           kinds may be either "recoverable" / "error" or "fatal".
+           Custom kind strings must not collide with the built-in set.
+           The linter (spec/21_checker.sqg, pass A-EX1) enforces this at
+           compile time for statically-known string literals.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 16.3 — THE @exception TYPE
+   ------------------------------------------------------------ *)
+
+(*
+   16.3.1  @exception is defined in pkg/lib/exceptions.sqz.
+           It is structurally equivalent to @error_event but carries
+           additional fields for the catch-handler mechanism:
+
+             kind         — string from the built-in or custom kind set
+             severity     — "recoverable" | "error" | "fatal"
+             message      — human-readable description
+             context      — @hmap of structured diagnostic data
+             source_loc   — "module.function:line" string (runtime)
+             chain_uuid   — UUIDv7 of the enclosing dependency chain
+                            ("" for standalone functions)
+
+   16.3.2  Builder functions
+
+           The following zero-argument-capture builder functions are
+           defined in pkg/lib/exceptions.sqz.  Each sets kind and
+           severity and accepts a message string plus optional @hmap
+           context:
+
+             not_found(msg, ctx)        — "recoverable"
+             out_of_range(msg, ctx)     — "recoverable"
+             type_mismatch(msg, ctx)    — "recoverable"
+             null_access(msg, ctx)      — "recoverable"
+             empty_collection(msg, ctx) — "recoverable"
+             duplicate_key(msg, ctx)    — "recoverable"
+             invalid_argument(msg, ctx) — "recoverable"
+             division_by_zero(msg, ctx) — "error"
+             overflow(msg, ctx)         — "error"
+             underflow(msg, ctx)        — "error"
+             parse_error(msg, ctx)      — "error"
+             io_error(msg, ctx)         — "error"
+             timeout(msg, ctx)          — "error"
+             cancelled(msg, ctx)        — "error"
+             assertion_failed(msg, ctx) — "fatal"
+             cycle_detected(msg, ctx)   — "fatal"
+             stack_overflow(msg, ctx)   — "fatal"
+             out_of_memory(msg, ctx)    — "fatal"
+             corrupted_state(msg, ctx)  — "fatal"
+             unimplemented(msg, ctx)    — "fatal"
+             runtime_panic(msg, ctx)    — "fatal"
+             make_exception(kind, severity, msg, ctx) — user-defined kind
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 16.4 — GRAMMAR: NEW TOKENS AND TERMINALS
+   ------------------------------------------------------------ *)
+
+(*
+   V14 adds one operator token only.  No new reserved words.
+
+   OPERATOR:
+     ^  (logic_exclusive_or) is reused as the catch operator in exception
+     context.  It is NOT a new keyword; it is the existing binary operator
+     applied in its "else / fallback" role (as in the existing `value ^ fallback`
+     inline recovery pattern).  The parser distinguishes catch-context `^` from
+     chain-context `^` by syntactic position (see Section 16.6).
+
+   LEXER NOTE:
+     "^" is unchanged in the lexer — it is always TOK_XOR.
+     `propagate` and `retry` are NOT reserved keywords; they are ordinary
+     method names defined on @exception in pkg/lib/exceptions.sqz.
+*)
+
+catch_oper = logic_exclusive_or; (* V14 — "^" in catch position; reuses existing operator *)
+
+
+(* ------------------------------------------------------------
+   SECTION 16.5 — GRAMMAR: CATCH HANDLER
+   ------------------------------------------------------------ *)
+
+(*
+   A catch handler is a plain func_unit.  No special grammar rule
+   is required.  The handler identifies itself by declaring its first
+   argument as @exception:
+
+     -> ex: @exception
+
+   This is standard func_args_decl syntax.  The binding name (`ex`,
+   `e`, `err`, or any valid ident_name) is chosen by the programmer.
+
+   Inside the handler body the exception is a fully-typed @exception
+   value.  Re-raise and replay are method calls on that value:
+
+     ex.propagate()   — re-raises; lookup proceeds to the next level
+     ex.retry()       — replays the failing call once
+     ex.retry(n)      — replays up to n times
+
+   These methods are defined in pkg/lib/exceptions.sqz.
+   The linter (pass A-EX2) verifies that the first parameter of the
+   handler func_unit carries an @exception type annotation.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 16.6 — GRAMMAR: EXTENDED func_unit
+   ------------------------------------------------------------ *)
+
+(*
+   The catch operator `^` attaches a handler func_unit to a guarded
+   func_unit.  Both sides of `^` are plain func_units; no special node
+   is introduced.  Two usage rules govern where an outer wrapper is
+   required:
+
+   RULE A — Assignment context (named binding)
+     When a func_unit appears as the RHS of a named assignment, `^` is
+     unambiguous — a func_unit is never a single_logic_expr, so the
+     parser cannot confuse catch-context `^` with chain-context `^`.
+     No outer wrapper is needed.
+
+       result: <- ( my_func(a, b) ) ^ {
+           -> ex: @exception
+           ex.kind == "not_found" & <- default_value
+           ex.propagate()
+       }
+
+       rows: db.query(sql) ^ (
+           -> ex: @exception
+           ex.kind == "io_error"  & <- []
+           ex.kind == "timeout"   & ex.retry(3)
+           ex.propagate()
+       )
+
+   RULE B — Inline in a func_call_chain or func_stmt
+     When a caught expression appears inline (not the direct RHS of a
+     named assignment), it MUST be wrapped in an outer `()` or `{}`
+     to form a single syntactic atom for the surrounding chain or stmt.
+     The outer wrapper also gives the handler shared scope visibility
+     of variables bound inside the guarded func_unit (e.g. partial
+     results before failure).
+
+     B1 — caught_group: outer `()` — guarded unit and handler share
+          the same anonymous group scope.
+
+           ( ( my_func(a) ) ^ ( -> ex: @exception  <- default ) )
+
+     B2 — caught_scope: outer `{}` — same sharing in an anonymous
+          private scope.  The `{}` outer form is unambiguous: a `{`
+          without a preceding LHS in expression position cannot be a
+          scope_assign, and the presence of `^` after the inner `()`
+          commits the parser to caught_scope.
+
+           { ( my_func(a) ) ^ ( -> ex: @exception  <- default ) }
+
+     Example in a chain:
+           results: load(src) -> process -> ( validate(data) ) ^ (
+               -> ex: @exception
+               ex.kind == "parse_error" & <- []
+               ex.propagate()
+           ) -> store
+
+   Grammar:
+*)
+
+func_unit_with_catch = func_unit catch_oper func_unit;
+
+caught_group = group_begin func_unit catch_oper func_unit group_end;
+
+caught_scope = scope_begin func_unit catch_oper func_unit scope_end;
+
+MERGE<func_stmt> = | func_unit_with_catch | caught_group | caught_scope;
+
+
+(* ------------------------------------------------------------
+   SECTION 16.7 — GRAMMAR: EXTENDED scope_assign
+   ------------------------------------------------------------ *)
+
+(*
+   A scope_assign may also carry a trailing handler func_unit.
+   This makes the entire scope a framed unit; any framed call
+   within the scope that is not handled locally first reaches
+   the scope's catch handler before the Policy Manager.
+
+   Grammar:
+
+     scope_body_catch = catch_oper func_unit
+
+   Example:
+
+     process_orders = {
+         raw:  fetch_orders(source)
+         clean: validate(raw)
+         => [ processed: clean, at: NOW_ISO8601 ]
+     } ^ {
+         -> ex: @exception
+         ex.kind == "io_error" & log_and_continue ^ ex.propagate()
+     }
+
+   MERGE into the scope_body alternatives so scope_body_catch is
+   a valid  construct.
+*)
+
+(* V14 — scope_body_catch is the trailing catch suffix; scope_body in 07_types_scope.sqg appends { scope_body_catch } directly *)
+scope_body_catch = catch_oper func_unit;
+
+
+(* V14 Removed this:
+
+MERGE<parser_root> = | scope_with_catch;
+*) 
+
+
+(* ------------------------------------------------------------
+   SECTION 16.8 — HANDLER RETURN CONTRACT
+   ------------------------------------------------------------ *)
+
+(*
+   16.8.1  The handler func_unit is always called in the context of an
+           expression or statement that has an expected return type T.
+           The handler MUST satisfy one of the following:
+
+             a) Return a value of type T using `<- value`.
+                This resolves the exception; the guarded expression
+                produces that value and execution continues normally.
+
+             b) Call `ex.propagate()`.
+                The exception is re-raised.  Lookup proceeds to the
+                next handler in the precedence chain (Section 16.10).
+
+             c) Call `ex.retry()` or `ex.retry(n)`.
+                The failing call is replayed.  If all retries fail, the
+                last exception is propagated automatically.
+
+             d) Return nothing (no `<-`, no `ex.propagate()`, no `ex.retry()`).
+                Treated as an implicit `ex.propagate()` (see 16.10.3).
+
+   16.8.2  Returning the wrong type from a handler is a compile error
+           (linter pass A-EX2 — see spec/21_checker.sqg).
+
+   16.8.3  A fatal exception MUST be propagated; returning
+           a substitute value for a fatal is a compile error
+           (linter pass A-EX3).  The handler must call `ex.propagate()`.
+
+   16.8.4  A handler may itself perform calls that raise.  If those
+           calls are not themselves framed within the handler body,
+           the resulting exception propagates directly to the global
+           error handler.  Nested `^` handlers within the handler
+           body are permitted but discouraged; they form an explicit
+           inner handler chain, not a recursive re-entry of the same
+           handler.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 16.9 — POLICY MANAGER PROTOCOL
+   ------------------------------------------------------------ *)
+
+(*
+   16.9.1  The Policy Manager is a singleton accessible via the
+           reserved name `pm`.  It mediates between structured catch
+           handlers (spec/16) and the global async error handler
+           (spec/10).
+
+   16.9.2  Policy keys
+
+           A policy is registered under a compound key:
+             ( exception_kind, type_context )
+           where type_context is the type name string of the scope or
+           type in which the exception occurred (e.g. "store", "hmap",
+           "integer", or a user-defined scope name).
+
+           A wildcard type_context ( "*" ) matches any type_context
+           not covered by a more-specific registration.
+
+   16.9.3  Policy actions (callable from any catch handler via pm.*)
+
+             pm.return_default(val)  — supply a substitute value of the
+                                       expected return type
+             pm.log_and_continue     — log via @logger and return null
+             pm.propagate(ex)        — equivalent to calling ex.propagate()
+                                       from inside a handler
+             pm.retry(ex, n)         — retry the failing call up to n times
+             pm.transform(fn)        — run fn(@exception) → T to compute a
+                                       substitute value; fn is a func_unit
+
+   16.9.4  Scope-level registration
+
+           Any scope_assign body may register a custom policy handler by
+           calling pm.register before the policy is needed:
+
+             pm.register("not_found", "store", <- (
+                 -> ex: @exception
+                 <- pm.return_default(null)
+             ))
+
+           Registrations are appended to the singleton's handler list
+           in textual declaration order.  Per-scope registrations are
+           not removed when the scope exits; they remain active for the
+           lifetime of the program (singleton semantics).
+
+   16.9.5  Default action
+
+           If no policy is registered for ( exception_kind, type_context ),
+           or if the registered handler calls ex.propagate(), the exception
+           escalates to the global error handler (spec/10_error_handler.sqg)
+           as an error_event with the same severity as the @exception.
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 16.10 — EXCEPTION LOOKUP PRECEDENCE
+   ------------------------------------------------------------ *)
+
+(*
+   When an exception is raised inside a framed call, the runtime
+   tries handlers in the following order.  The first handler that
+   resolves the exception (returns a value or applies a non-propagate
+   Policy action) wins.  All subsequent levels are skipped.
+
+   Level 1 — Local catch handler
+             The ^ handler func_unit directly attached to the func_unit or
+             assignment in which the exception occurred.
+             If no local handler exists, or if the handler calls
+             `ex.propagate()`, proceed to Level 2.
+
+   Level 2 — Enclosing scope catch handler
+             The ^ handler func_unit attached to the scope_assign that
+             lexically contains the failing call.
+             If no scope handler exists, or if it calls `ex.propagate()`,
+             proceed to Level 3.
+
+   Level 3 — Policy Manager lookup
+             pm is queried with ( ex.kind, type_context ).
+             If a matching policy action is found and resolves the
+             exception, execution continues.
+             If the policy calls `pm.propagate(ex)`, or no policy matches,
+             proceed to Level 4.
+
+   Level 4 — Global error handler  (spec/10_error_handler.sqg)
+             The @exception is converted to an @error_event (fields
+             mapped 1-to-1) and dispatched asynchronously to the
+             global on_error handler chain.
+             The global handler applies its own policy matching
+             (spec/10, Section 10.3) including resumption modes.
+
+   Level 5 — No-match fallback  (spec/10, Section 10.4.1)
+             If the global handler does not match, severity is promoted
+             to "fatal", the event is logged, and the runtime terminates.
+
+   16.10.1  Summary table:
+
+             Level   | Mechanism              | Activated when
+             --------|------------------------|------------------------------
+             1       | local catch handler    | attached to func_unit / assign
+             2       | scope catch handler    | attached to enclosing scope
+             3       | Policy Manager         | pm.register / wildcard
+             4       | global error handler   | on_error declarations
+             5       | no-match fallback      | always — guaranteed
+
+   16.10.2  Default action — ex.propagate()
+
+             A handler func_unit that does not match the exception kind
+             (all `&` conditions are false, no wildcard branch) is
+             treated as an implicit `ex.propagate()`.  This ensures the
+             lookup chain always advances rather than silently swallowing
+             unhandled exceptions.
+
+   16.10.3  Undefined handler body (empty handler)
+
+             A handler func_unit with no func_body_stmt lines is legal
+             (the block is syntactically valid).  The compiler treats
+             it as a pure ex.propagate(); a linter warning (W-EX1) is emitted
+             to inform the developer that the block has no effect.
+
+   16.10.4  Fatal exceptions
+
+             Fatal exceptions skip Levels 1, 2, and 3 entirely.
+             They enter directly at Level 4 (global error handler) and
+             proceed to Level 5 (no-match fallback / terminate) if not
+             handled at that level.  Writing a local or scope handler
+             for a fatal kind is a linter warning (W-EX2 — "handler has
+             no effect for fatal exceptions").
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 16.11 — COMPILER FRAMING CONTRACT
+   ------------------------------------------------------------ *)
+
+(*
+   16.11.1  Frame insertion rules
+
+             The compiler automatically inserts exception framing for:
+               — func_call and func_call_chain in assignment RHS
+                 (including method calls on typed values)
+               — func_stream_loop bodies (each iteration is individually framed)
+               — import_assign with http_url or file_url targets
+               — any ident_ref resolved at compile time to an extern
+                 declaration (database adapters, OS calls, FFI boundaries)
+
+             The compiler does NOT insert framing for:
+               — constant, object_final, array_final in assignment RHS
+               — typed items that the linter has statically verified
+                 (passes A1–A11 of spec/21_checker.sqg)
+               — pure arithmetic on verified numeric types
+                 (the linter confirms overflow-safety where provable)
+
+   16.11.2  Restore point semantics
+
+             When framing a call, the compiler records the assignment
+             binding state immediately before the call.  This is the
+             restore point for handler-initiated resumption.
+
+             Immutable bindings (:) are always safe to restore — they
+             are write-once.
+
+             Mutable bindings (=) at the restore point are snapshot-
+             copied by the frame.  If the handler returns a substitute
+             value, the mutable bindings are restored to the snapshot
+             and the substitution is applied.  This prevents partially-
+             applied mutable state from leaking past a handled exception.
+
+   16.11.3  Go code generator contract
+
+             For each framed Squeeze call, the code generator emits:
+               — a Go defer/recover block scoped to the frame
+               — a saved snapshot of mutable local variables
+               — a dispatch call to the Squeeze exception routing
+                 function, which:
+                   (a) determines the exception kind from the Go error
+                       value using the error_type registry
+                       (spec/10, Section 10.8.4)
+                   (b) constructs an @exception value
+                   (c) invokes the handler chain (Levels 1 → 5)
+*)
+
+
+(* ------------------------------------------------------------
+   SECTION 16.12 — RESERVED KEYWORDS  (V14 addition)
+   ------------------------------------------------------------ *)
+
+(*
+   V14 adds NO new reserved keywords.
+
+   `propagate` and `retry` are ordinary method names on @exception
+   defined in pkg/lib/exceptions.sqz.  They are not keywords and may
+   be used freely as identifiers in other contexts.
+
+   The catch operator `^` (logic_exclusive_or) is an existing operator
+   token — no lexer change is required.
+
+   Existing reserved names not affected by this spec:
+     store_ctrl — defined in spec/06_functions.sqg
+     $          — self_ref
+     @          — type_prefix
+*)

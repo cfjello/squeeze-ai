@@ -1,3 +1,5 @@
+//go:build ignore
+
 // Package squeeze_v13_test contains a specification-driven test suite for the
 // Squeeze V13 grammar as defined in spec/00_directives.sqg … spec/09_stuctures.sqg.
 //

@@ -1,19 +1,33 @@
-(* V10 - read ./00_directives.sqg for Parser Instructions *)
+(* V17 - read ./00_directives.sqg for Parser Instructions *)
 include "./02_operators.sqg";
 
 (* Assignment Operators *) 
-incr_assign_immutable   = "+:" | "-:" | "*:" | "/:" ;
-incr_assign_mutable     = "+=" | "-=" | "*=" | "/=" ;
+(* incr_assign_immutable   = "+:" | "-:" | "*:" | "/:" ; *) 
+update_mutable_oper     = "+=" | "-=" | "*=" | "/=" ;
 assign_mutable          = "=";
 assign_immutable        = ":";
 assign_read_only_ref    = ":~"; 
 
-equal_assign            =  assign_mutable | assign_immutable | assign_read_only_ref;
-assign_oper             = incr_assign_immutable | incr_assign_mutable | equal_assign;
-
-(* V13 modified assign_version *) 
-assign_version = ["v"] digits "." digits ;
+(* LHS Part *)
+assign_version = ["v"] digits { "." digits } ;
 assign_lhs     = UNIQUE<ident_name [","  ( ident_name |  cardinality | assign_version ) ] [ ","  ( ident_name |  cardinality | assign_version ) ]  [ "," ( ident_name |  cardinality | assign_version ) ]>;
 
-assign_rhs = constant | calc_unit;
-assignment = assign_lhs assign_oper assign_rhs;
+EXTEND<statement> = | constant | cardinality ;
+
+(* RHS Part *)
+assign_cond_rhs   = condition logic_and statement { logic_exclusive_or condition logic_and statement };
+assign_single     =  assign_lhs ( assign_mutable | assign_immutable | assign_read_only_ref ) statement| assign_cond_rhs; 
+
+(* Private variables and private variable groups *)
+private_modifier = "-"; (* this is not a numeric operator, and it should not be a problem , since is used in a different context *)
+assign_private_single   = private_modifier assign_single;
+assign_private_grouping =  private_modifier group_begin assign_single { EOL assign_single } group_end;
+
+assign_rhs              = ( assign_cond_rhs | statement ) | assign_private_single | assign_private_grouping; 
+(* V18 fixed a bug *) 
+assign_new_var    = assign_lhs ( assign_immutable | assign_read_only_ref | assign_mutable ) assign_rhs;
+update_mutable    = ident_ref  update_mutable_oper assign_rhs;
+assignment        = assign_new_var | update_mutable; 
+
+(* V18 added this EXTEND *) 
+EXTEND<statement> = | assign_cond_rhs | self_ref;

@@ -41,19 +41,30 @@
      TBL_TO_STRING<t>              — aligned text grid
    *)
 
-table, table_final: {
+(col : @std.collections)  table, table_final: {
     names, n, 1..m: ["table", "table_final"]
-    card,  c:       1..1
-    type,  t:       $
-    data,  d:       [ columns: [], key_columns: [], rows: [] ]
-    ver,   v:       "v0.0"
+    map:     col.map
+    filter:  col.filter
+    reduce:  col.reduce
+    count:   col.count
+    first:   col.first
+    last:    col.last
+    collect: col.collect
+    take:    col.take
+    drop:    col.drop
+    - (
+        card,  c:       1..1
+        type,  t:       $
+        data,  d:       [ columns: [], key_columns: [], rows: [] ]
+        ver,   v:       "v0.0"
 
-    init: <- (
-        -> raw: §table_final
-        <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
-             card:  LHS_CALLER<§assign_lhs.cardinality>,
-             type:  $,
-             data:  raw ]
+        init: <- (
+            -> raw: §table_final
+            <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
+                 card:  LHS_CALLER<§assign_lhs.cardinality>,
+                 type:  $,
+                 data:  raw ]
+        )
     )
 
 
@@ -62,34 +73,34 @@ table, table_final: {
        --------------------------------------------------------------- *)
 
     (* column_count — number of defined columns. *)
-    (t @table) column_count: <- (
+    (t : @table) column_count: <- (
         <- TBL_COL_COUNT<t>
     )
 
     (* row_count — number of rows (Lua: #t). *)
-    (t @table) row_count: <- (
+    (t : @table) row_count: <- (
         <- TBL_ROW_COUNT<t>
     )
 
     (* column_names — @array of all column name strings. *)
-    (t @table) column_names: <- (
+    (t : @table) column_names: <- (
         <- [ type: $, data: TBL_COL_NAMES<t> ]
     )
 
     (* key_column_names — @array of key column name strings. *)
-    (t @table) key_column_names: <- (
+    (t : @table) key_column_names: <- (
         <- [ type: $, data: TBL_KEY_COL_NAMES<t> ]
     )
 
     (* has_column — true when a column with the given name exists in the schema. *)
-    (t @table) has_column: <- (
+    (t : @table) has_column: <- (
         -> name: @string
         names: t.column_names()
         <- names.contains(name)
     )
 
     (* is_empty — true when the table has no rows. *)
-    (t @table) is_empty: <- (
+    (t : @table) is_empty: <- (
         <- TBL_ROW_COUNT<t> == 0
     )
 
@@ -99,27 +110,27 @@ table, table_final: {
        --------------------------------------------------------------- *)
 
     (* first_row — row at index 1 as an @object, or null when empty. *)
-    (t @table) first_row: <- (
+    (t : @table) first_row: <- (
         ( TBL_ROW_COUNT<t> > 0 ) & <- TBL_GET_ROW_AT<t, 1>
         <- null
     )
 
     (* last_row — row at the final index as an @object, or null when empty. *)
-    (t @table) last_row: <- (
+    (t : @table) last_row: <- (
         n: TBL_ROW_COUNT<t>
         ( n > 0 ) & <- TBL_GET_ROW_AT<t, n>
         <- null
     )
 
     (* get_row_at — row by 1-based position as an @object. *)
-    (t @table) get_row_at: <- (
+    (t : @table) get_row_at: <- (
         -> index: integer
         <- TBL_GET_ROW_AT<t, index>
     )
 
     (* get_row — row by primary key value as an @object, or null when absent.
        This is the hash-map lookup: uses key_columns as the typed index. *)
-    (t @table) get_row: <- (
+    (t : @table) get_row: <- (
         -> key: @?
         <- TBL_GET_ROW<t, key>
     )
@@ -132,21 +143,21 @@ table, table_final: {
 
     (* with_row — if a row with the same key exists, replace it;
        otherwise append.  (Lua: table.insert) *)
-    (t @table) with_row: <- (
+    (t : @table) with_row: <- (
         -> row: @object
         <- [ type: $, data: TBL_WITH_ROW<t, row> ]
     )
 
     (* without_key — new @table with the row matching key removed.
        No-op when the key is absent.  (Lua: table.remove by key) *)
-    (t @table) without_key: <- (
+    (t : @table) without_key: <- (
         -> key: @?
         <- [ type: $, data: TBL_WITHOUT_KEY<t, key> ]
     )
 
     (* without_row_at — new @table with the row at the given 1-based
        position removed.  (Lua: table.remove by position) *)
-    (t @table) without_row_at: <- (
+    (t : @table) without_row_at: <- (
         -> index: integer
         <- [ type: $, data: TBL_WITHOUT_ROW_AT<t, index> ]
     )
@@ -158,14 +169,14 @@ table, table_final: {
 
     (* get_column — @array of all values for the named column, in row order.
        Chain with array.to_string(sep) to replicate Lua's table.concat. *)
-    (t @table) get_column: <- (
+    (t : @table) get_column: <- (
         -> name: @string
         <- [ type: $, data: TBL_GET_COL<t, name> ]
     )
 
     (* project — new @table containing only the named columns.
        Key columns are always preserved even if not listed. *)
-    (t @table) project: <- (
+    (t : @table) project: <- (
         -> col_names: @array
         <- [ type: $, data: TBL_PROJECT<t, col_names> ]
     )
@@ -176,27 +187,27 @@ table, table_final: {
        --------------------------------------------------------------- *)
 
     (* where — new @table of rows for which predicate returns true. *)
-    (t @table) where: <- (
+    (t : @table) where: <- (
         -> predicate: @?
         <- [ type: $, data: TBL_WHERE<t, predicate> ]
     )
 
     (* order_by — new @table sorted ascending by the named column.
        (Lua: table.sort with ascending comparator) *)
-    (t @table) order_by: <- (
+    (t : @table) order_by: <- (
         -> col_name: @string
         <- [ type: $, data: TBL_ORDER_BY<t, col_name, true> ]
     )
 
     (* order_by_desc — new @table sorted descending by the named column.
        (Lua: table.sort with descending comparator) *)
-    (t @table) order_by_desc: <- (
+    (t : @table) order_by_desc: <- (
         -> col_name: @string
         <- [ type: $, data: TBL_ORDER_BY<t, col_name, false> ]
     )
 
     (* limit — new @table with at most n rows, taken from the start. *)
-    (t @table) limit: <- (
+    (t : @table) limit: <- (
         -> n: integer
         row_c: TBL_ROW_COUNT<t>
         take: n <= row_c & n ^ row_c
@@ -212,7 +223,7 @@ table, table_final: {
        When a key exists in both, other's row wins.
        Both tables must share the same column schema.
        (Lua: table.move into a second table) *)
-    (t @table) merge: <- (
+    (t : @table) merge: <- (
         -> other: @table
         <- [ type: $, data: TBL_MERGE<t, other> ]
     )
@@ -224,7 +235,7 @@ table, table_final: {
 
     (* inner_join — rows present in both tables, matched on on_col.
        Result schema is the union of both schemas. *)
-    (t @table) inner_join: <- (
+    (t : @table) inner_join: <- (
         -> other:  @table
         -> on_col: @string
         <- [ type: $, data: TBL_INNER_JOIN<t, other, on_col> ]
@@ -232,7 +243,7 @@ table, table_final: {
 
     (* left_join — all rows from t; matched columns from other filled
        where the key is present, null-padded where absent. *)
-    (t @table) left_join: <- (
+    (t : @table) left_join: <- (
         -> other:  @table
         -> on_col: @string
         <- [ type: $, data: TBL_LEFT_JOIN<t, other, on_col> ]
@@ -245,7 +256,7 @@ table, table_final: {
 
     (* group_by — @object whose keys are the distinct values of col_name
        and whose values are @table partitions containing matching rows. *)
-    (t @table) group_by: <- (
+    (t : @table) group_by: <- (
         -> col_name: @string
         <- TBL_GROUP_BY<t, col_name>
     )
@@ -259,18 +270,18 @@ table, table_final: {
        This is the escape hatch: once you have an @array you can use
        all array.sqz and collections.sqz operations freely.
        (Lua: table.unpack) *)
-    (t @table) to_array: <- (
+    (t : @table) to_array: <- (
         <- [ type: $, data: TBL_TO_ARRAY<t> ]
     )
 
     (* to_json — JSON array of row objects, one object per row. *)
-    (t @table) to_json: <- (
+    (t : @table) to_json: <- (
         <- TBL_TO_JSON<t>
     )
 
     (* to_string — human-readable aligned text grid, column headers on
        the first line, rows below, columns separated by " | ". *)
-    (t @table) to_string: <- (
+    (t : @table) to_string: <- (
         <- TBL_TO_STRING<t>
     )
 }

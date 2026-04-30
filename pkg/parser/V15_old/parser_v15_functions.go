@@ -31,6 +31,7 @@ package parser
 import (
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 // V13urlRe matches http/https URLs.
@@ -257,41 +258,37 @@ type V13AssignPushNode struct {
 	Source *V13PushSourceNode
 }
 
-// V13FuncInjectBind  assign_lhs ( ":" | ":~" ) ident_ref
-type V13FuncInjectBind struct {
-	LHS  *V13AssignLHSNode
-	Oper *V13AssignOperNode // nil allowed for head
-	Ref  *V13IdentRefNode
-}
-
-// V13FuncInjectBindNode  wraps V13FuncInjectBind as a V13Node
-type V13FuncInjectBindNode struct {
-	V13BaseNode
-	Bind V13FuncInjectBind
-}
-
-// V13FuncInjectHeadInspectNode  assign_lhs inspect_type [ "[]" ]
-type V13FuncInjectHeadInspectNode struct {
-	V13BaseNode
+// V13FuncInjectItem  one binding inside func_inject (V15)
+//
+//	assign_lhs equal_assign ( inspect_type [ empty_array_decl ] | ident_ref )
+//
+// exactly one of Inspect or Ref is non-nil.
+type V13FuncInjectItem struct {
 	LHS      *V13AssignLHSNode
-	Inspect  *V13InspectTypeNode
-	HasArray bool
+	Oper     *V13AssignOperNode  // equal_assign: "=" | ":" | ":~"
+	Inspect  *V13InspectTypeNode // non-nil for inspect_type form
+	HasArray bool                // true when [ empty_array_decl ] follows Inspect
+	Ref      *V13IdentRefNode    // non-nil for ident_ref form
 }
 
-// V13FuncInjectNode  func_inject
+// V13FuncInjectNode  func_inject (V15)
+//
+//	func_inject = "(" item { "," item } ")"
 type V13FuncInjectNode struct {
 	V13BaseNode
-	Head  V13Node
-	Binds []V13FuncInjectBind
+	Items []V13FuncInjectItem
 }
 
-// V13FuncStmtNode  func_stmt = regexp | ident_ref | object_final | array_final | func_call_chain | func_unit | calc_unit | self_ref
+// V13FuncStmtNode  func_stmt = assign_rhs_item | regexp | ident_ref | object_final | array_final | func_call_chain | assign_rhs_chain | self_ref
+// Extended via EXTEND<func_stmt> (spec/06_functions.sqg): | return_func_unit
+// (V16: assign_rhs_item added as first alternative; func_unit removed — use return_func_unit for "<-" func_unit forms)
 type V13FuncStmtNode struct {
 	V13BaseNode
 	Value V13Node
 }
 
-// V13FuncAssignNode  func_assign = [ func_inject ] assign_lhs assign_oper func_stmt
+// V13FuncAssignNode  func_assign = [ func_inject ] assign_lhs assign_oper ( func_stmt | return_func_unit )
+// (V16: return_func_unit made explicit on RHS; handled in practice via EXTEND<func_stmt> in ParseFuncStmt.)
 type V13FuncAssignNode struct {
 	V13BaseNode
 	Inject *V13FuncInjectNode
@@ -306,14 +303,6 @@ type V13FuncReturnStmtNode struct {
 	Stmt *V13FuncStmtNode
 }
 
-// V13CondReturnStmtNode  cond_return_stmt = "(" logic_expr ")" logic_oper func_return_stmt
-type V13CondReturnStmtNode struct {
-	V13BaseNode
-	Cond   V13Node
-	Oper   string
-	Return *V13FuncReturnStmtNode
-}
-
 // V13FuncStoreStmtNode  func_store_stmt = dependency_oper ( object_final | TYPE_OF object_final<ident_ref> ) { "," ... }
 // dependency_oper = "=>" (V13_STORE); publishes a new UUIDv7-stamped version of a named data object.
 type V13FuncStoreStmtNode struct {
@@ -321,10 +310,43 @@ type V13FuncStoreStmtNode struct {
 	Items []V13Node
 }
 
-// V13FuncBodyStmtNode  func_body_stmt = func_assign | func_return_stmt | func_store_stmt | ...
+// V13FuncBodyStmtNode  func_body_stmt = func_assign | func_assign_rhs_chain | func_return_stmt | ...
 type V13FuncBodyStmtNode struct {
 	V13BaseNode
 	Value V13Node
+}
+
+// V13FuncChainHeadNode  func_chain_head =
+//
+//	logic_grouping | compare_expr | ident_ref | func_call_chain
+//
+// (V16) Head of a func_assign_rhs_chain — excludes logic_expr_list to prevent greedy & consumption.
+type V13FuncChainHeadNode struct {
+	V13BaseNode
+	Value V13Node // *V13LogicGroupingNode | *V13CompareExprNode | *V13IdentRefNode | *V13FuncCallChainNode
+}
+
+// V13FuncAssignRhsChainTerm is one element (past the first) in a func_assign_rhs_chain.
+// Value is *V13FuncAssignNode, *V13FuncStmtNode, or *V13FuncReturnStmtNode.
+type V13FuncAssignRhsChainTerm struct {
+	Oper  string  // "&", "|", "^"
+	Value V13Node // *V13FuncAssignNode | *V13FuncStmtNode | *V13FuncReturnStmtNode
+}
+
+// V13FuncAssignRhsChainNode  func_assign_rhs_chain =
+//
+//	func_chain_head logic_oper ( func_assign | func_stmt | func_return_stmt ) { logic_oper ( func_assign | func_stmt | func_return_stmt ) }
+//
+// (V16) Enables short-circuit chains as standalone func_body_stmt, e.g.:
+//
+//	( LENGTH<arr.data> > 0 ) & <- arr.data[1]
+//	( n > 0 ) & <- arr.data[n]
+//	( first ) & first = false
+//	start <= 0 & start = n + start
+type V13FuncAssignRhsChainNode struct {
+	V13BaseNode
+	First *V13FuncChainHeadNode
+	Terms []V13FuncAssignRhsChainTerm
 }
 
 // V13FuncUnitHeaderNode  func_unit_header
@@ -443,19 +465,40 @@ func V13isAssignLHSStart(t V13TokenType) bool {
 
 // ---------- inspect_type ----------
 
-// ParseInspectType parses:  inspect_type = "@TypeName" | "@?" | "§ident"
+// ParseInspectType parses:  inspect_type = type_prefix !WS! ident_ref | any_type | "§ident"
+// type_prefix = "@";  ident_ref may be dotted, e.g. @std.collections
 func (p *V13Parser) ParseInspectType() (*V13InspectTypeNode, error) {
 	tok := p.cur()
 	switch tok.Type {
 	case V13_ANY_TYPE:
-		// V13: @? is a first-class inspect_type
+		// @? — any_type
 		node := &V13InspectTypeNode{V13BaseNode: V13BaseNode{Line: tok.Line, Col: tok.Col}, Name: "@?"}
 		p.advance()
 		return node, nil
-	case V13_AT_IDENT:
-		node := &V13InspectTypeNode{V13BaseNode: V13BaseNode{Line: tok.Line, Col: tok.Col}, Name: tok.Value}
+	case V13_AT:
+		// type_prefix !WS! ident_ref  e.g. @array, @std.collections
+		line, col := tok.Line, tok.Col
+		p.advance() // consume @
+		if p.cur().Type != V13_IDENT {
+			return nil, p.errAt(fmt.Sprintf("inspect_type: expected type name after @, got %s", p.cur().Type))
+		}
+		var sb strings.Builder
+		sb.WriteString("@")
+		sb.WriteString(p.cur().Value)
 		p.advance()
-		return node, nil
+		// consume optional dotted suffix: .collections etc.
+		for p.cur().Type == V13_DOT {
+			saved := p.savePos()
+			p.advance()
+			if p.cur().Type != V13_IDENT {
+				p.restorePos(saved)
+				break
+			}
+			sb.WriteRune('.')
+			sb.WriteString(p.cur().Value)
+			p.advance()
+		}
+		return &V13InspectTypeNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Name: sb.String()}, nil
 	case V13_SECTION:
 		line, col := tok.Line, tok.Col
 		p.advance()
@@ -471,14 +514,19 @@ func (p *V13Parser) ParseInspectType() (*V13InspectTypeNode, error) {
 
 func (p *V13Parser) parseInspectTypeName() (*V13InspectTypeNameNode, error) {
 	line, col := p.cur().Line, p.cur().Col
-	if p.cur().Type != V13_AT_IDENT {
+	if p.cur().Type != V13_AT {
 		return nil, p.errAt(fmt.Sprintf("expected @ref (inspect_type_name), got %s", p.cur().Type))
 	}
-	atTok := p.cur()
+	atLine, atCol := p.cur().Line, p.cur().Col
+	p.advance() // consume @
+	if p.cur().Type != V13_IDENT {
+		return nil, p.errAt(fmt.Sprintf("inspect_type_name: expected identifier after @, got %s", p.cur().Type))
+	}
+	identName := p.cur().Value
 	p.advance()
 	ref := &V13IdentRefNode{
-		V13BaseNode: V13BaseNode{Line: atTok.Line, Col: atTok.Col},
-		Dotted:      &V13IdentDottedNode{V13BaseNode: V13BaseNode{Line: atTok.Line, Col: atTok.Col}, Parts: []string{atTok.Value[1:]}},
+		V13BaseNode: V13BaseNode{Line: atLine, Col: atCol},
+		Dotted:      &V13IdentDottedNode{V13BaseNode: V13BaseNode{Line: atLine, Col: atCol}, Parts: []string{identName}},
 	}
 	if _, err := p.expect(V13_DOT); err != nil {
 		return nil, err
@@ -613,7 +661,7 @@ func (p *V13Parser) parseFuncHeaderUserParams() (*V13FuncHeaderUserParamsNode, e
 // ---------- ident_static_store_name ----------
 
 func (p *V13Parser) parseIdentStaticStoreName() (string, *V13InspectTypeNameNode, error) {
-	if p.cur().Type == V13_AT_IDENT {
+	if p.cur().Type == V13_AT {
 		saved := p.savePos()
 		if itn, err := p.parseInspectTypeName(); err == nil {
 			return "", itn, nil
@@ -648,7 +696,14 @@ func (p *V13Parser) ParseArgsDecl() ([]*V13ArgsDeclNode, error) {
 
 	inspect, err := p.ParseInspectType()
 	if err != nil {
-		return nil, err
+		// Bare type name without @ prefix (e.g. "integer", "string") used in func args.
+		if p.cur().Type == V13_IDENT {
+			iLine, iCol := p.cur().Line, p.cur().Col
+			inspect = &V13InspectTypeNode{V13BaseNode: V13BaseNode{Line: iLine, Col: iCol}, Name: p.cur().Value}
+			p.advance()
+		} else {
+			return nil, err
+		}
 	}
 
 	entry := &V13ArgsDeclNode{
@@ -740,6 +795,22 @@ func (p *V13Parser) ParseFuncArgsDecl() (*V13FuncArgsDeclNode, error) {
 			return nil, err
 		}
 		node.Args = args
+		// Multiple "-> param: type" declarations on separate lines are accumulated
+		// into a single FuncArgsNode (e.g. -> start: integer\n-> end: integer).
+		for {
+			saved := p.savePos()
+			p.V13skipNLs()
+			if p.cur().Type != V13_ARROW {
+				p.restorePos(saved)
+				break
+			}
+			more, err := p.ParseFuncArgs()
+			if err != nil {
+				p.restorePos(saved)
+				break
+			}
+			node.Args.Entries = append(node.Args.Entries, more.Entries...)
+		}
 	}
 	if p.cur().Type == V13_STREAM {
 		sa, err := p.ParseFuncStreamArgs()
@@ -963,7 +1034,8 @@ func (p *V13Parser) ParseIteratorSource() (*V13IteratorSourceNode, error) {
 }
 
 // ParseIteratorYieldStmt parses:  iterator_yield_stmt = func_stmt ">>"
-// The ">>" must be followed by NL or EOF (postfix yield form — Role B).
+// The ">>" must be followed by NL, EOF, or a closing bracket (} or )) (postfix yield form — Role B).
+// Allowing } and ) lets "elem >>" appear as the last statement in a block without a trailing newline.
 func (p *V13Parser) ParseIteratorYieldStmt() (*V13IteratorYieldStmtNode, error) {
 	line, col := p.cur().Line, p.cur().Col
 	stmt, err := p.ParseFuncStmt()
@@ -971,15 +1043,18 @@ func (p *V13Parser) ParseIteratorYieldStmt() (*V13IteratorYieldStmtNode, error) 
 		return nil, err
 	}
 	// Use curRaw to check what immediately follows the func_stmt (NL-sensitive check).
-	// We need >>, and after advancing past it there must be a NL or EOF (Role B).
-	// If >> is followed by non-NL, this is a stream loop (Role C), not a yield.
+	// We need >>, and after advancing past it there must be a NL, EOF, or closing bracket (Role B).
+	// If >> is followed by any other non-NL token, this is a stream loop (Role C), not a yield.
 	if p.curRaw().Type != V13_STREAM {
 		return nil, p.errAt(fmt.Sprintf("expected '>>' for yield, got %s", p.curRaw().Type))
 	}
 	p.advanceRaw() // consume >>
-	// Now curRaw must be NL or EOF to confirm this is a postfix yield.
-	if p.curRaw().Type != V13_NL && p.curRaw().Type != V13_EOF {
-		return nil, p.errAt(fmt.Sprintf("expected NL after yield '>>', got %s", p.curRaw().Type))
+	// Confirm postfix yield: next token must be NL, EOF, } or ).
+	switch p.curRaw().Type {
+	case V13_NL, V13_EOF, V13_RBRACE, V13_RPAREN:
+		// valid postfix yield terminator — do not consume the bracket (the block parser owns it)
+	default:
+		return nil, p.errAt(fmt.Sprintf("expected NL or closing bracket after yield '>>', got %s", p.curRaw().Type))
 	}
 	return &V13IteratorYieldStmtNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Stmt: stmt}, nil
 }
@@ -1295,41 +1370,75 @@ func (p *V13Parser) ParseFuncCallFinal() (*V13FuncCallFinalNode, error) {
 
 // ---------- func_inject ----------
 
+// isEqualAssignOper returns true for equal_assign tokens: "=" | ":" | ":~"
+func isEqualAssignOper(t V13TokenType) bool {
+	return t == V13_EQ || t == V13_COLON || t == V13_READONLY
+}
+
+// ParseFuncInject parses:
+//
+//	func_inject = "(" item { "," item } ")"
+//	item        = assign_lhs equal_assign ( inspect_type [ empty_array_decl ] | ident_ref )
+//	equal_assign = "=" | ":" | ":~"
 func (p *V13Parser) ParseFuncInject() (*V13FuncInjectNode, error) {
 	line, col := p.cur().Line, p.cur().Col
 	if _, err := p.expect(V13_LPAREN); err != nil {
 		return nil, err
 	}
 
-	node := &V13FuncInjectNode{V13BaseNode: V13BaseNode{Line: line, Col: col}}
+	parseItem := func() (*V13FuncInjectItem, error) {
+		lhs, err := p.ParseAssignLHS()
+		if err != nil {
+			return nil, fmt.Errorf("func_inject: expected assign_lhs: %w", err)
+		}
+		if !isEqualAssignOper(p.cur().Type) {
+			return nil, p.errAt(fmt.Sprintf("func_inject: expected '=', ':', or ':~' after assign_lhs, got %s %q", p.cur().Type, p.cur().Value))
+		}
+		oper, err := p.ParseAssignOper()
+		if err != nil {
+			return nil, err
+		}
+		item := &V13FuncInjectItem{LHS: lhs, Oper: oper}
+		// try inspect_type first: starts with "@" (V13_AT) or any_type ("@?")
+		if p.cur().Type == V13_AT || p.cur().Type == V13_ANY_TYPE {
+			inspect, err := p.ParseInspectType()
+			if err != nil {
+				return nil, fmt.Errorf("func_inject: expected inspect_type: %w", err)
+			}
+			item.Inspect = inspect
+			if p.cur().Type == V13_EMPTY_ARR {
+				item.HasArray = true
+				p.advance()
+			}
+			return item, nil
+		}
+		// ident_ref
+		ref, err := p.ParseIdentRef()
+		if err != nil {
+			return nil, fmt.Errorf("func_inject: expected inspect_type or ident_ref: %w", err)
+		}
+		item.Ref = ref
+		return item, nil
+	}
 
-	if p.cur().Type != V13_RPAREN {
-		node.Head = p.parseFuncInjectHead(line, col)
+	first, err := parseItem()
+	if err != nil {
+		return nil, err
+	}
+	node := &V13FuncInjectNode{
+		V13BaseNode: V13BaseNode{Line: line, Col: col},
+		Items:       []V13FuncInjectItem{*first},
 	}
 
 	for p.cur().Type == V13_COMMA {
 		saved := p.savePos()
 		p.advance()
-		lhs, err := p.ParseAssignLHS()
+		item, err := parseItem()
 		if err != nil {
 			p.restorePos(saved)
 			break
 		}
-		if p.cur().Type != V13_COLON && p.cur().Type != V13_READONLY {
-			p.restorePos(saved)
-			break
-		}
-		oper, err := p.ParseAssignOper()
-		if err != nil {
-			p.restorePos(saved)
-			break
-		}
-		ref, err := p.ParseIdentRef()
-		if err != nil {
-			p.restorePos(saved)
-			break
-		}
-		node.Binds = append(node.Binds, V13FuncInjectBind{LHS: lhs, Oper: oper, Ref: ref})
+		node.Items = append(node.Items, *item)
 	}
 
 	if _, err := p.expect(V13_RPAREN); err != nil {
@@ -1338,55 +1447,17 @@ func (p *V13Parser) ParseFuncInject() (*V13FuncInjectNode, error) {
 	return node, nil
 }
 
-func (p *V13Parser) parseFuncInjectHead(line, col int) V13Node {
-	saved := p.savePos()
-	lhs, lhsErr := p.ParseAssignLHS()
-	if lhsErr == nil {
-		if p.cur().Type == V13_AT_IDENT || p.cur().Type == V13_ANY_TYPE {
-			innerSaved := p.savePos()
-			access, aErr := p.ParseInspectType()
-			if aErr == nil {
-				head := &V13FuncInjectHeadInspectNode{
-					V13BaseNode: V13BaseNode{Line: line, Col: col},
-					LHS:         lhs,
-					Inspect:     access,
-				}
-				if p.cur().Type == V13_EMPTY_ARR {
-					head.HasArray = true
-					p.advance()
-				}
-				return head
-			}
-			p.restorePos(innerSaved)
-		}
-		if p.cur().Type == V13_COLON || p.cur().Type == V13_READONLY {
-			oper, operErr := p.ParseAssignOper()
-			if operErr == nil {
-				ref, refErr := p.ParseIdentRef()
-				if refErr == nil {
-					return &V13FuncInjectBindNode{
-						V13BaseNode: V13BaseNode{Line: line, Col: col},
-						Bind:        V13FuncInjectBind{LHS: lhs, Oper: oper, Ref: ref},
-					}
-				}
-			}
-		}
-	}
-	p.restorePos(saved)
-	ref, refErr := p.ParseIdentRef()
-	if refErr == nil {
-		return &V13FuncInjectBindNode{
-			V13BaseNode: V13BaseNode{Line: line, Col: col},
-			Bind:        V13FuncInjectBind{Ref: ref},
-		}
-	}
-	p.restorePos(saved)
-	return nil
-}
-
 // ---------- func_stmt ----------
 
-// ParseFuncStmt parses:  func_stmt = regexp | ident_ref | object_final | array_final | func_call_chain | func_unit | calc_unit | self_ref | return_func_unit
+// ParseFuncStmt parses:
+//
+//	func_stmt = assign_rhs_item | regexp | ident_ref | object_final | array_final
+//	          | func_call_chain | assign_rhs_chain | self_ref
+//	          | return_func_unit  (via EXTEND<func_stmt>)
+//
+// V16: assign_rhs_item added as first alternative; func_unit (bare { ... }) removed —
+// func_unit is now only reachable via return_func_unit ("<- func_unit") or via
+// assign_rhs_item's LPAREN path (group_begin func_unit).
 func (p *V13Parser) ParseFuncStmt() (*V13FuncStmtNode, error) {
 	line, col := p.cur().Line, p.cur().Col
 	wrap := func(v V13Node) *V13FuncStmtNode {
@@ -1409,12 +1480,8 @@ func (p *V13Parser) ParseFuncStmt() (*V13FuncStmtNode, error) {
 		p.advance()
 		return wrap(&V13SelfRefNode{V13BaseNode: V13BaseNode{Line: line, Col: col}}), nil
 
-	case V13_LBRACE:
-		unit, err := p.ParseFuncUnit()
-		if err != nil {
-			return nil, err
-		}
-		return wrap(unit), nil
+	// NOTE: V16 removes func_unit (bare "{ ... }") from func_stmt.
+	// case V13_LBRACE is intentionally absent — { falls to ParseAssignRhsItem → ParseSetFinal.
 
 	case V13_LBRACKET, V13_EMPTY_ARR, V13_UNIFORM:
 		saved := p.savePos()
@@ -1436,7 +1503,9 @@ func (p *V13Parser) ParseFuncStmt() (*V13FuncStmtNode, error) {
 		p.restorePos(saved)
 	}
 
-	if p.cur().Type == V13_REGEXP || p.cur().Type == V13_REGEXP_DECL {
+	if p.cur().Type == V13_REGEXP || p.cur().Type == V13_REGEXP_DECL ||
+		p.cur().Type == V13_NULL || p.cur().Type == V13_TRUE || p.cur().Type == V13_FALSE ||
+		p.cur().Type == V13_NAN {
 		c, err := p.ParseConstant()
 		if err != nil {
 			return nil, err
@@ -1444,6 +1513,39 @@ func (p *V13Parser) ParseFuncStmt() (*V13FuncStmtNode, error) {
 		return wrap(c), nil
 	}
 
+	// Uppercase angle-bracket intrinsic call: LENGTH<arr>, ARRAY_REVERSE<arr>,
+	// SUB_RANGE x<arr>, CAST string<val>, etc. — must be tried before
+	// ParseCalcUnit, which would misinterpret the "<" as a less-than operator.
+	if p.looksLikeBootstrapCall() {
+		bc, err := p.ParseBootstrapCall()
+		if err != nil {
+			return nil, err
+		}
+		return wrap(bc), nil
+	}
+
+	// assign_rhs_item (V16 first alternative): covers constant, calc_unit, cardinality,
+	// inspect_type, self_ref, structural forms (set, enum, bitfield, …), and
+	// func_unit via LPAREN (assign_rhs_item's parser-level LPAREN → ParseFuncUnit path).
+	{
+		saved2 := p.savePos()
+		if ari, err := p.ParseAssignRhsItem(); err == nil {
+			return wrap(ari), nil
+		}
+		p.restorePos(saved2)
+	}
+
+	// assign_rhs_chain: structural items joined by logic operators.
+	// e.g.  [1,2] & [3,4]  or  objectA | objectB
+	{
+		saved2 := p.savePos()
+		if arc, err := p.ParseAssignRhsChain(); err == nil {
+			return wrap(arc), nil
+		}
+		p.restorePos(saved2)
+	}
+
+	// Fallback: bare calc_unit (ident_ref, numeric/logic expressions, …).
 	cu, err := p.ParseCalcUnit()
 	if err != nil {
 		return nil, err
@@ -1529,38 +1631,117 @@ func (p *V13Parser) ParseFuncStoreStmt() (*V13FuncStoreStmtNode, error) {
 	return node, nil
 }
 
-func (p *V13Parser) parseCondReturnStmt() (*V13CondReturnStmtNode, error) {
+// ParseFuncChainHead parses:
+//
+//	func_chain_head = logic_grouping | compare_expr | ident_ref | func_call_chain
+//
+// (V16) Used as the first (head) term of func_assign_rhs_chain.
+// Excludes logic_expr_list so that a logic_oper following the head is always
+// available to the chain dispatcher rather than being consumed greedily.
+func (p *V13Parser) ParseFuncChainHead() (*V13FuncChainHeadNode, error) {
 	line, col := p.cur().Line, p.cur().Col
-	if _, err := p.expect(V13_LPAREN); err != nil {
-		return nil, err
+	wrap := func(v V13Node) *V13FuncChainHeadNode {
+		return &V13FuncChainHeadNode{V13BaseNode: V13BaseNode{Line: line, Col: col}, Value: v}
 	}
-	cond, err := p.ParseLogicExpr()
-	if err != nil {
-		return nil, err
-	}
-	if _, err := p.expect(V13_RPAREN); err != nil {
-		return nil, err
-	}
-	operTok := p.cur()
-	switch operTok.Type {
-	case V13_AMP, V13_PIPE, V13_CARET:
-		p.advance()
+	switch p.cur().Type {
+	case V13_LPAREN:
+		lg, err := p.ParseLogicGrouping()
+		if err != nil {
+			return nil, fmt.Errorf("func_chain_head: %w", err)
+		}
+		return wrap(lg), nil
+	case V13_TYPE_OF:
+		fc, err := p.ParseFuncCallChain()
+		if err != nil {
+			return nil, fmt.Errorf("func_chain_head: %w", err)
+		}
+		return wrap(fc), nil
 	default:
-		return nil, p.errAt(fmt.Sprintf("expected logic operator after condition, got %s %q", operTok.Type, operTok.Value))
+		// Try compare_expr (e.g. start <= 0); fall back to ident_ref.
+		saved := p.savePos()
+		if ce, err := p.ParseCompareExpr(); err == nil {
+			return wrap(ce), nil
+		}
+		p.restorePos(saved)
+		ir, err := p.ParseIdentRef()
+		if err != nil {
+			return nil, fmt.Errorf("func_chain_head: %w", err)
+		}
+		return wrap(ir), nil
 	}
-	ret, err := p.ParseFuncReturnStmt()
+}
+
+// ParseFuncAssignRhsChain parses:
+//
+//	func_assign_rhs_chain = func_chain_head logic_oper ( func_assign | func_stmt | func_return_stmt )
+//	                        { logic_oper ( func_assign | func_stmt | func_return_stmt ) }
+//
+// (V16) Enables short-circuit chains as standalone func_body_stmt, e.g.:
+//
+//	( LENGTH<arr.data> > 0 ) & <- arr.data[1]
+//	( n > 0 ) & <- arr.data[n]
+//	( first ) & first = false
+//	start <= 0 & start = n + start
+//
+// The head is a func_chain_head (no logic_expr_list) so the logic_oper after it
+// is never consumed greedily. Each subsequent term may be a func_assign, a
+// func_return_stmt, or a func_stmt. Requires at least one logic_oper; fails fast otherwise.
+func (p *V13Parser) ParseFuncAssignRhsChain() (*V13FuncAssignRhsChainNode, error) {
+	line, col := p.cur().Line, p.cur().Col
+	first, err := p.ParseFuncChainHead()
 	if err != nil {
 		return nil, err
 	}
-	return &V13CondReturnStmtNode{
+	// Require at least one logic_oper — distinguishes from a bare func_stmt.
+	oper := V13logicOper(p.cur().Type)
+	if oper == "" {
+		return nil, p.errAt("func_assign_rhs_chain: expected logic operator after first func_stmt")
+	}
+	terms := []V13FuncAssignRhsChainTerm{}
+	for {
+		oper = V13logicOper(p.cur().Type)
+		if oper == "" {
+			break
+		}
+		p.advance()
+		var val V13Node
+		if p.cur().Type == V13_RETURN_STMT {
+			rs, err := p.ParseFuncReturnStmt()
+			if err != nil {
+				return nil, fmt.Errorf("func_assign_rhs_chain: %w", err)
+			}
+			val = rs
+		} else {
+			// Try func_assign first (e.g. "start = n + start" after "&").
+			saved2 := p.savePos()
+			if fa, faErr := p.ParseFuncAssign(); faErr == nil {
+				val = fa
+			} else {
+				p.restorePos(saved2)
+				fs, err := p.ParseFuncStmt()
+				if err != nil {
+					return nil, fmt.Errorf("func_assign_rhs_chain: %w", err)
+				}
+				val = fs
+			}
+		}
+		terms = append(terms, V13FuncAssignRhsChainTerm{Oper: oper, Value: val})
+	}
+	return &V13FuncAssignRhsChainNode{
 		V13BaseNode: V13BaseNode{Line: line, Col: col},
-		Cond:        cond,
-		Oper:        operTok.Value,
-		Return:      ret,
+		First:       first,
+		Terms:       terms,
 	}, nil
 }
 
-// ParseFuncBodyStmt parses:  func_body_stmt
+// ParseFuncBodyStmt parses:
+//
+//	func_body_stmt = func_assign | func_assign_rhs_chain | func_return_stmt | func_store_stmt
+//	               | iterator_yield_stmt | push_forward_stmt | push_stream_bind
+//	               | func_stream_loop | func_call_final
+//
+// V16: func_assign_rhs_chain replaces assign_rhs_chain.
+// Handles short-circuit chains like ( cond ) & <- value  or  ( cond ) & x = expr.
 func (p *V13Parser) ParseFuncBodyStmt() (*V13FuncBodyStmtNode, error) {
 	line, col := p.cur().Line, p.cur().Col
 	wrap := func(v V13Node) *V13FuncBodyStmtNode {
@@ -1581,13 +1762,6 @@ func (p *V13Parser) ParseFuncBodyStmt() (*V13FuncBodyStmtNode, error) {
 			return nil, err
 		}
 		return wrap(ss), nil
-
-	case V13_LPAREN:
-		saved := p.savePos()
-		if crs, err := p.parseCondReturnStmt(); err == nil {
-			return wrap(crs), nil
-		}
-		p.restorePos(saved)
 	}
 
 	if p.cur().Type == V13_TYPE_OF {
@@ -1603,6 +1777,16 @@ func (p *V13Parser) ParseFuncBodyStmt() (*V13FuncBodyStmtNode, error) {
 		return wrap(fa), nil
 	}
 	p.restorePos(saved)
+
+	// func_assign_rhs_chain as a standalone func_body_stmt (V16).
+	// Handles short-circuit chains, e.g.  ( cond ) & <- value  or  ( cond ) & x = expr.
+	{
+		saved2 := p.savePos()
+		if arc, err := p.ParseFuncAssignRhsChain(); err == nil {
+			return wrap(arc), nil
+		}
+		p.restorePos(saved2)
+	}
 
 	// Try iterator_yield_stmt (Role B — postfix): func_stmt >> NL/EOF
 	// Must be attempted before ParseFuncStreamLoop so that "result >>\n"
@@ -1676,6 +1860,11 @@ func (p *V13Parser) ParseFuncUnit() (*V13FuncUnitNode, error) {
 	default:
 		return nil, p.errAt(fmt.Sprintf("expected '{' or '(' to begin func_unit, got %s", p.cur().Type))
 	}
+
+	// Skip any newlines immediately after the opening delimiter so that
+	// func_unit_header tokens (e.g. "->" func_args) on the next line are
+	// visible to ParseFuncArgsDecl before the body-start check.
+	p.V13skipNLs()
 
 	hdr := &V13FuncUnitHeaderNode{V13BaseNode: V13BaseNode{Line: p.cur().Line, Col: p.cur().Col}}
 	if !V13isFuncBodyStart(p.cur()) {

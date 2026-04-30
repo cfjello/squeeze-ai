@@ -6,242 +6,251 @@
    lazy iterators.  See spec/15_collections.sqg for the full
    design rationale.
 
-   PIPELINE directives register each transform/aggregate as
-   eligible for the >> pipeline syntax, e.g.:
-       prices >>map(<- { -> x: @?  x * 1.1 })
-   desugars at parse time to:
-       map(prices, <- { -> x: @?  x * 1.1 })
+   All functions use ">> col: @?" — the function receives the
+   @iterators object and is called ONCE.  The inner loop block
+   uses "-> elem: @?" to receive each element directly from the
+   iterator (ITER_NEXT<it> returns the element, not iterator_record).
 
-   TRANSFORMS (lazy — return a new iterator):
+   TRANSFORMS (lazy — yield downstream via postfix "elem >>"):
      map, filter, take, drop, zip
 
    AGGREGATES (eager — consume iterator, return scalar or record):
      reduce, join, first, last, count, sum, min, max
+
+   MATERIALISER (eager — consume iterator, return @array):
+     collect
    *)
 
+collections: {
+    names, n, 1..1: ["collections"]
+    (* ============================================================
+    TRANSFORMS — lazy, yield downstream via postfix ">>"
+    ============================================================ *)
 
-(* ============================================================
-   TRANSFORMS — lazy, return a new iterator
-   ============================================================ *)
-
-(*
-   map(col, f)
-   Apply f to every element of col.
-   Output @type is determined by the return object of f.
-   col >>map(f) pipeline form also valid.
-*)
-PIPELINE<map>
-map : <- {
-    -> col: @?
-    -> f:   @?
-    col >> {
-        elem >>
-        <- f(elem)
+    (*
+    map(col, f)
+    Apply f to every element of col; yield each result downstream.
+    Output @type is determined by the return type of f.
+    *)
+    map : <- {
+        >> col: @?
+        -> f:   @?
+        col >> {
+            -> elem: @?
+            f(elem) >>
+        }
     }
-}
 
-(*
-   filter(col, pred)
-   Keep only elements of col where pred(elem) returns true.
-   Output @type is identical to input @type.
-   col >>filter(pred) pipeline form also valid.
-*)
-PIPELINE<filter>
-filter : <- {
-    -> col:  @?
-    -> pred: @?
-    col >> {
-        elem >>
-        ( pred(elem) ) & elem >>
+    (*
+    filter(col, pred)
+    Yield each element of col for which pred(elem) is true.
+    Output @type is identical to input @type.
+    *)
+    filter : <- {
+        >> col:  @?
+        -> pred: @?
+        col >> {
+            -> elem: @?
+            ( pred(elem) ) & elem >>
+        }
     }
-}
 
-(*
-   take(col, n)
-   Yield the first n elements of col then stop.
-   Output @type is identical to input @type.
-   col >>take(n) pipeline form also valid.
-*)
-PIPELINE<take>
-take : <- {
-    -> col: @?
-    -> n:   integer
-    count = 0
-    col >> {
-        ( count >= n ) & <- false
-        elem >>
-        count +:1
+    (*
+    take(col, n)
+    Yield the first n elements of col then stop.
+    Output @type is identical to input @type.
+    *)
+    take : <- {
+        >> col: @?
+        -> n:   integer
+        count = 0
+        col >> {
+            -> elem: @?
+            ( count >= n ) & <- false
+            elem >>
+            count +:1
+        }
     }
-}
 
-(*
-   drop(col, n)
-   Skip the first n elements, then yield the rest.
-   Output @type is identical to input @type.
-   col >>drop(n) pipeline form also valid.
-*)
-PIPELINE<drop>
-drop : <- {
-    -> col: @?
-    -> n:   integer
-    skipped = 0
-    col >> {
-        ( skipped < n ) & skipped +:1
-        ( skipped <= n ) & <- true
-        elem >>
+    (*
+    drop(col, n)
+    Skip the first n elements, then yield the rest.
+    Output @type is identical to input @type.
+    *)
+    drop : <- {
+        >> col: @?
+        -> n:   integer
+        skipped = 0
+        col >> {
+            -> elem: @?
+            skipped < n & ( skipped +:1 )
+            skipped >= n & elem >>
+        }
     }
-}
 
-(*
-   zip(col_a, col_b)
-   Ordinal form: produces a lazy stream of named records [_1: a_i, _2: b_i].
-   Terminates when the shortest input is exhausted.
-   col_a >>zip(col_b) pipeline form also valid.
-
-   Named form: zip(name_a: col_a, name_b: col_b) — handled by the caller
-   via named-parameter syntax at the call site.
-*)
-PIPELINE<zip>
-zip : <- {
-    -> col_a: @?
-    -> col_b: @?
-    iter_a = col_a
-    iter_b = col_b
-    true >> {
-        a = iter_a.next()
-        b = iter_b.next()
-        ( a == null || b == null ) & <- false
-        <- [ _1: a, _2: b ] >>
+    (*
+    zip(col_a, col_b)
+    Yield [_1: a_i, _2: b_i] record pairs, one per step.
+    Terminates when the shorter source is exhausted.
+    col_a is the primary stream; col_b is stepped via ITER_NEXT.
+    *)
+    zip : <- {
+        >> col_a: @?
+        -> col_b: @?
+        col_a >> {
+            -> elem_a: @?
+            elem_b = ITER_NEXT<col_b>
+            ( elem_b == null ) & <- false
+            [ _1: elem_a, _2: elem_b ] >>
+        }
     }
-}
 
 
-(* ============================================================
-   AGGREGATES — eager, consume iterator and return a scalar
-   ============================================================ *)
+    (* ============================================================
+    AGGREGATES — eager, consume iterator, return scalar or record
+    ============================================================ *)
 
-(*
-   reduce(col, init, f)
-   Left-fold col using f, starting from init.
-   Output @type == init.@type.
-   init is mandatory (see spec 15.8).
-   col >>reduce(init, f) pipeline form also valid.
-*)
-PIPELINE<reduce>
-reduce : <- {
-    -> col:  @?
-    -> init: @?
-    -> f:    @?
-    acc = init
-    col >> {
-        >> elem: @?
-        acc = f(acc, elem)
+    (*
+    reduce(col, init, f)
+    Left-fold col using f, starting from init.
+    Output @type == init.@type.
+    init is mandatory.
+    *)
+    reduce : <- {
+        >> col:  @?
+        -> init: @?
+        -> f:    @?
+        acc = init
+        col >> {
+            -> elem: @?
+            acc = f(acc, elem)
+        }
+        <- acc
     }
-    <- acc
-}
 
-(*
-   join(col, separator)
-   Fold a string collection into a single string with separator between elements.
-   col >>join(separator) pipeline form also valid.
-*)
-PIPELINE<join>
-join : <- {
-    -> col:       @?
-    -> separator: string
-    acc = ""
-    first = true
-    col >> {
-        >> elem: @?
-        sep_now = first & "" ^ separator
-        ( first ) & first = false
-        acc = acc + sep_now + elem
+    (*
+    join(col, separator)
+    Fold a string collection into a single string with separator between elements.
+    *)
+    join : <- {
+        >> col:       @?
+        -> separator: string
+        acc   = ""
+        first = true
+        col >> {
+            -> elem: @?
+            sep_now = first & "" ^ separator
+            ( first ) & first = false
+            acc = acc + sep_now + elem
+        }
+        <- acc
     }
-    <- acc
-}
 
-(*
-   first(col)
-   Return the first element of col, or null if col is empty.
-*)
-first : <- {
-    -> col: @?
-    col >> {
-        >> elem: @?
-        <- elem
+    (*
+    first(col)
+    Return the first element of col, or null if col is empty.
+    *)
+    first : <- {
+        >> col: @?
+        col >> {
+            -> elem: @?
+            <- elem
+        }
+        <- null
     }
-    <- null
-}
 
-(*
-   last(col)
-   Return the last element of col.  Drains the entire iterator.
-*)
-last : <- {
-    -> col: @?
-    result = null
-    col >> {
-        >> elem: @?
-        result = elem
+    (*
+    last(col)
+    Return the last element of col.  Drains the entire iterator.
+    *)
+    last : <- {
+        >> col: @?
+        result = null
+        col >> {
+            -> elem: @?
+            result = elem
+        }
+        <- result
     }
-    <- result
-}
 
-(*
-   count(col)
-   Count the number of elements in col.  Drains the entire iterator.
-*)
-count : <- {
-    -> col: @?
-    n = 0
-    col >> {
-        >> elem: @?
-        n +:1
+    (*
+    count(col)
+    Count the number of elements in col.  Drains the entire iterator.
+    *)
+    count : <- {
+        >> col: @?
+        n = 0
+        col >> {
+            -> elem: @?
+            n +:1
+        }
+        <- n
     }
-    <- n
-}
 
-(*
-   sum(col)
-   Sum numeric elements of col.
-   Input must be a numeric @type.
-*)
-sum : <- {
-    -> col: @?
-    total = 0
-    col >> {
-        >> elem: @?
-        total +:elem
+    (*
+    sum(col)
+    Sum numeric elements of col.
+    Input must be a numeric @type.
+    *)
+    sum : <- {
+        >> col: @?
+        total = 0
+        col >> {
+            -> elem: @?
+            total +:elem
+        }
+        <- total
     }
-    <- total
-}
 
-(*
-   min(col)
-   Return the minimum element of col.
-   Input must be an ordered @type.
-*)
-min : <- {
-    -> col: @?
-    result = null
-    col >> {
-        >> elem: @?
-        ( result == null || elem < result ) & result = elem
+    (*
+    min(col)
+    Return the minimum element of col.
+    Input must be an ordered @type.
+    *)
+    min : <- {
+        >> col: @?
+        result = null
+        col >> {
+            -> elem: @?
+            ( result == null | elem < result ) & result = elem
+        }
+        <- result
     }
-    <- result
-}
 
-(*
-   max(col)
-   Return the maximum element of col.
-   Input must be an ordered @type.
-*)
-max : <- {
-    -> col: @?
-    result = null
-    col >> {
-        >> elem: @?
-        ( result == null || elem > result ) & result = elem
+    (*
+    max(col)
+    Return the maximum element of col.
+    Input must be an ordered @type.
+    *)
+    max : <- {
+        >> col: @?
+        result = null
+        col >> {
+            -> elem: @?
+            ( result == null | elem > result ) & result = elem
+        }
+        <- result
     }
-    <- result
+
+
+    (* ============================================================
+    MATERIALISER — consume a lazy stream into an @array
+    ============================================================ *)
+
+    (*
+    collect(col)
+    Drain col into a new @array.
+    Use at the end of a lazy pipeline to materialise the result:
+        col >> filter(pred) >> map(f) >> collect()
+    *)
+    collect : <- {
+        >> col: @?
+        result = []
+        col >> {
+            -> elem: @?
+            result = result + [elem]
+        }
+        <- result
+    }
+
 }

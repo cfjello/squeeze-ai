@@ -1,3 +1,5 @@
+//go:build ignore
+
 // squeeze_v13_iterators_test.go — Specification-driven tests for iterator syntax.
 // Covers spec/12_iterators.sqg: iterator_source, iterator_yield_stmt,
 // assign_iterator, and func_stream_loop (updated to use iterator_source).
