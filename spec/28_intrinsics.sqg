@@ -1,0 +1,305 @@
+(* ============================================================
+   spec/28_intrinsics.sqg  —  Squeeze V17 Runtime Intrinsics
+   ============================================================
+
+   All runtime intrinsics (UPPERCASE names) used across pkg/lib/*.sqz.
+   Intrinsics are resolved by the code generator; they are NOT parsed as
+   ordinary Squeeze identifiers.  In source code they appear as:
+
+     __ps_proxy INTRINSIC_NAME \<arg1, arg2, ...\>
+
+   or as bare UPPERCASE names in __ps_call / __ps_proxy contexts.
+
+   This file registers all known intrinsic names as the "intrinsics"
+   grammar rule so that the checker and code-gen phases have a single
+   authoritative registry.
+
+   Grouped by domain; within each group listed alphabetically.
+   ============================================================ *)
+
+
+intrinsics =
+
+    (* ----------------------------------------------------------
+       SECTION 1  —  CORE  (general-purpose, all types)
+       ---------------------------------------------------------- *)
+
+    ARRAY_REVERSE   |   (* reverse-order copy of an array                              — array.sqz              *)
+    CAST            |   (* coerce a value to a target type, e.g. CAST string<val>      — integer/decimal/string  *)
+    LENGTH          |   (* count: elements in array, chars in string, pairs in object  — array/string/object     *)
+    SUB_RANGE       |   (* positional slice start..end of an array (1-based inclusive) — array/string            *)
+    TO_JSON         |   (* JSON-serialise a single value to a string                   — object/enum             *)
+    TYPE_OF         |   (* runtime type check / coerce, e.g. TYPE_OF string<v>         — template               *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 2  —  ATOMIC  (concurrency-safe field operations)
+       ---------------------------------------------------------- *)
+
+    ATOMIC_DEC      |   (* sync/atomic.AddInt64(&field, -1)                            — iterators/dependencies  *)
+    ATOMIC_INC      |   (* sync/atomic.AddInt64(&field, +1)                            — dependencies            *)
+    ATOMIC_LOAD     |   (* sync/atomic.LoadInt64(&field)                               — dependencies            *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 3  —  BITFIELD  (fixed-width binary flag sets)
+       ---------------------------------------------------------- *)
+
+    BF_ACTIVE_FLAGS |   (* @array of names of all flags currently set to 1             — bitfield                *)
+    BF_CLEAR        |   (* new value with the named flag bit forced to 0               — bitfield                *)
+    BF_COMPLEMENT   |   (* new value: all declared bits inverted (NOT, bounded)        — bitfield                *)
+    BF_DIFFERENCE   |   (* new value: bits in bf1 but not bf2 (AND NOT)               — bitfield                *)
+    BF_HAS_FLAG     |   (* boolean: name is a declared flag in this bitfield           — bitfield                *)
+    BF_INTERSECT    |   (* new value: bits set in both bf1 and bf2 (AND)               — bitfield                *)
+    BF_IS_ALL       |   (* boolean: every declared flag is currently set to 1          — bitfield                *)
+    BF_IS_SET       |   (* boolean: the named flag bit is 1                            — bitfield                *)
+    BF_MASK_OF      |   (* new value with only the single named flag bit set           — bitfield                *)
+    BF_MAX_BITS     |   (* width in bits from base string: 8 | 16 | 32 | 64           — bitfield                *)
+    BF_OF           |   (* new value with exactly the named flags set                  — bitfield                *)
+    BF_SET          |   (* new value with the named flag bit forced to 1               — bitfield                *)
+    BF_TO_JSON      |   (* JSON object: { base, value, active: [...] }                 — bitfield                *)
+    BF_TO_STRING    |   (* human-readable active flags, e.g. "read | write"            — bitfield                *)
+    BF_TO_UINT      |   (* packed raw value as uint64                                  — bitfield                *)
+    BF_TOGGLE       |   (* new value with the named flag bit flipped                   — bitfield                *)
+    BF_UNION        |   (* new value: bits set in either bf1 or bf2 (OR)               — bitfield                *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 4  —  CHAIN / CONCURRENCY  (dependency chains)
+       ---------------------------------------------------------- *)
+
+    ASYNC_CALL      |   (* launch fn(args) as a goroutine: go func() { fn(args) }()   — dependencies            *)
+    AWAIT_ALL       |   (* errgroup.Wait() — block until all goroutines finish         — dependencies            *)
+    CHAIN_QUEUE     |   (* per-target serialisation queue (buffered chan of *DepChain) — dependencies            *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 5  —  DECIMAL  (fixed-point arithmetic)
+       ---------------------------------------------------------- *)
+
+    DEC_CEIL        |   (* smallest integer >= d                                       — decimal                 *)
+    DEC_FLOOR       |   (* largest integer <= d                                        — decimal                 *)
+    DEC_FRAC_DIGITS |   (* count of digits after the decimal point                    — decimal                 *)
+    DEC_FRAC_STR    |   (* fractional part as a raw digit string (preserves trailing zeros) — decimal           *)
+    DEC_ROUND       |   (* round d to the given number of decimal places               — decimal                 *)
+    DEC_TRUNC       |   (* truncate d to the given number of decimal places            — decimal                 *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 6  —  ENUM  (named domain of constants)
+       ---------------------------------------------------------- *)
+
+    ENUM_CONTAINS       |   (* boolean: value is a declared member                    — enum                    *)
+    ENUM_INDEX_OF       |   (* zero-based ordinal of value, or -1 if absent           — enum                    *)
+    ENUM_IS_INTEGER     |   (* boolean: all members are integer literals               — enum                    *)
+    ENUM_IS_STRING      |   (* boolean: all members are string literals                — enum                    *)
+    ENUM_MEMBERS        |   (* @array of all member values in declaration order        — enum                    *)
+    ENUM_VALUE_AT       |   (* member at the given zero-based ordinal, or null         — enum                    *)
+    ENUM_WITH_MEMBER    |   (* new enum data with value appended; error on duplicate   — enum                    *)
+    ENUM_WITHOUT_MEMBER |   (* new enum data with value removed; unchanged if absent   — enum                    *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 7  —  GRAPH  (directed graphs with labelled edges)
+       ---------------------------------------------------------- *)
+
+    GRAPH_EDGE_COUNT    |   (* total number of edges in the graph                      — graph                   *)
+    GRAPH_EDGE_LABEL    |   (* label string for edge (from → to), or null              — graph                   *)
+    GRAPH_EDGES_FROM    |   (* @array of edges whose from-key matches                  — graph                   *)
+    GRAPH_EDGES_TO      |   (* @array of edges whose to-key matches                    — graph                   *)
+    GRAPH_GET_KEYS      |   (* @array of all node keys in the graph                    — graph                   *)
+    GRAPH_GET_NODE      |   (* full node record for key, or null                       — graph                   *)
+    GRAPH_GET_VALUES    |   (* @array of all node values                               — graph                   *)
+    GRAPH_HAS_EDGE      |   (* boolean: a directed edge from→to exists                 — graph                   *)
+    GRAPH_HAS_NODE      |   (* boolean: a node with the given key exists               — graph                   *)
+    GRAPH_IN_DEGREE     |   (* count of incoming edges for key                         — graph                   *)
+    GRAPH_IS_ACYCLIC    |   (* boolean: the graph contains no cycles (DAG test)        — graph                   *)
+    GRAPH_IS_LABELLED   |   (* boolean: every edge carries a label                     — graph                   *)
+    GRAPH_LEAVES        |   (* @array of keys whose out-degree is 0                    — graph                   *)
+    GRAPH_MERGE         |   (* new graph data: union of both nodes and edges           — graph                   *)
+    GRAPH_NEIGHBOURS    |   (* @array of keys directly reachable from key              — graph                   *)
+    GRAPH_NODE_COUNT    |   (* total number of nodes in the graph                      — graph                   *)
+    GRAPH_OUT_DEGREE    |   (* count of outgoing edges for key                         — graph                   *)
+    GRAPH_PREDECESSORS  |   (* @array of keys that have an edge pointing to key        — graph                   *)
+    GRAPH_REACHABLE     |   (* @array of all keys reachable from key (BFS)             — graph                   *)
+    GRAPH_ROOTS         |   (* @array of keys whose in-degree is 0                     — graph                   *)
+    GRAPH_SHORTEST_PATH |   (* @array of keys on shortest path from f to t, or []      — graph                   *)
+    GRAPH_TOPO_ORDER    |   (* @array of keys in topological order, or null if cyclic  — graph                   *)
+    GRAPH_TO_JSON       |   (* JSON representation of the graph                        — graph                   *)
+    GRAPH_TO_STRING     |   (* text adjacency-list representation                      — graph                   *)
+    GRAPH_WITH_EDGE     |   (* new graph data: directed edge added                     — graph                   *)
+    GRAPH_WITH_NODE     |   (* new graph data: node added                              — graph                   *)
+    GRAPH_WITHOUT_EDGE  |   (* new graph data: specific directed edge removed          — graph                   *)
+    GRAPH_WITHOUT_NODE  |   (* new graph data: node and all its edges removed          — graph                   *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 8  —  HASHMAP  (heterogeneous string-keyed map)
+       ---------------------------------------------------------- *)
+
+    HMAP_DEL        |   (* shallow copy of the map without the given key               — hashmap                 *)
+    HMAP_GET        |   (* value for key; nil/zero-value when absent                   — hashmap                 *)
+    HMAP_HAS        |   (* boolean: the key is present in the map                      — hashmap                 *)
+    HMAP_KEYS       |   (* sorted []string of all keys                                 — hashmap                 *)
+    HMAP_NEW        |   (* create an empty Go map[string]any{}                         — hashmap                 *)
+    HMAP_PUT        |   (* shallow copy with key→val set (insert or update)            — hashmap                 *)
+    HMAP_SIZE       |   (* number of key-value entries: Go len(m)                      — hashmap                 *)
+    HMAP_TO_ARRAY   |   (* []struct{Key string; Value any} sorted by key               — hashmap                 *)
+    HMAP_TO_JSON    |   (* JSON object string, keys in sorted order                    — hashmap                 *)
+    HMAP_VALUES     |   (* []any of all values in key-sorted order                     — hashmap                 *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 9  —  INTEGER  (arbitrary-precision signed integer)
+       ---------------------------------------------------------- *)
+
+    INT_TO_STRING   |   (* convert magnitude to string in the given base (2/8/10/16)  — integer                 *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 10  —  ITERATOR  (lazy streaming)
+       ---------------------------------------------------------- *)
+
+    ITER_CHAN       |   (* wrap an async producer as a buffered channel iterator        — iterators/collections   *)
+    ITER_CLOSE      |   (* drain and close the source channel (called when ref_count=0)— iterators               *)
+    ITER_NEXT       |   (* advance iterator; return the next element (or exhaustion)   — iterators/collections   *)
+    ITER_RESIZE     |   (* resize the prefetch channel capacity at runtime             — iterators               *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 11  —  LOGGER / I-O SINKS  (structured async logging)
+       ---------------------------------------------------------- *)
+
+    FILE_SINK       |   (* file sink: lumberjack.Logger wrapped in slog.Handler        — logger                  *)
+    HTTP_SINK       |   (* buffered HTTP POST sink; flushes in batches to a URL        — logger                  *)
+    SINK_FLUSH      |   (* write flush sentinel and block until worker acknowledges    — logger                  *)
+    STDOUT_SINK     |   (* stdout slog handler: text or JSON format                    — logger                  *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 12  —  OBJECT  (string-keyed associative map, typed values)
+       ---------------------------------------------------------- *)
+
+    OBJ_HAS         |   (* O(1) boolean key-presence check                             — object                  *)
+    OBJ_KEYS        |   (* @array of all keys in sorted order                          — object                  *)
+    OBJ_TO_ARRAY    |   (* @array of [key: k, value: v] records, key-sorted            — object                  *)
+    OBJ_VALUES      |   (* @array of values in key-sorted order                        — object                  *)
+    OBJ_WITH_KEY    |   (* new @object with key → val upserted (insert or replace)     — object                  *)
+    OBJ_WITHOUT_KEY |   (* new @object with the given key removed                      — object                  *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 13  —  SORTED TREE  (sorted keyed tree, BST-style)
+       ---------------------------------------------------------- *)
+
+    STREE_MAX_KEY       |   (* largest key across the whole sorted tree                — sorted_tree             *)
+    STREE_MIN_KEY       |   (* smallest key across the whole sorted tree               — sorted_tree             *)
+    STREE_PREDECESSOR   |   (* key of the next-smaller sibling node, or null           — sorted_tree             *)
+    STREE_RANGE         |   (* @array of values whose keys fall in lo..hi              — sorted_tree             *)
+    STREE_SEARCH        |   (* value for key using ordered (BST) search                — sorted_tree             *)
+    STREE_SUCCESSOR     |   (* key of the next-larger sibling node, or null            — sorted_tree             *)
+    STREE_WITH_NODE     |   (* new tree: node inserted while maintaining sort order    — sorted_tree             *)
+    STREE_WITHOUT_KEY   |   (* new tree: node removed while maintaining sort order     — sorted_tree             *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 14  —  TABLE  (typed, key-enforced relational table)
+       ---------------------------------------------------------- *)
+
+    TBL_COL_COUNT       |   (* number of columns                                       — table                   *)
+    TBL_COL_NAMES       |   (* column names as a raw string array                      — table                   *)
+    TBL_GET_COL         |   (* all values in one named column as a raw array           — table                   *)
+    TBL_GET_ROW         |   (* row by key value → @object, or null                     — table                   *)
+    TBL_GET_ROW_AT      |   (* row by 1-based position index → @object                 — table                   *)
+    TBL_GROUP_BY        |   (* partition rows by column → @object of @tables           — table                   *)
+    TBL_INNER_JOIN      |   (* inner join two tables on a named column → new @table    — table                   *)
+    TBL_KEY_COL_NAMES   |   (* key-column names as a raw string array                  — table                   *)
+    TBL_LEFT_JOIN       |   (* left join: all rows from t, matched columns from other  — table                   *)
+    TBL_MERGE           |   (* combine rows from two tables; t2 wins on key conflict   — table                   *)
+    TBL_ORDER_BY        |   (* sort rows by a column, ascending or descending          — table                   *)
+    TBL_PROJECT         |   (* column subset → new @table (vertical slice)             — table                   *)
+    TBL_ROW_COUNT       |   (* number of rows                                          — table                   *)
+    TBL_TO_ARRAY        |   (* rows as @array of @object records                       — table                   *)
+    TBL_TO_JSON         |   (* JSON array of row objects                               — table                   *)
+    TBL_TO_STRING       |   (* aligned text grid of the table                          — table                   *)
+    TBL_WHERE           |   (* filter rows with a predicate → new @table               — table                   *)
+    TBL_WITH_ROW        |   (* upsert a row → new @table                               — table                   *)
+    TBL_WITHOUT_KEY     |   (* remove row by key value → new @table                    — table                   *)
+    TBL_WITHOUT_ROW_AT  |   (* remove row by 1-based index → new @table                — table                   *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 15  —  TREE  (general tree; shared across tree variants)
+       ---------------------------------------------------------- *)
+
+    TREE_BFS            |   (* @array of node values in BFS level-order               — tree/keyed_tree/string_tree/sorted_tree *)
+    TREE_CHILDREN_COUNT |   (* number of direct children of the root node              — tree/keyed_tree/string_tree/sorted_tree *)
+    TREE_CONTAINS       |   (* boolean: any node value equals the target string        — string_tree             *)
+    TREE_DEPTH          |   (* maximum depth from root to any leaf                     — tree/keyed_tree/string_tree/sorted_tree *)
+    TREE_DFS            |   (* @array of node values in DFS pre-order                 — tree/keyed_tree/string_tree/sorted_tree *)
+    TREE_FIND           |   (* first DFS value matching pred, or null                  — tree                    *)
+    TREE_FIND_ALL       |   (* @array of all values matching pred                      — tree                    *)
+    TREE_FIND_STR       |   (* first string node value matching the target, or null    — string_tree             *)
+    TREE_GET_KEYS       |   (* @array of every key in the tree in DFS order            — keyed_tree/sorted_tree  *)
+    TREE_GET_NODE       |   (* full node record for the given key, or null             — keyed_tree/sorted_tree  *)
+    TREE_MAP            |   (* new tree with every value transformed by fn             — tree                    *)
+    TREE_MERGE          |   (* new tree: other's root grafted as a child of this root  — keyed_tree              *)
+    TREE_NODE_COUNT     |   (* total number of nodes in the tree                       — tree/keyed_tree/string_tree/sorted_tree *)
+    TREE_PARENT_KEY     |   (* key of the parent node, or null if root                 — keyed_tree/sorted_tree  *)
+    TREE_PATH_TO        |   (* @array of string values from root to first matching node— string_tree             *)
+    TREE_PRUNE          |   (* new tree: subtrees removed where pred matches            — tree                    *)
+    TREE_ROOT_VALUE     |   (* value stored at the root node                           — tree/keyed_tree/string_tree/sorted_tree *)
+    TREE_TO_JSON        |   (* JSON representation of the tree                         — tree/keyed_tree/string_tree/sorted_tree *)
+    TREE_TO_PATHS       |   (* @array of @array; each element is one root-to-leaf path — string_tree             *)
+    TREE_TO_STRING      |   (* indented text representation                            — tree/keyed_tree/string_tree/sorted_tree *)
+    TREE_WITH_CHILD     |   (* new tree: node appended as a child of the root          — tree/string_tree        *)
+    TREE_WITH_CHILD_OF  |   (* new tree: node inserted under the given parent key      — keyed_tree              *)
+    TREE_WITHOUT_KEY    |   (* new tree: node (and its subtree) removed by key         — keyed_tree              *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 16  —  UUID / TIME  (unique identifiers and timestamps)
+       ---------------------------------------------------------- *)
+
+    NEW_UUID_V7     |   (* time-ordered UUIDv7; Go: uuid.New() with version field = 7  — dependencies/store      *)
+    NOW_ISO8601     |   (* current UTC timestamp in ISO-8601/RFC-3339 Nano format       — dependencies/logger     *)
+    TOPO_SORT       |   (* Kahn's algorithm: []string in leaf-first order; nil on cycle — dependencies            *)
+    UUID_GT         |   (* true when UUIDv7 a is chronologically later than b           — dependencies            *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 17  —  REGEXP  (XRegExp-inspired pattern matching)
+       Source: pkg/lib/regexp.sqz  (proposed; spec/19_reagexp.sqg)
+       ---------------------------------------------------------- *)
+
+    RE_ESCAPE       |   (* escape all XRegExp metacharacters in str → safe literal string  — regexp               *)
+    RE_EXEC         |   (* first match as match_record, or null                            — regexp               *)
+    RE_FLAGS        |   (* extract flag characters from a regexp_expr literal              — regexp               *)
+    RE_IS_VALID     |   (* boolean: pattern_str is syntactically valid XRegExp             — regexp               *)
+    RE_MATCH_ALL    |   (* @array of all non-overlapping match_record                      — regexp               *)
+    RE_PATTERN      |   (* extract bare pattern string (no slashes) from regexp_expr       — regexp               *)
+    RE_REPLACE      |   (* string with the first match replaced                            — regexp               *)
+    RE_REPLACE_ALL  |   (* string with all matches replaced                                — regexp               *)
+    RE_SPLICE       |   (* replace len chars at idx with sub → new string                  — regexp               *)
+    RE_SPLIT        |   (* @array of substrings split on pattern                           — regexp               *)
+    RE_SPLIT_LIMIT  |   (* @array of at most limit substrings split on pattern             — regexp               *)
+    RE_TEST         |   (* boolean: pattern matches anywhere in str                        — regexp               *)
+
+
+    (* ----------------------------------------------------------
+       SECTION 18  —  REFLECTION  (runtime type and scope inspection)
+       Source: pkg/lib/reflection.sqz  (spec/20_Reflection.sqg)
+       ---------------------------------------------------------- *)
+
+    REFLECT_ANCESTOR    |   (* type descriptor n levels up from ref; 0 = root             — reflection           *)
+    REFLECT_CAN_INJECT  |   (* boolean: capability cap permits injection on @Target        — reflection           *)
+    REFLECT_CARDINALITY |   (* "single" | "multi" | "optional" for the given ident_ref    — reflection           *)
+    REFLECT_EXTENDS     |   (* @array of ancestor type name strings for a type descriptor  — reflection           *)
+    REFLECT_FIELDS      |   (* @array of field_descriptor for a type descriptor            — reflection           *)
+    REFLECT_INJECT      |   (* extend @Target with scope_body at runtime, gated by cap    — reflection           *)
+    REFLECT_IS_A        |   (* boolean: type descriptor A is assignable to B               — reflection           *)
+    REFLECT_METHODS     |   (* @array of method_descriptor for a type descriptor           — reflection           *)
+    REFLECT_RESOLVE     |   (* string → type descriptor (dynamic lookup by qualified name) — reflection           *)
+    REFLECT_SEAL        |   (* prevent any further injection on @Target (requires cap)     — reflection           *)
+    REFLECT_TYPE_NAME   |   (* fully qualified type name string from a type descriptor     — reflection           *)
+    REFLECT_TYPE_OF     ;   (* runtime type descriptor for a value (any ident_ref)        — reflection           *)

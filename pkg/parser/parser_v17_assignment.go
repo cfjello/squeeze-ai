@@ -26,13 +26,25 @@ type V17UpdateMutableOperNode struct {
 func (p *V17Parser) ParseUpdateMutableOper() (node *V17UpdateMutableOperNode, err error) {
 	done := p.debugEnter("update_mutable_oper")
 	defer func() { done(err == nil) }()
-	tok := p.cur()
-	switch tok.Type {
-	case V17_PLUS_EQ, V17_MINUS_EQ, V17_STAR_EQ, V17_SLASH_EQ:
-		p.advance()
-		return &V17UpdateMutableOperNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
+	ch := p.peekAfterWS()
+	var op string
+	switch ch {
+	case '+':
+		op = "+="
+	case '-':
+		op = "-="
+	case '*':
+		op = "*="
+	case '/':
+		op = "/="
+	default:
+		return nil, p.errAt("update_mutable_oper: expected +=, -=, *= or /=")
 	}
-	return nil, p.errAt("update_mutable_oper: expected +=, -=, *= or /=, got %s %q", tok.Type, tok.Value)
+	tok, terr := p.matchLit(op)
+	if terr != nil {
+		return nil, p.errAt("update_mutable_oper: expected %s", op)
+	}
+	return &V17UpdateMutableOperNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // =============================================================================
@@ -45,7 +57,7 @@ type V17AssignMutableNode struct{ V17BaseNode }
 func (p *V17Parser) ParseAssignMutable() (node *V17AssignMutableNode, err error) {
 	done := p.debugEnter("assign_mutable")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_EQ)
+	tok, err := p.matchLit("=")
 	if err != nil {
 		return nil, fmt.Errorf("assign_mutable: %w", err)
 	}
@@ -59,9 +71,15 @@ type V17AssignImmutableNode struct{ V17BaseNode }
 func (p *V17Parser) ParseAssignImmutable() (node *V17AssignImmutableNode, err error) {
 	done := p.debugEnter("assign_immutable")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_COLON)
+	saved := p.savePos()
+	tok, err := p.matchLit(":")
 	if err != nil {
 		return nil, fmt.Errorf("assign_immutable: %w", err)
+	}
+	// Reject ":~" — that belongs to assign_read_only_ref
+	if p.runePos < len(p.input) && p.input[p.runePos] == '~' {
+		p.restorePos(saved)
+		return nil, p.errAt("assign_immutable: ':~' is assign_read_only_ref, not assign_immutable")
 	}
 	return &V17AssignImmutableNode{V17BaseNode{tok.Line, tok.Col}}, nil
 }
@@ -73,7 +91,7 @@ type V17AssignReadOnlyRefNode struct{ V17BaseNode }
 func (p *V17Parser) ParseAssignReadOnlyRef() (node *V17AssignReadOnlyRefNode, err error) {
 	done := p.debugEnter("assign_read_only_ref")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_COLON_TILDE)
+	tok, err := p.matchLit(":~")
 	if err != nil {
 		return nil, fmt.Errorf("assign_read_only_ref: %w", err)
 	}
@@ -92,47 +110,43 @@ type V17AssignVersionNode struct {
 }
 
 // ParseAssignVersion parses assign_version = ["v"] digits { "." digits }
-// The lexer scans "v1" as a single V17_IDENT("v1"), so we handle two forms:
-//   - V17_IDENT whose value starts with 'v' followed by one or more ASCII digits
-//     (e.g. "v1", "v12") — hasV = true, first digit group extracted from the identifier.
-//   - V17_DIGITS — no "v" prefix.
 func (p *V17Parser) ParseAssignVersion() (node *V17AssignVersionNode, err error) {
 	done := p.debugEnter("assign_version")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
 
 	hasV := false
 	var firstPart string
+	var line, col int
 
-	tok := p.cur()
-	switch tok.Type {
-	case V17_IDENT:
-		// Accept ident "v" + one-or-more-digits, e.g. "v1", "v12"
-		val := tok.Value
-		if len(val) < 2 || val[0] != 'v' {
-			return nil, p.errAt("assign_version: expected 'v'+digits identifier or digits, got %q", val)
-		}
-		for i := 1; i < len(val); i++ {
-			if val[i] < '0' || val[i] > '9' {
-				return nil, p.errAt("assign_version: invalid version identifier %q", val)
-			}
-		}
-		hasV = true
-		firstPart = val[1:] // digit string after "v"
-		p.advance()
-	case V17_DIGITS:
-		firstPart = tok.Value
-		p.advance()
-	default:
-		return nil, p.errAt("assign_version: expected 'v'+digits or digits, got %s %q", tok.Type, tok.Value)
+	ch := p.peekAfterWS()
+	if ch != 'v' {
+		return nil, p.errAt("assign_version: expected 'v'+digits identifier")
 	}
+	saved := p.savePos()
+	tok, terr := p.matchRe(reIdentScan)
+	if terr != nil || len(tok.Value) < 2 || tok.Value[0] != 'v' {
+		p.restorePos(saved)
+		return nil, p.errAt("assign_version: expected 'v'+digits identifier")
+	}
+	for i := 1; i < len(tok.Value); i++ {
+		if tok.Value[i] < '0' || tok.Value[i] > '9' {
+			p.restorePos(saved)
+			return nil, p.errAt("assign_version: invalid version identifier %q", tok.Value)
+		}
+	}
+	line, col = tok.Line, tok.Col
+	hasV = true
+	firstPart = tok.Value[1:]
 
 	parts := []string{firstPart}
 
 	// { "." digits }
-	for p.cur().Type == V17_DOT {
+	for p.peekAfterWS() == '.' {
 		saved := p.savePos()
-		p.advance() // consume "."
+		if _, merr := p.matchLit("."); merr != nil {
+			p.restorePos(saved)
+			break
+		}
 		extra, eerr := p.ParseDigits()
 		if eerr != nil {
 			p.restorePos(saved)
@@ -188,19 +202,22 @@ func (p *V17Parser) parseAssignAnnotation() (interface{}, error) {
 func (p *V17Parser) ParseAssignLhs() (node *V17AssignLhsNode, err error) {
 	done := p.debugEnter("assign_lhs")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
 
 	// Required: ident_name
 	name, nerr := p.ParseIdentName()
 	if nerr != nil {
 		return nil, p.errAt("assign_lhs: expected ident_name")
 	}
+	line, col := name.Line, name.Col
 
 	// Optional: up to 3 comma-separated annotations
 	var annotations []interface{}
-	for len(annotations) < 3 && p.cur().Type == V17_COMMA {
+	for len(annotations) < 3 && p.peekAfterWS() == ',' {
 		saved := p.savePos()
-		p.advance() // consume ","
+		if _, cerr := p.matchLit(","); cerr != nil {
+			p.restorePos(saved)
+			break
+		}
 		ann, aerr := p.parseAssignAnnotation()
 		if aerr != nil {
 			p.restorePos(saved)
@@ -237,7 +254,7 @@ type V17AssignCondRhsNode struct {
 func (p *V17Parser) ParseAssignCondRhs() (node *V17AssignCondRhsNode, err error) {
 	done := p.debugEnter("assign_cond_rhs")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	cond, cerr := p.ParseCondition()
 	if cerr != nil {
@@ -308,19 +325,18 @@ type V17AssignSingleNode struct {
 func (p *V17Parser) ParseAssignSingle() (node *V17AssignSingleNode, err error) {
 	done := p.debugEnter("assign_single")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	// Try assign_lhs oper statement first.
 	// The operator ( assign_mutable | assign_immutable | assign_read_only_ref ) is mandatory.
 	if saved := p.savePos(); true {
 		if lhs, lerr := p.ParseAssignLhs(); lerr == nil {
 			var oper interface{}
-			switch p.cur().Type {
-			case V17_COLON_TILDE:
+			if p.peekLit(":~") {
 				oper, _ = p.ParseAssignReadOnlyRef()
-			case V17_COLON:
+			} else if p.peekAfterWS() == ':' {
 				oper, _ = p.ParseAssignImmutable()
-			case V17_EQ:
+			} else if p.peekAfterWS() == '=' {
 				oper, _ = p.ParseAssignMutable()
 			}
 			if oper != nil {
@@ -355,7 +371,7 @@ type V17PrivateModifierNode struct{ V17BaseNode }
 func (p *V17Parser) ParsePrivateModifier() (node *V17PrivateModifierNode, err error) {
 	done := p.debugEnter("private_modifier")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_MINUS)
+	tok, err := p.matchLit("-")
 	if err != nil {
 		return nil, fmt.Errorf("private_modifier: %w", err)
 	}
@@ -378,7 +394,7 @@ type V17AssignPrivateSingleNode struct {
 func (p *V17Parser) ParseAssignPrivateSingle() (node *V17AssignPrivateSingleNode, err error) {
 	done := p.debugEnter("assign_private_single")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	mod, merr := p.ParsePrivateModifier()
 	if merr != nil {
@@ -409,7 +425,7 @@ type V17AssignPrivateGroupingNode struct {
 func (p *V17Parser) ParseAssignPrivateGrouping() (node *V17AssignPrivateGroupingNode, err error) {
 	done := p.debugEnter("assign_private_grouping")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	mod, merr := p.ParsePrivateModifier()
 	if merr != nil {
@@ -460,7 +476,8 @@ func (p *V17Parser) ParseAssignPrivateGrouping() (node *V17AssignPrivateGrouping
 type V17AssignRhsNode struct {
 	V17BaseNode
 	// Value is one of: *V17AssignCondRhsNode | *V17StatementNode |
-	//                  *V17AssignPrivateSingleNode | *V17AssignPrivateGroupingNode
+	//                  *V17AssignPrivateSingleNode | *V17AssignPrivateGroupingNode |
+	//                  *V17AssignIteratorNode | *V17AssignPushNode
 	Value interface{}
 }
 
@@ -468,7 +485,7 @@ type V17AssignRhsNode struct {
 func (p *V17Parser) ParseAssignRhs() (node *V17AssignRhsNode, err error) {
 	done := p.debugEnter("assign_rhs")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	// Both assign_private_single and assign_private_grouping start with '-' (private_modifier).
 	// Try assign_private_grouping first (more specific: '-' then '(').
@@ -487,6 +504,36 @@ func (p *V17Parser) ParseAssignRhs() (node *V17AssignRhsNode, err error) {
 		p.restorePos(saved)
 	}
 
+	// assign_iterator (spec/12_iterators.sqg §12.6) — collection ">>" EOL
+	// Tried before statement so that "my_collection >> EOL" as an assignment
+	// RHS is correctly captured as a lazy iterator binding rather than a
+	// partial statement (ParseStatement stops at ">>" without consuming it).
+	if saved := p.savePos(); true {
+		if ai, aierr := p.ParseAssignIterator(); aierr == nil {
+			return &V17AssignRhsNode{V17BaseNode{line, col}, ai}, nil
+		}
+		p.restorePos(saved)
+	}
+
+	// assign_push (spec/13_push_pull.sqg §13.6) — collection "~>" EOL
+	// Tried before statement for the same reason as assign_iterator above.
+	if saved := p.savePos(); true {
+		if ap, aperr := p.ParseAssignPush(); aperr == nil {
+			return &V17AssignRhsNode{V17BaseNode{line, col}, ap}, nil
+		}
+		p.restorePos(saved)
+	}
+
+	// iterator_loop — collection ">>" ( func_unit | func_call | statement )
+	// Tried AFTER assign_iterator so that "collection >> EOL" (lazy binding) is still caught
+	// by assign_iterator, while "collection >> body" is correctly captured here.
+	if saved := p.savePos(); true {
+		if il, ilerr := p.ParseIteratorLoop(); ilerr == nil {
+			return &V17AssignRhsNode{V17BaseNode{line, col}, il}, nil
+		}
+		p.restorePos(saved)
+	}
+
 	// ( assign_cond_rhs | statement ) — try assign_cond_rhs first (more specific)
 	if saved := p.savePos(); true {
 		if ac, acerr := p.ParseAssignCondRhs(); acerr == nil {
@@ -501,7 +548,7 @@ func (p *V17Parser) ParseAssignRhs() (node *V17AssignRhsNode, err error) {
 		p.restorePos(saved)
 	}
 
-	return nil, p.errAt("assign_rhs: expected assign_cond_rhs, statement, assign_private_single or assign_private_grouping")
+	return nil, p.errAt("assign_rhs: expected assign_cond_rhs, statement, assign_private_single, assign_private_grouping, or assign_iterator")
 }
 
 // =============================================================================
@@ -521,7 +568,7 @@ type V17AssignNewVarNode struct {
 func (p *V17Parser) ParseAssignNewVar() (node *V17AssignNewVarNode, err error) {
 	done := p.debugEnter("assign_new_var")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	lhs, lerr := p.ParseAssignLhs()
 	if lerr != nil {
@@ -530,27 +577,26 @@ func (p *V17Parser) ParseAssignNewVar() (node *V17AssignNewVarNode, err error) {
 
 	// Operator: try assign_read_only_ref (":~") first — must precede assign_immutable (":") to avoid prefix match
 	var oper interface{}
-	switch p.cur().Type {
-	case V17_COLON_TILDE:
+	if p.peekLit(":~") {
 		ro, roerr := p.ParseAssignReadOnlyRef()
 		if roerr != nil {
 			return nil, fmt.Errorf("assign_new_var: %w", roerr)
 		}
 		oper = ro
-	case V17_COLON:
+	} else if p.peekAfterWS() == ':' {
 		im, imerr := p.ParseAssignImmutable()
 		if imerr != nil {
 			return nil, fmt.Errorf("assign_new_var: %w", imerr)
 		}
 		oper = im
-	case V17_EQ:
+	} else if p.peekAfterWS() == '=' {
 		mu, muerr := p.ParseAssignMutable()
 		if muerr != nil {
 			return nil, fmt.Errorf("assign_new_var: %w", muerr)
 		}
 		oper = mu
-	default:
-		return nil, p.errAt("assign_new_var: expected :, :~ or =, got %s %q", p.cur().Type, p.cur().Value)
+	} else {
+		return nil, p.errAt("assign_new_var: expected :, :~ or =")
 	}
 
 	rhs, rerr := p.ParseAssignRhs()
@@ -577,7 +623,7 @@ type V17UpdateMutableNode struct {
 func (p *V17Parser) ParseUpdateMutable() (node *V17UpdateMutableNode, err error) {
 	done := p.debugEnter("update_mutable")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	ref, rerr := p.ParseIdentRef()
 	if rerr != nil {
@@ -609,7 +655,7 @@ type V17AssignmentNode struct {
 func (p *V17Parser) ParseAssignment() (node *V17AssignmentNode, err error) {
 	done := p.debugEnter("assignment")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	// Try assign_new_var first — uses ":", ":~", "=" operators
 	if saved := p.savePos(); true {
@@ -642,7 +688,7 @@ type V17SelfRefNode struct{ V17BaseNode }
 func (p *V17Parser) ParseSelfRef() (node *V17SelfRefNode, err error) {
 	done := p.debugEnter("self_ref")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_DOLLAR)
+	tok, err := p.matchLit("$")
 	if err != nil {
 		return nil, fmt.Errorf("self_ref: %w", err)
 	}

@@ -1,27 +1,21 @@
-(* V10 - read ./00_directives.sqg for Parser Instructions *)
+(* Read ./00_directives.sqg for Parser Instructions *)
 
 include "./06_functions.sqg";
 
 
-
-(* Type object static fields with return values 
-
-inst_version = TYPE_OF string_unquoted<inspect_type "." ("version" | "v" )>;
-type_parents = TYPE_OF array_final<"parents" | "p">;
-
-*)
-
-
-(* V14 modified This whole file *)
-
 (* ------------------------------------------------------------
-      Some scope examples: 
+     Scope helper rules: 
 ------------------------------------------------------------ *)
+assign_oper = assign_immutable | assign_read_only_ref | assign_mutable;
 extend_scope_oper = "+=" ;
-(* V14 modified scope_inject *)
-scope_inject      = "(" assign_lhs assign_immutable ( ( [ type_prefix ] ident_ref ) | any_type ) { ","  assign_lhs assign_immutable ( ( [ type_prefix ] ident_ref ) | any_type ) } ")";
 
-(* Use at your own peril *)
+scope_inject = group_begin 
+                    assign_lhs assign_immutable ( 
+                         ( ident_ref !WS! "." !WS! reflect_prefix !WS! "type" ) | any_type ) 
+                         { ","  assign_lhs assign_immutable ( ( ident_ref !WS! "." !WS! reflect_prefix !WS! "type" ) | any_type ) } 
+                    group_end;
+
+(* Use scope_assign_inline at your own peril *)
 scope_assign_inline  =  "_" ;
 
 import_assign       =  EOL [ private_modifier] ( assign_lhs | scope_assign_inline )  assign_immutable ( http_url | file_url ) { "," ( http_url | file_url ) } ;
@@ -39,45 +33,6 @@ other_inline_assign =  EOL [ private_modifier] scope_assign_inline assign_oper a
                        contents are implicitly private.  No nested
                        private_block inside another private_block.
    -------------------------------------------------------------- *)
-(* V14 moved  private_modifier to 03_assignment.sqg 
-private_modifier = "-";
-*)
-
-(* V14 removed these AI generated rules
-private_item  = private_modifier
-                ( import_assign | other_inline_assign | assignment
-                | scope_with_catch | scope_assign );
-
-private_block = private_modifier
-                ( group_begin
-                      ( import_assign | other_inline_assign | assignment
-                      | scope_with_catch | scope_assign )
-                      { ( EOL | "," )
-                        ( import_assign | other_inline_assign | assignment
-                        | scope_with_catch | scope_assign ) }
-                  group_end
-                | scope_begin
-                      ( import_assign | other_inline_assign | assignment
-                      | scope_with_catch | scope_assign )
-                      { ( EOL | "," )
-                        ( import_assign | other_inline_assign | assignment
-                        | scope_with_catch | scope_assign ) }
-                  scope_end );
-
-receiver_clause       = "(" ident_name inspect_type ")";
-receiver_method_assign = receiver_clause assign_lhs assign_oper ( func_unit | scope_body ) [ catch_oper func_unit ];
-*) 
-
-
-
-func_inject =  group_begin ( 
-                  ( assign_lhs equal_assign  inspect_type [ empty_array_decl] ) 
-                  | ( assign_lhs  equal_assign ident_ref ) 
-                  )  
-                  { ","  ( assign_lhs equal_assign  inspect_type [ empty_array_decl] ) 
-                  | ( assign_lhs  equal_assign ident_ref )  } 
-               group_end;
-
 
 scope_body_item = import_assign | other_inline_assign | assignment;
 
@@ -85,25 +40,18 @@ private_block   =  private_modifier
                     ( ( group_begin scope_body_item { ( EOL | "," ) scope_body_item } group_end )
                     | ( scope_begin scope_body_item { ( EOL | "," ) scope_body_item } scope_end ) );
 
-(* V14 added scope_body *)
-scope_body      = ( scope_begin  
-                         ( scope_body_item | private_block ) { ( EOL | "," ) ( scope_body_item | private_block ) }
-                  scope_end )
-                  { scope_body_catch };
+scope_body      = scope_begin  
+                    ( scope_body_item | private_block ) { ( EOL | "," ) ( scope_body_item | private_block ) }
+                  scope_end;
 
+scope_assign     = [ scope_inject ] assign_lhs ( assign_oper | extend_scope_oper ) (scope_body  | empty_scope_decl ) ;  
 
-                     
-scope_assign      = [ scope_inject ] assign_lhs ( equal_assign | extend_scope_oper ) (scope_body  | empty_scope_decl ) ;  
+scope_merge_tail = ( TYPE_OF scope_assign<ident_ref> | scope_assign ) "+" ( TYPE_OF scope_body<ident_ref> | scope_body)  { "+" ( TYPE_OF scope_body<ident_ref> | scope_body) };
 
-scope_merge_tail    = ( TYPE_OF scope_assign<ident_ref> | scope_assign ) "+" ( TYPE_OF scope_body<ident_ref> | scope_body)  { "+" ( TYPE_OF scope_body<ident_ref> | scope_body) };
-
-(* V14 added scope_final *)
-scope_final         = scope_assign | scope_merge_tail ;
+scope_final      = scope_assign | scope_merge_tail ;
 
 EXTEND<scope_body_item> = | scope_final;
 
-(* V14 modified parser_root *)
-parser_root       = import_assign | scope_final; (* Grammer entry point *)
 
 (* ------------------------------------------------------------
       func_scope_assign — function definition with explicit outer-scope
@@ -112,100 +60,33 @@ parser_root       = import_assign | scope_final; (* Grammer entry point *)
       closure variables visible inside the func_unit body.
 
       Examples:
-        (db := myDB, log := logger) processRow = {
+        (db: @myDB, log: @logger) processRow : (
             -> row: object
             db.insert(row)
             log("inserted")
             <- ok
-        }
+        )
 
-        (cfg := appConfig) buildURL = {
+        (cfg: @appConfig) buildURL : (
             -> path: string
             <- cfg.baseURL + path
-        }
+        )
 ------------------------------------------------------------ *)
-func_scope_assign = [ scope_inject ] assign_lhs assign_oper func_unit;
 
-MERGE<func_body_stmt> = | func_scope_assign;
-MERGE<assignment>     = | func_scope_assign;
+func_inject =  group_begin ( 
+                  ( assign_lhs assign_immutable  inspect_type [ empty_array_decl] ) 
+                  | ( assign_lhs  assign_immutable ident_ref ) 
+                  )  
+                  { ","  ( assign_lhs assign_immutable  inspect_type [ empty_array_decl] ) 
+                  | ( assign_lhs  assign_immutable ident_ref )  } 
+               group_end;
 
+func_scope_assign = [ func_inject ] assign_lhs assign_immutable func_unit;
 
-(* ------------------------------------------------------------
-      Some scope examples: 
-   ------------------------------------------------------------ 
+EXTEND<scope_body_item> = | func_scope_assign;
 
-my_scope = {
-  dg, dgraph: "https://...dgraph.lib" 
-  pg, postgres: "https://...postgresql.lib" 
-}
-
-
-new_scope = {
-
-   self: $
-
-   (* import my_scope *)
-   -> ../my_scope
-
-   (* import the elements of my_scope *)
-   -> ../my_scope.[*]
-   
-   my_data: [
-        name: "Eddy" + " Reimer",
-        age: uint8 24,  
-   ]
-   my_table = [
-        header: [ "a", "b" , "c" ],
-        rows =   [
-            [ "row 1 col 1", "row 1 col 2", "row 1 col 3"  ],
-            [ "row 2 col 1", "row 2 col 2", "row 2 col 3"  ],
-            [ "row 3 col 1", "row 3 col 2", "row 3 col 3"  ],
-        ]
-   ]
+parser_root      = import_assign | scope_final | func_scope_assign; (* Grammer entry point *)
 
 
-   int_values: uint8 [ 1,2,3,4,5,6,7,8,9,10 ]
-
-   my_func: { 
-        (* enclosure variable sum *)
-        sum = uint8 0
-        -> ints: uint8 [], str: ""
-        ints >> { 
-            sum += ints.@current
-            sum == 9 & next = false 
-        }
-        <- sum
-   }
-   
-   (* Add a static my_data method *) 
-   (md my_data.@type) johnny, check and get: { 
-        ( name == "Eddy Reimer" & age == 24 ) & <-"Johnny Reimer"
-        ^  ( name == "Eddy Reimer" & age == 24 ) & <- name
-   }
-
-    (* build in vars for arrays:
-       
-       uint8.@type  - type object reference 
-       uint8.@data  - type of data object reference
-    *)
-
-   ( uint8.@type[] ) int_sum: {
-        (* @data implicit declared as:  @data: uint8.@type[] )
-        (* >> data: uint8.@type [] is not needed *)
-
-        sum = uint8 0
-        @data >> { sum += uint8.@current }
-        <- sum
-   }
-
-   (my_table.rows.@type) row3, Get Row Three: {
-        >> data: my_table.rows.@data  (* references the injected table *)
-        data >> { data.@current["a"] =~ /^row3/ & <- my_data.@data.@current }
-   }
-
-}
-
------------------------------------------------------------- *) 
 
 
-  

@@ -1,10 +1,10 @@
 (* V17 - read ./00_directives.sqg for Parser Instructions *)
-include "./04_objects.sqg"
+include "./04_objects.sqg";
 
 (* ------------------------------------------------------------
-   Build in variables 
+   Build in tokens
 ------------------------------------------------------------ *)
-type_prefix       = "@";
+reflect_prefix    = "@";
 self_ref          = "$";
 into_arrow        = "->"; (* Carefull with this one. It is used in two different grammer contexts *)
 return_arrow      = "<-";
@@ -19,8 +19,8 @@ equal_assign      = "=";      (* the plain = token in type-injection / scope con
 (* ------------------------------------------------------------
   Type Reference
 ------------------------------------------------------------ *)
-type_ref     = (type_prefix !WS! ident_ref) | any_type;
-inspect_type = type_ref;      (* @TypeName or @? — type annotation attached to an ident_ref *)
+type_ref     = ( ident_ref !WS! "." !WS! reflect_prefix !WS! "type" ) | any_type;
+inspect_type = type_ref;      (* ident_ref.@type or any_type — type annotation attached to an ident_ref *)
 
 (* ------------------------------------------------------------
    Function Call Arguments declaration
@@ -32,17 +32,12 @@ args_decl            = args_single_decl { "," args_single_decl };
 func_args            = into_arrow args_decl;
 
 (* ------------------------------------------------------------
-   Function Call Stream and Push Arguments declaration
------------------------------------------------------------- *)
-
-iterator_recv_decl   = iterator_oper args_single_decl;
-push_recv_decl       = push_oper args_single_decl;
-
-(* ------------------------------------------------------------
    Function Call Dependencies declaration
+   iterator_recv_decl — added to func_args_decl via MERGE in spec/12_iterators.sqg
+   push_recv_decl     — added to func_args_decl via MERGE in spec/13_push_pull.sqg
 ------------------------------------------------------------ *)
 func_deps            = deps_oper UNIQUE< ident_ref  { "," ident_ref  } > ;
-func_args_decl       = [ func_args ] [ iterator_recv_decl ] [ push_recv_decl ] [ func_deps ]; 
+func_args_decl       = [ func_args ] [ func_deps ]; 
 
 (* ------------------------------------------------------------
    Function Calls / Streams
@@ -59,18 +54,19 @@ func_call_final   = func_call_chain ;
 
 EXTEND<statement> = | func_call_final;
 
+(* inspect_type (ident_ref.@type or any_type) used as a direct assign_rhs value, complementing self_ref ($) *)
+EXTEND<statement> = | inspect_type;
+
 (* ------------------------------------------------------------
    Function Statements
 ------------------------------------------------------------ *)
 
 
 (* Loop over a collection or a stream or even a single value *) 
-iterator_loop  = collection iterator_oper ( func_unit | func_call ); 
+iterator_loop  = collection iterator_oper ( func_unit | func_call | statement ); 
 push_loop      = collection push_oper ( func_unit | func_call );
 
 func_return_stmt     = return_arrow statement; 
-push_forward_stmt    = statement push_oper ;
-iterator_yield_stmt  = statement ( iterator_oper | push_oper );
 
 (* func_store_stmt inside a func_body is used to publishes a new UUIDv7-stamped version of a named data object *) 
 
@@ -81,10 +77,12 @@ func_store_stmt = deps_oper (
                      "," ( object_final | TYPE_OF object_final<ident_ref> ) 
                   };
 
-func_body_stmt = assignment | statement  | iterator_loop | push_loop | func_return_stmt | iterator_yield_stmt | push_forward_stmt | func_store_stmt ;
+func_body_stmt = assignment | statement | iterator_loop | push_loop | func_return_stmt | func_store_stmt ;
 
-(* iterator_recv_decl, iterator_source, iterator_yield_stmt — defined in spec/12_iterators.sqg Section 12.6 *)
-(* push_oper, push_recv_decl, push_source, push_forward_stmt, push_stream_bind, assign_push — defined in spec/13_push_pull.sqg Section 13.6 *)
+(* iterator_recv_decl, iterator_yield_stmt — canonical definitions in spec/12_iterators.sqg Section 12.6;
+   added to func_args_decl / func_body_stmt via MERGE from that file *)
+(* push_recv_decl, push_forward_stmt, push_stream_bind, assign_push — canonical definitions in spec/13_push_pull.sqg Section 13.6;
+   added to func_args_decl / func_body_stmt via MERGE from that file *)
 (* caught_group, caught_scope, func_unit_with_catch, scope_with_catch — defined in spec/16_exceptions.sqg; ^ (logic_exclusive_or) is the catch operator; propagate and retry are @exception methods, not keywords *)
 
 
@@ -101,4 +99,4 @@ func_unit  =   group_begin
    Assign a Function rather than the result of calling the function. 
 ------------------------------------------------------------ *)
 return_func_unit     = return_arrow func_unit; 
-EXTEND<statement>    = | return_func_unit;
+EXTEND<statement>    = | return_func_unit | iterator_loop;

@@ -5,6 +5,9 @@ include "./01_definitions.sqg";
 (* Identifiers can no longer have spaces within *) 
 ident_name  = /(?<value>[\p{L}][\p{L}0-9_]*)/;
 
+
+
+
 group_begin = "(";
 group_end   = ")";
 
@@ -12,13 +15,13 @@ group_end   = ")";
 
 ident_dotted  = ( ident_name ) { "." ident_name };
 ident_prefix  =  ( "../" { "../" } ) | ( "./" );
-ident_ref     = [ ident_prefix ]  ident_dotted; 
+ident_ref     = [ ident_prefix ]  ident_dotted ; 
 
 (* numeric expression *)
 numeric_oper  = "+" | "-" | "*"  | "**" | "/" | "%" ;
 inline_incr   = "++" | "--" ;
 
-single_num_expr = numeric_const | [ inline_incr ] TYPE_OF numeric_const<ident_ref>;
+single_num_expr = [ inline_incr ] ( numeric_const |  TYPE_OF numeric_const<ident_ref> ) [ inline_incr ] ;
 num_expr_chain  = single_num_expr { numeric_oper single_num_expr } ;
 num_grouping    = group_begin ( num_expr_chain | num_grouping )  { numeric_oper ( num_expr_chain | num_grouping ) } group_end ;
 numeric_calc    = num_expr_chain | num_grouping;

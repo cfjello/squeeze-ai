@@ -35,11 +35,10 @@ type V17IdentNameNode struct {
 func (p *V17Parser) ParseIdentName() (node *V17IdentNameNode, err error) {
 	done := p.debugEnter("ident_name")
 	defer func() { done(err == nil) }()
-	tok := p.cur()
-	if tok.Type != V17_IDENT || !reIdentName.MatchString(tok.Value) {
-		return nil, p.errAt("ident_name: expected identifier, got %s %q", tok.Type, tok.Value)
+	tok, terr := p.matchRe(reIdentNameScan)
+	if terr != nil {
+		return nil, p.errAt("ident_name: expected identifier")
 	}
-	p.advance()
 	return &V17IdentNameNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
@@ -50,7 +49,7 @@ type V17GroupBeginNode struct{ V17BaseNode }
 func (p *V17Parser) ParseGroupBegin() (node *V17GroupBeginNode, err error) {
 	done := p.debugEnter("group_begin")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_LPAREN)
+	tok, err := p.matchLit("(")
 	if err != nil {
 		return nil, fmt.Errorf("group_begin: %w", err)
 	}
@@ -64,7 +63,7 @@ type V17GroupEndNode struct{ V17BaseNode }
 func (p *V17Parser) ParseGroupEnd() (node *V17GroupEndNode, err error) {
 	done := p.debugEnter("group_end")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_RPAREN)
+	tok, err := p.matchLit(")")
 	if err != nil {
 		return nil, fmt.Errorf("group_end: %w", err)
 	}
@@ -81,15 +80,18 @@ type V17IdentDottedNode struct {
 func (p *V17Parser) ParseIdentDotted() (node *V17IdentDottedNode, err error) {
 	done := p.debugEnter("ident_dotted")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
 	first, err := p.ParseIdentName()
 	if err != nil {
 		return nil, fmt.Errorf("ident_dotted: %w", err)
 	}
+	line, col := first.Line, first.Col
 	parts := []string{first.Value}
-	for p.cur().Type == V17_DOT {
+	for p.peekAfterWS() == '.' {
 		saved := p.savePos()
-		p.advance() // consume "."
+		if _, merr := p.matchLit("."); merr != nil {
+			p.restorePos(saved)
+			break
+		}
 		next, nerr := p.ParseIdentName()
 		if nerr != nil {
 			p.restorePos(saved)
@@ -107,65 +109,63 @@ type V17IdentPrefixNode struct {
 }
 
 // ParseIdentPrefix parses ident_prefix = ( "../" { "../" } ) | ( "./" )
-// Uses DOTDOT+SLASH for "../" and DOT+SLASH for "./" (SIR-4 — no new token types).
 func (p *V17Parser) ParseIdentPrefix() (node *V17IdentPrefixNode, err error) {
 	done := p.debugEnter("ident_prefix")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-
-	// Try "../" — V17_DOTDOT followed by V17_SLASH
-	if p.cur().Type == V17_DOTDOT {
-		saved := p.savePos()
-		p.advance() // consume ".."
-		if p.cur().Type == V17_SLASH {
-			p.advance() // consume "/"
-			prefix := "../"
-			// { "../" } — zero or more additional "../"
-			for p.cur().Type == V17_DOTDOT {
-				inner := p.savePos()
-				p.advance()
-				if p.cur().Type == V17_SLASH {
-					p.advance()
-					prefix += "../"
-					continue
-				}
-				p.restorePos(inner)
+	saved := p.savePos()
+	// Try "../"
+	if tok, terr := p.matchLit("../"); terr == nil {
+		line, col := tok.Line, tok.Col
+		prefix := "../"
+		for p.peekLit("../") {
+			if _, err2 := p.matchLit("../"); err2 != nil {
 				break
 			}
-			return &V17IdentPrefixNode{V17BaseNode{line, col}, prefix}, nil
+			prefix += "../"
 		}
-		p.restorePos(saved)
+		return &V17IdentPrefixNode{V17BaseNode{line, col}, prefix}, nil
 	}
-
-	// Try "./" — V17_DOT followed by V17_SLASH
-	if p.cur().Type == V17_DOT {
-		saved := p.savePos()
-		p.advance() // consume "."
-		if p.cur().Type == V17_SLASH {
-			p.advance() // consume "/"
-			return &V17IdentPrefixNode{V17BaseNode{line, col}, "./"}, nil
-		}
+	p.restorePos(saved)
+	// Try "./"
+	tok2, terr2 := p.matchLit("./")
+	if terr2 != nil {
 		p.restorePos(saved)
+		return nil, p.errAt("ident_prefix: expected '../' or './'")
 	}
-
-	return nil, p.errAt("ident_prefix: expected '../' or './', got %s %q", p.cur().Type, p.cur().Value)
+	return &V17IdentPrefixNode{V17BaseNode{tok2.Line, tok2.Col}, "./"}, nil
 }
 
 // V17IdentRefNode  ident_ref = [ ident_prefix ] ident_dotted
+// EXTEND<ident_ref> = [ json_path ]     (05_json_path.sqg)
+// PREFIX<ident_ref> = __ps_token_ref |  (30_bootstrap.sqg)
+// ident_ref = __ps_token_ref | ( [ ident_prefix ] ident_dotted [ json_path ] )
 type V17IdentRefNode struct {
 	V17BaseNode
-	Prefix *V17IdentPrefixNode // nil when no prefix
-	Dotted *V17IdentDottedNode
+	Prefix     *V17IdentPrefixNode // nil when PsTokenRef is set
+	Dotted     *V17IdentDottedNode // nil when PsTokenRef is set
+	JsonPath   *V17JsonPathNode    // nil when no json_path follows
+	PsTokenRef *V17PsTokenRefNode  // non-nil when ident_ref is a §token reference
 }
 
-// ParseIdentRef parses ident_ref = [ ident_prefix ] ident_dotted
+// ParseIdentRef parses ident_ref = __ps_token_ref | ( [ ident_prefix ] ident_dotted [ json_path ] )
+// PREFIX<ident_ref> = __ps_token_ref |  (30_bootstrap.sqg)
+// EXTEND<ident_ref> = [ json_path ]     (05_json_path.sqg)
 func (p *V17Parser) ParseIdentRef() (node *V17IdentRefNode, err error) {
 	done := p.debugEnter("ident_ref")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+
+	// PREFIX<ident_ref> = __ps_token_ref |  — "§" is unambiguous; tried first.
+	if p.peekLit("§") {
+		line, col := p.runeLine, p.runeCol
+		tr, trerr := p.ParsePsTokenRef()
+		if trerr != nil {
+			return nil, fmt.Errorf("ident_ref: %w", trerr)
+		}
+		return &V17IdentRefNode{V17BaseNode{line, col}, nil, nil, nil, tr}, nil
+	}
 
 	var prefix *V17IdentPrefixNode
-	if p.cur().Type == V17_DOT || p.cur().Type == V17_DOTDOT {
+	if p.peekAfterWS() == '.' {
 		saved := p.savePos()
 		if pn, perr := p.ParseIdentPrefix(); perr == nil {
 			prefix = pn
@@ -178,7 +178,20 @@ func (p *V17Parser) ParseIdentRef() (node *V17IdentRefNode, err error) {
 	if derr != nil {
 		return nil, fmt.Errorf("ident_ref: %w", derr)
 	}
-	return &V17IdentRefNode{V17BaseNode{line, col}, prefix, dotted}, nil
+	line, col := dotted.Line, dotted.Col
+	if prefix != nil {
+		line, col = prefix.Line, prefix.Col
+	}
+	node = &V17IdentRefNode{V17BaseNode{line, col}, prefix, dotted, nil, nil}
+	// EXTEND<ident_ref> = [ json_path ]  (05_json_path.sqg)
+	if saved := p.savePos(); true {
+		if jp, jperr := p.ParseJsonPath(); jperr == nil {
+			node.JsonPath = jp
+		} else {
+			p.restorePos(saved)
+		}
+	}
+	return node, nil
 }
 
 // =============================================================================
@@ -197,28 +210,27 @@ type V17NumericOperNode struct {
 func (p *V17Parser) ParseNumericOper() (node *V17NumericOperNode, err error) {
 	done := p.debugEnter("numeric_oper")
 	defer func() { done(err == nil) }()
-	tok := p.cur()
-	switch tok.Type {
-	case V17_STARSTAR:
-		p.advance()
+	switch {
+	case p.peekLit("**"):
+		tok, _ := p.matchLit("**")
 		return &V17NumericOperNode{V17BaseNode{tok.Line, tok.Col}, "**"}, nil
-	case V17_PLUS:
-		p.advance()
+	case p.peekAfterWS() == '+' && !p.peekLit("++"):
+		tok, _ := p.matchLit("+")
 		return &V17NumericOperNode{V17BaseNode{tok.Line, tok.Col}, "+"}, nil
-	case V17_MINUS:
-		p.advance()
+	case p.peekAfterWS() == '-' && !p.peekLit("--"):
+		tok, _ := p.matchLit("-")
 		return &V17NumericOperNode{V17BaseNode{tok.Line, tok.Col}, "-"}, nil
-	case V17_STAR:
-		p.advance()
+	case p.peekAfterWS() == '*':
+		tok, _ := p.matchLit("*")
 		return &V17NumericOperNode{V17BaseNode{tok.Line, tok.Col}, "*"}, nil
-	case V17_SLASH:
-		p.advance()
+	case p.peekAfterWS() == '/':
+		tok, _ := p.matchLit("/")
 		return &V17NumericOperNode{V17BaseNode{tok.Line, tok.Col}, "/"}, nil
-	case V17_PERCENT:
-		p.advance()
+	case p.peekAfterWS() == '%':
+		tok, _ := p.matchLit("%")
 		return &V17NumericOperNode{V17BaseNode{tok.Line, tok.Col}, "%"}, nil
 	}
-	return nil, p.errAt("numeric_oper: expected +|-|*|**|/|%%, got %s %q", tok.Type, tok.Value)
+	return nil, p.errAt("numeric_oper: expected +|-|*|**|/|%%")
 }
 
 // V17InlineIncrNode  inline_incr = "++" | "--"
@@ -231,16 +243,15 @@ type V17InlineIncrNode struct {
 func (p *V17Parser) ParseInlineIncr() (node *V17InlineIncrNode, err error) {
 	done := p.debugEnter("inline_incr")
 	defer func() { done(err == nil) }()
-	tok := p.cur()
-	switch tok.Type {
-	case V17_PLUSPLUS:
-		p.advance()
+	switch {
+	case p.peekLit("++"):
+		tok, _ := p.matchLit("++")
 		return &V17InlineIncrNode{V17BaseNode{tok.Line, tok.Col}, "++"}, nil
-	case V17_MINUSMINUS:
-		p.advance()
+	case p.peekLit("--"):
+		tok, _ := p.matchLit("--")
 		return &V17InlineIncrNode{V17BaseNode{tok.Line, tok.Col}, "--"}, nil
 	}
-	return nil, p.errAt("inline_incr: expected ++ or --, got %s %q", tok.Type, tok.Value)
+	return nil, p.errAt("inline_incr: expected ++ or --")
 }
 
 // =============================================================================
@@ -253,47 +264,62 @@ func (p *V17Parser) ParseInlineIncr() (node *V17InlineIncrNode, err error) {
 // =============================================================================
 
 // V17SingleNumExprNode  single_num_expr
+// single_num_expr = [ inline_incr ] ( numeric_const | TYPE_OF numeric_const<ident_ref> ) [ inline_incr ]
 type V17SingleNumExprNode struct {
 	V17BaseNode
 	// Value is one of:
 	//   *V17NumericConstNode           — literal numeric constant
 	//   *V17IdentRefNode               — ident_ref with TYPE_OF numeric_const check
 	Value    interface{}
-	InlineOp *V17InlineIncrNode // nil when not present
+	PrefixOp *V17InlineIncrNode // nil when no prefix ++ or --
+	SuffixOp *V17InlineIncrNode // nil when no suffix ++ or --
 }
 
 // ParseSingleNumExpr parses single_num_expr
+// single_num_expr = [ inline_incr ] ( numeric_const | TYPE_OF numeric_const<ident_ref> ) [ inline_incr ]
 func (p *V17Parser) ParseSingleNumExpr() (node *V17SingleNumExprNode, err error) {
 	done := p.debugEnter("single_num_expr")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
-	// Try numeric_const first (no prefix possible)
+	// Try numeric_const first (no prefix or suffix)
 	if saved := p.savePos(); true {
 		if nc, nerr := p.ParseNumericConst(); nerr == nil {
-			return &V17SingleNumExprNode{V17BaseNode{line, col}, nc, nil}, nil
+			// trailing [ inline_incr ] after a bare numeric literal is unusual but allowed
+			var suffix *V17InlineIncrNode
+			if p.peekLit("++") || p.peekLit("--") {
+				if sx, sxerr := p.ParseInlineIncr(); sxerr == nil {
+					suffix = sx
+				}
+			}
+			return &V17SingleNumExprNode{V17BaseNode{line, col}, nc, nil, suffix}, nil
 		}
 		p.restorePos(saved)
 	}
 
-	// Try [ inline_incr ] TYPE_OF numeric_const<ident_ref>
-	// TYPE_OF is a directive; at parse time we parse ident_ref and record it;
-	// type assertion is deferred to the checker (SIR per directive table 2.3).
-	var incr *V17InlineIncrNode
-	if p.cur().Type == V17_PLUSPLUS || p.cur().Type == V17_MINUSMINUS {
+	// Try [ inline_incr ] TYPE_OF numeric_const<ident_ref> [ inline_incr ]
+	var prefix *V17InlineIncrNode
+	if p.peekLit("++") || p.peekLit("--") {
 		saved := p.savePos()
 		in, ierr := p.ParseInlineIncr()
 		if ierr != nil {
 			p.restorePos(saved)
 		} else {
-			incr = in
+			prefix = in
 		}
 	}
 	ref, rerr := p.ParseIdentRef()
 	if rerr != nil {
 		return nil, fmt.Errorf("single_num_expr: expected numeric_const or ident_ref, got %w", rerr)
 	}
-	return &V17SingleNumExprNode{V17BaseNode{line, col}, ref, incr}, nil
+	// trailing [ inline_incr ]
+	var suffix *V17InlineIncrNode
+	if p.peekLit("++") || p.peekLit("--") {
+		if sx, sxerr := p.ParseInlineIncr(); sxerr == nil {
+			suffix = sx
+		}
+	}
+	return &V17SingleNumExprNode{V17BaseNode{line, col}, ref, prefix, suffix}, nil
 }
 
 // V17NumExprChainNode  num_expr_chain = single_num_expr { numeric_oper single_num_expr }
@@ -306,7 +332,7 @@ type V17NumExprChainNode struct {
 func (p *V17Parser) ParseNumExprChain() (node *V17NumExprChainNode, err error) {
 	done := p.debugEnter("num_expr_chain")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	first, ferr := p.ParseSingleNumExpr()
 	if ferr != nil {
@@ -342,7 +368,7 @@ type V17NumGroupingNode struct {
 func (p *V17Parser) ParseNumGrouping() (node *V17NumGroupingNode, err error) {
 	done := p.debugEnter("num_grouping")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	if _, err = p.ParseGroupBegin(); err != nil {
 		return nil, fmt.Errorf("num_grouping: %w", err)
@@ -376,7 +402,7 @@ func (p *V17Parser) ParseNumGrouping() (node *V17NumGroupingNode, err error) {
 
 // parseNumGroupingItem tries num_expr_chain then num_grouping.
 func (p *V17Parser) parseNumGroupingItem() (interface{}, error) {
-	if p.cur().Type == V17_LPAREN {
+	if p.peekAfterWS() == '(' {
 		return p.ParseNumGrouping()
 	}
 	return p.ParseNumExprChain()
@@ -393,9 +419,9 @@ type V17NumericCalcNode struct {
 func (p *V17Parser) ParseNumericCalc() (node *V17NumericCalcNode, err error) {
 	done := p.debugEnter("numeric_calc")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
-	if p.cur().Type == V17_LPAREN {
+	if p.peekAfterWS() == '(' {
 		g, gerr := p.ParseNumGrouping()
 		if gerr != nil {
 			return nil, fmt.Errorf("numeric_calc: %w", gerr)
@@ -425,7 +451,10 @@ type V17StringOperNode struct{ V17BaseNode }
 func (p *V17Parser) ParseStringOper() (node *V17StringOperNode, err error) {
 	done := p.debugEnter("string_oper")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_PLUS)
+	if p.peekLit("++") {
+		return nil, p.errAt("string_oper: '++' is inline_incr, not string_oper")
+	}
+	tok, err := p.matchLit("+")
 	if err != nil {
 		return nil, fmt.Errorf("string_oper: %w", err)
 	}
@@ -442,7 +471,7 @@ type V17StringExprChainNode struct {
 func (p *V17Parser) ParseStringExprChain() (node *V17StringExprChainNode, err error) {
 	done := p.debugEnter("string_expr_chain")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	first, ferr := p.ParseString()
 	if ferr != nil {
@@ -475,7 +504,7 @@ type V17StringGroupingNode struct {
 func (p *V17Parser) ParseStringGrouping() (node *V17StringGroupingNode, err error) {
 	done := p.debugEnter("string_grouping")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	if _, err = p.ParseGroupBegin(); err != nil {
 		return nil, fmt.Errorf("string_grouping: %w", err)
@@ -506,7 +535,7 @@ func (p *V17Parser) ParseStringGrouping() (node *V17StringGroupingNode, err erro
 }
 
 func (p *V17Parser) parseStringGroupingItem() (interface{}, error) {
-	if p.cur().Type == V17_LPAREN {
+	if p.peekAfterWS() == '(' {
 		return p.ParseStringGrouping()
 	}
 	return p.ParseStringExprChain()
@@ -523,9 +552,9 @@ type V17StringConcatNode struct {
 func (p *V17Parser) ParseStringConcat() (node *V17StringConcatNode, err error) {
 	done := p.debugEnter("string_concat")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
-	if p.cur().Type == V17_LPAREN {
+	if p.peekAfterWS() == '(' {
 		g, gerr := p.ParseStringGrouping()
 		if gerr != nil {
 			return nil, fmt.Errorf("string_concat: %w", gerr)
@@ -558,28 +587,27 @@ type V17CompareOperNode struct {
 func (p *V17Parser) ParseCompareOper() (node *V17CompareOperNode, err error) {
 	done := p.debugEnter("compare_oper")
 	defer func() { done(err == nil) }()
-	tok := p.cur()
-	switch tok.Type {
-	case V17_NEQ:
-		p.advance()
+	switch {
+	case p.peekLit("!="):
+		tok, _ := p.matchLit("!=")
 		return &V17CompareOperNode{V17BaseNode{tok.Line, tok.Col}, "!="}, nil
-	case V17_EQEQ:
-		p.advance()
+	case p.peekLit("=="):
+		tok, _ := p.matchLit("==")
 		return &V17CompareOperNode{V17BaseNode{tok.Line, tok.Col}, "=="}, nil
-	case V17_GTE:
-		p.advance()
+	case p.peekLit(">="):
+		tok, _ := p.matchLit(">=")
 		return &V17CompareOperNode{V17BaseNode{tok.Line, tok.Col}, ">="}, nil
-	case V17_GT:
-		p.advance()
-		return &V17CompareOperNode{V17BaseNode{tok.Line, tok.Col}, ">"}, nil
-	case V17_LTE:
-		p.advance()
+	case p.peekLit("<="):
+		tok, _ := p.matchLit("<=")
 		return &V17CompareOperNode{V17BaseNode{tok.Line, tok.Col}, "<="}, nil
-	case V17_LT:
-		p.advance()
+	case p.peekAfterWS() == '>':
+		tok, _ := p.matchLit(">")
+		return &V17CompareOperNode{V17BaseNode{tok.Line, tok.Col}, ">"}, nil
+	case p.peekAfterWS() == '<':
+		tok, _ := p.matchLit("<")
 		return &V17CompareOperNode{V17BaseNode{tok.Line, tok.Col}, "<"}, nil
 	}
-	return nil, p.errAt("compare_oper: expected comparison operator, got %s %q", tok.Type, tok.Value)
+	return nil, p.errAt("compare_oper: expected comparison operator")
 }
 
 // V17NumCompareNode  num_compare = TYPE_OF boolean< LHS compare_oper RHS >
@@ -595,11 +623,11 @@ type V17NumCompareNode struct {
 func (p *V17Parser) ParseNumCompare() (node *V17NumCompareNode, err error) {
 	done := p.debugEnter("num_compare")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	// LHS: num_expr_chain | num_grouping
 	var lhs interface{}
-	if p.cur().Type == V17_LPAREN {
+	if p.peekAfterWS() == '(' {
 		g, gerr := p.ParseNumGrouping()
 		if gerr != nil {
 			return nil, fmt.Errorf("num_compare: lhs: %w", gerr)
@@ -620,7 +648,7 @@ func (p *V17Parser) ParseNumCompare() (node *V17NumCompareNode, err error) {
 
 	// RHS: single_num_expr | num_grouping
 	var rhs interface{}
-	if p.cur().Type == V17_LPAREN {
+	if p.peekAfterWS() == '(' {
 		g, gerr := p.ParseNumGrouping()
 		if gerr != nil {
 			return nil, fmt.Errorf("num_compare: rhs: %w", gerr)
@@ -648,7 +676,7 @@ type V17StringCompareNode struct {
 func (p *V17Parser) ParseStringCompare() (node *V17StringCompareNode, err error) {
 	done := p.debugEnter("string_compare")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	lhs, lerr := p.ParseStringExprChain()
 	if lerr != nil {
@@ -660,13 +688,13 @@ func (p *V17Parser) ParseStringCompare() (node *V17StringCompareNode, err error)
 	}
 	// RHS: string | string_grouping | regexp_expr
 	var rhs interface{}
-	if p.cur().Type == V17_REGEXP {
+	if p.peekAfterWS() == '/' {
 		re, rerr := p.ParseRegexpExpr()
 		if rerr != nil {
 			return nil, fmt.Errorf("string_compare: rhs: %w", rerr)
 		}
 		rhs = re
-	} else if p.cur().Type == V17_LPAREN {
+	} else if p.peekAfterWS() == '(' {
 		g, gerr := p.ParseStringGrouping()
 		if gerr != nil {
 			return nil, fmt.Errorf("string_compare: rhs: %w", gerr)
@@ -684,9 +712,11 @@ func (p *V17Parser) ParseStringCompare() (node *V17StringCompareNode, err error)
 
 // V17ConditionNode  condition = num_compare | string_compare
 // EXTEND<condition> = | logic_expr  (added by ParseCondition dispatcher)
+// EXTEND<condition> = | num_range_valid | date_range_valid | time_range_valid  (08_range.sqg)
 type V17ConditionNode struct {
 	V17BaseNode
-	// Value is one of: *V17NumCompareNode | *V17StringCompareNode | *V17LogicExprNode
+	// Value is one of: *V17NumCompareNode | *V17StringCompareNode | *V17LogicExprNode |
+	//                  *V17NumRangeValidNode | *V17DateRangeValidNode | *V17TimeRangeValidNode
 	Value interface{}
 }
 
@@ -694,7 +724,7 @@ type V17ConditionNode struct {
 // Used by ParseSingleLogicExpr to break the mutual-recursion cycle:
 // ParseCondition → ParseLogicExpr → … → ParseSingleLogicExpr → ParseCondition.
 func (p *V17Parser) parseBaseCondition() (*V17ConditionNode, error) {
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	if saved := p.savePos(); true {
 		if nc, nerr := p.ParseNumCompare(); nerr == nil {
 			return &V17ConditionNode{V17BaseNode{line, col}, nc}, nil
@@ -714,7 +744,7 @@ func (p *V17Parser) parseBaseCondition() (*V17ConditionNode, error) {
 func (p *V17Parser) ParseCondition() (node *V17ConditionNode, err error) {
 	done := p.debugEnter("condition")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	// num_compare — LHS starts with a numeric token or group
 	if saved := p.savePos(); true {
@@ -730,6 +760,27 @@ func (p *V17Parser) ParseCondition() (node *V17ConditionNode, err error) {
 		}
 		p.restorePos(saved)
 	}
+	// EXTEND<condition> = | num_range_valid | date_range_valid | time_range_valid  (08_range.sqg)
+	// These must come before logic_expr: all three start with TYPE_OF boolean<...
+	// which logic_expr would partially consume as TYPE_OF boolean<ident_ref>.
+	if saved := p.savePos(); true {
+		if nrv, nrverr := p.ParseNumRangeValid(); nrverr == nil {
+			return &V17ConditionNode{V17BaseNode{line, col}, nrv}, nil
+		}
+		p.restorePos(saved)
+	}
+	if saved := p.savePos(); true {
+		if drv, drverr := p.ParseDateRangeValid(); drverr == nil {
+			return &V17ConditionNode{V17BaseNode{line, col}, drv}, nil
+		}
+		p.restorePos(saved)
+	}
+	if saved := p.savePos(); true {
+		if trv, trverr := p.ParseTimeRangeValid(); trverr == nil {
+			return &V17ConditionNode{V17BaseNode{line, col}, trv}, nil
+		}
+		p.restorePos(saved)
+	}
 	// EXTEND<condition> = | logic_expr
 	if saved := p.savePos(); true {
 		if le, lerr := p.ParseLogicExpr(); lerr == nil {
@@ -737,7 +788,7 @@ func (p *V17Parser) ParseCondition() (node *V17ConditionNode, err error) {
 		}
 		p.restorePos(saved)
 	}
-	return nil, p.errAt("condition: expected num_compare, string_compare or logic_expr")
+	return nil, p.errAt("condition: expected num_compare, string_compare, num_range_valid, date_range_valid, time_range_valid or logic_expr")
 }
 
 // =============================================================================
@@ -761,7 +812,7 @@ type V17NotOperNode struct{ V17BaseNode }
 func (p *V17Parser) ParseNotOper() (node *V17NotOperNode, err error) {
 	done := p.debugEnter("not_oper")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_BANG)
+	tok, err := p.matchLit("!")
 	if err != nil {
 		return nil, fmt.Errorf("not_oper: %w", err)
 	}
@@ -775,7 +826,7 @@ type V17LogicAndNode struct{ V17BaseNode }
 func (p *V17Parser) ParseLogicAnd() (node *V17LogicAndNode, err error) {
 	done := p.debugEnter("logic_and")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_AMP)
+	tok, err := p.matchLit("&")
 	if err != nil {
 		return nil, fmt.Errorf("logic_and: %w", err)
 	}
@@ -789,7 +840,7 @@ type V17LogicOrNode struct{ V17BaseNode }
 func (p *V17Parser) ParseLogicOr() (node *V17LogicOrNode, err error) {
 	done := p.debugEnter("logic_or")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_PIPE)
+	tok, err := p.matchLit("|")
 	if err != nil {
 		return nil, fmt.Errorf("logic_or: %w", err)
 	}
@@ -803,7 +854,7 @@ type V17LogicExclusiveOrNode struct{ V17BaseNode }
 func (p *V17Parser) ParseLogicExclusiveOr() (node *V17LogicExclusiveOrNode, err error) {
 	done := p.debugEnter("logic_exclusive_or")
 	defer func() { done(err == nil) }()
-	tok, err := p.expect(V17_CARET)
+	tok, err := p.matchLit("^")
 	if err != nil {
 		return nil, fmt.Errorf("logic_exclusive_or: %w", err)
 	}
@@ -820,19 +871,18 @@ type V17LogicOperNode struct {
 func (p *V17Parser) ParseLogicOper() (node *V17LogicOperNode, err error) {
 	done := p.debugEnter("logic_oper")
 	defer func() { done(err == nil) }()
-	tok := p.cur()
-	switch tok.Type {
-	case V17_AMP:
-		p.advance()
+	switch {
+	case p.peekAfterWS() == '&':
+		tok, _ := p.matchLit("&")
 		return &V17LogicOperNode{V17BaseNode{tok.Line, tok.Col}, "&"}, nil
-	case V17_PIPE:
-		p.advance()
+	case p.peekAfterWS() == '|':
+		tok, _ := p.matchLit("|")
 		return &V17LogicOperNode{V17BaseNode{tok.Line, tok.Col}, "|"}, nil
-	case V17_CARET:
-		p.advance()
+	case p.peekAfterWS() == '^':
+		tok, _ := p.matchLit("^")
 		return &V17LogicOperNode{V17BaseNode{tok.Line, tok.Col}, "^"}, nil
 	}
-	return nil, p.errAt("logic_oper: expected &, | or ^, got %s %q", tok.Type, tok.Value)
+	return nil, p.errAt("logic_oper: expected &, | or ^")
 }
 
 // V17SingleLogicExprNode  single_logic_expr
@@ -847,11 +897,11 @@ type V17SingleLogicExprNode struct {
 func (p *V17Parser) ParseSingleLogicExpr() (node *V17SingleLogicExprNode, err error) {
 	done := p.debugEnter("single_logic_expr")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	// Optional not_oper
 	var notOp *V17NotOperNode
-	if p.cur().Type == V17_BANG {
+	if p.peekAfterWS() == '!' {
 		if n, nerr := p.ParseNotOper(); nerr == nil {
 			notOp = n
 		}
@@ -895,7 +945,7 @@ type V17LogicExprChainNode struct {
 func (p *V17Parser) ParseLogicExprChain() (node *V17LogicExprChainNode, err error) {
 	done := p.debugEnter("logic_expr_chain")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	first, ferr := p.ParseSingleLogicExpr()
 	if ferr != nil {
@@ -929,7 +979,7 @@ type V17LogicGroupingNode struct {
 func (p *V17Parser) ParseLogicGrouping() (node *V17LogicGroupingNode, err error) {
 	done := p.debugEnter("logic_grouping")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	if _, err = p.ParseGroupBegin(); err != nil {
 		return nil, fmt.Errorf("logic_grouping: %w", err)
@@ -960,7 +1010,7 @@ func (p *V17Parser) ParseLogicGrouping() (node *V17LogicGroupingNode, err error)
 }
 
 func (p *V17Parser) parseLogicGroupingItem() (interface{}, error) {
-	if p.cur().Type == V17_LPAREN {
+	if p.peekAfterWS() == '(' {
 		return p.ParseLogicGrouping()
 	}
 	return p.ParseLogicExprChain()
@@ -977,9 +1027,9 @@ type V17LogicExprNode struct {
 func (p *V17Parser) ParseLogicExpr() (node *V17LogicExprNode, err error) {
 	done := p.debugEnter("logic_expr")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
-	if p.cur().Type == V17_LPAREN {
+	if p.peekAfterWS() == '(' {
 		g, gerr := p.ParseLogicGrouping()
 		if gerr != nil {
 			return nil, fmt.Errorf("logic_expr: %w", gerr)
@@ -1001,21 +1051,116 @@ func (p *V17Parser) ParseLogicExpr() (node *V17LogicExprNode, err error) {
 // V17StatementNode  statement = numeric_calc | string_concat
 // EXTEND<statement> = | constant | cardinality  (03_assignment.sqg line 14)
 // EXTEND<statement> = | assign_cond_rhs | self_ref  (03_assignment.sqg line 32)
+// EXTEND<statement> = | array_final | object_final | array_lookup | object_lookup  (04_objects.sqg)
+// EXTEND<statement> = | date_range | time_range  (08_range.sqg)
+// EXTEND<statement> = | return_func_unit | iterator_loop  (06_functions.sqg)
+// EXTEND<statement> = | __ps_call | __ps_proxy  (30_bootstrap.sqg)
 type V17StatementNode struct {
 	V17BaseNode
 	// Value is one of: *V17NumericCalcNode | *V17StringConcatNode | *V17ConstantNode |
-	//                  *V17CardinalityNode | *V17AssignCondRhsNode | *V17SelfRefNode
+	//                  *V17CardinalityNode | *V17AssignCondRhsNode | *V17SelfRefNode |
+	//                  *V17ArrayFinalNode | *V17ObjectFinalNode |
+	//                  *V17ArrayLookupNode | *V17ObjectLookupNode |
+	//                  *V17DateRangeNode | *V17TimeRangeNode |
+	//                  *V17IteratorLoopNode |
+	//                  *V17PsCallNode | *V17PsProxyNode
 	Value interface{}
 }
 
 // ParseStatement parses statement = numeric_calc | string_concat
 // EXTEND<statement> = | constant | cardinality  (03_assignment.sqg line 14)
 // EXTEND<statement> = | assign_cond_rhs | self_ref  (03_assignment.sqg line 32)
+// EXTEND<statement> = | array_final | object_final | array_lookup | object_lookup  (04_objects.sqg)
+// EXTEND<statement> = | inspect_type  (06_functions.sqg)
+// EXTEND<statement> = | return_func_unit | iterator_loop | func_call_final  (06_functions.sqg)
+// EXTEND<statement> = | date_range | time_range  (08_range.sqg)
+// EXTEND<statement> = | __ps_call | __ps_proxy  (30_bootstrap.sqg)
 func (p *V17Parser) ParseStatement() (node *V17StatementNode, err error) {
 	done := p.debugEnter("statement")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
+	// EXTEND<statement> = | return_func_unit  (06_functions.sqg)
+	// return_func_unit starts with "<-" which never starts a numeric expression.
+	if p.peekLit("<-") {
+		if saved := p.savePos(); true {
+			if rfu, rfuerr := p.ParseReturnFuncUnit(); rfuerr == nil {
+				return &V17StatementNode{V17BaseNode{line, col}, rfu}, nil
+			}
+			p.restorePos(saved)
+		}
+	}
+
+	// EXTEND<statement> = | __ps_call | __ps_proxy  (30_bootstrap.sqg)
+	// Must be tried BEFORE parseFuncCallFinalStrict: "__ps_call" and "__ps_proxy" start with
+	// "__" which is also a valid ident prefix, so parseFuncCallFinalStrict would consume
+	// them as a bare func_ref, treating the following args as func_call args.
+	if p.peekLit("__ps_call") {
+		if saved := p.savePos(); true {
+			if pc, pcerr := p.ParsePsCall(); pcerr == nil {
+				return &V17StatementNode{V17BaseNode{line, col}, pc}, nil
+			}
+			p.restorePos(saved)
+		}
+	}
+	if p.peekLit("__ps_proxy") {
+		if saved := p.savePos(); true {
+			if pp, pperr := p.ParsePsProxy(); pperr == nil {
+				return &V17StatementNode{V17BaseNode{line, col}, pp}, nil
+			}
+			p.restorePos(saved)
+		}
+	}
+
+	// EXTEND<statement> = | func_call_final (strict — chain or args required)  (06_functions.sqg)
+	// Must be checked before numeric_calc so that chains like "a -> b -> c" are
+	// captured as a single func_call_final rather than stopping at just "a".
+	// parseFuncCallFinalStrict fails for bare ident_refs (no chain, no args),
+	// allowing numeric_calc to handle them as usual.
+	if saved := p.savePos(); true {
+		if fcf, fcferr := p.parseFuncCallFinalStrict(); fcferr == nil {
+			return &V17StatementNode{V17BaseNode{line, col}, fcf}, nil
+		}
+		p.restorePos(saved)
+	}
+
+	// EXTEND<statement> = | iterator_loop  (06_functions.sqg)
+	// Must be tried before numeric_calc: a collection ident_ref followed by ">>" would
+	// otherwise be consumed as a bare numeric expression (the ident_ref), leaving ">>" unmatched.
+	if saved := p.savePos(); true {
+		if il, ilerr := p.ParseIteratorLoop(); ilerr == nil {
+			return &V17StatementNode{V17BaseNode{line, col}, il}, nil
+		}
+		p.restorePos(saved)
+	}
+
+	// EXTEND<statement> = | cardinality  (03_assignment.sqg line 14)
+	// cardinality (digits ".." digits/m/M/many) must be tried BEFORE date_range/time_range
+	// so that "1..1" or "1..2" is matched as a cardinality rather than a time/date range with
+	// bare numeric components (time allows a bare hour, e.g. time(1)).
+	// Real dates/times have "-"/":" separators that cardinality won't consume.
+	if saved := p.savePos(); true {
+		if ca, caerr := p.ParseCardinality(); caerr == nil {
+			return &V17StatementNode{V17BaseNode{line, col}, ca}, nil
+		}
+		p.restorePos(saved)
+	}
+
+	// EXTEND<statement> = | date_range | time_range  (08_range.sqg)
+	// Must be checked before numeric_calc: a date like 2024-01-01 would otherwise
+	// be consumed as arithmetic (2024 - 1 - 1) by ParseNumericCalc.
+	if saved := p.savePos(); true {
+		if dr, drerr := p.ParseDateRange(); drerr == nil {
+			return &V17StatementNode{V17BaseNode{line, col}, dr}, nil
+		}
+		p.restorePos(saved)
+	}
+	if saved := p.savePos(); true {
+		if tr, trerr := p.ParseTimeRange(); trerr == nil {
+			return &V17StatementNode{V17BaseNode{line, col}, tr}, nil
+		}
+		p.restorePos(saved)
+	}
 	if saved := p.savePos(); true {
 		if nc, nerr := p.ParseNumericCalc(); nerr == nil {
 			return &V17StatementNode{V17BaseNode{line, col}, nc}, nil
@@ -1028,18 +1173,22 @@ func (p *V17Parser) ParseStatement() (node *V17StatementNode, err error) {
 		}
 		p.restorePos(saved)
 	}
-	// EXTEND<statement> = | constant | cardinality  (03_assignment.sqg line 14)
+	// EXTEND<statement> = | constant  (03_assignment.sqg line 14)
 	if saved := p.savePos(); true {
 		if cn, cerr := p.ParseConstant(); cerr == nil {
 			return &V17StatementNode{V17BaseNode{line, col}, cn}, nil
 		}
 		p.restorePos(saved)
 	}
-	if saved := p.savePos(); true {
-		if ca, caerr := p.ParseCardinality(); caerr == nil {
-			return &V17StatementNode{V17BaseNode{line, col}, ca}, nil
+	// EXTEND<statement> = | inspect_type  (06_functions.sqg)
+	// inspect_type (@TypeName or @?) starts with '@' — unambiguous, try before assign_cond_rhs.
+	if p.peekAfterWS() == '@' {
+		if saved := p.savePos(); true {
+			if it, iterr := p.ParseInspectType(); iterr == nil {
+				return &V17StatementNode{V17BaseNode{line, col}, it}, nil
+			}
+			p.restorePos(saved)
 		}
-		p.restorePos(saved)
 	}
 	// EXTEND<statement> = | assign_cond_rhs | self_ref  (03_assignment.sqg line 32)
 	if saved := p.savePos(); true {
@@ -1054,5 +1203,31 @@ func (p *V17Parser) ParseStatement() (node *V17StatementNode, err error) {
 		}
 		p.restorePos(saved)
 	}
-	return nil, p.errAt("statement: expected numeric_calc, string_concat, constant, cardinality, assign_cond_rhs or self_ref")
+	// EXTEND<statement> = | array_final | object_final | array_lookup | object_lookup  (04_objects.sqg)
+	// array_lookup and object_lookup are tried before array_final/object_final (more specific)
+	if saved := p.savePos(); true {
+		if al, alerr := p.ParseArrayLookup(); alerr == nil {
+			return &V17StatementNode{V17BaseNode{line, col}, al}, nil
+		}
+		p.restorePos(saved)
+	}
+	if saved := p.savePos(); true {
+		if ol, olerr := p.ParseObjectLookup(); olerr == nil {
+			return &V17StatementNode{V17BaseNode{line, col}, ol}, nil
+		}
+		p.restorePos(saved)
+	}
+	if saved := p.savePos(); true {
+		if af, aferr := p.ParseArrayFinal(); aferr == nil {
+			return &V17StatementNode{V17BaseNode{line, col}, af}, nil
+		}
+		p.restorePos(saved)
+	}
+	if saved := p.savePos(); true {
+		if of, oferr := p.ParseObjectFinal(); oferr == nil {
+			return &V17StatementNode{V17BaseNode{line, col}, of}, nil
+		}
+		p.restorePos(saved)
+	}
+	return nil, p.errAt("statement: expected numeric_calc, string_concat, constant, cardinality, assign_cond_rhs, self_ref, array_final, object_final, array_lookup, object_lookup, func_call_final, return_func_unit, iterator_loop, date_range, time_range, __ps_call or __ps_proxy")
 }

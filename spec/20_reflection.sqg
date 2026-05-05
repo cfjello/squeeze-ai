@@ -1,0 +1,207 @@
+
+(* ============================================================
+   spec/20_Reflection.sqg  —  Squeeze V17 Runtime Reflection
+   ============================================================
+
+   Squeeze reflection gives programs access to structural metadata
+   about values, types, and scopes — both at parse time (checker)
+   and at runtime (code-gen / metaprogramming).
+
+   PRIMARY USE CASES
+   -----------------
+   1. Bootstrapping pkg/lib — type-safe self-inspection inside
+      library scopes.
+   2. Runtime metaprogramming:
+        A. Auto-generation of Data Beans for database access.
+        B. Auto-generation of REST interfaces.
+        C. Other generation scenarios (add functionality to scopes).
+        D. Secure runtime injection — fixed capability-gated scope
+           extension with explicit trust anchors.
+
+   NOTATION PRINCIPLE
+   ------------------
+   The "@" symbol is now a reflect_prefix, not merely a type_prefix.
+   It is the uniform meta-access operator for all reflection steps.
+   The existing bare "@ident_ref" type annotation form is superseded:
+   type descriptor references are now expressed as reflect_chain endings:
+
+     ident_ref.@type     — type descriptor of any named ident_ref
+     $.@type             — type descriptor of the current scope
+
+   The ".@" pair forms a chained reflection step; no whitespace is
+   permitted between the dot and the "@" (!WS!).
+
+     $              — the current scope object (self_ref)
+     $.field        — field access within the current scope (self_ref_dotted)
+     $.@prop        — one meta-property of the current scope
+     myVar.@prop    — meta-property of any named ident_ref
+     $.@parent.@type — the enclosing scope's type descriptor (one level up)
+     $.@root         — the outermost scope's descriptor
+
+   For ancestry deeper than one level use the REFLECT_ANCESTOR intrinsic:
+     __ps_proxy REFLECT_ANCESTOR <$, 2>    — two levels up
+     __ps_proxy REFLECT_ANCESTOR <$, 0>    — root (same as $.@root)
+
+   ============================================================ *)
+
+
+(* ------------------------------------------------------------
+   SECTION 20.1 — CORE REFLECTION CHAIN
+   reflect_step  — one ".@word" navigation step (no whitespace)
+   reflect_chain — $ or any ident_ref followed by zero or more steps
+   ------------------------------------------------------------ *)
+
+reflect_prefix = "@" ;                            (* supersedes type_prefix in reflection context *)
+
+reflect_step   = "." !WS! reflect_prefix !WS! ident_name ;   (* e.g. .@type  .@name  .@fields *)
+
+self_ref_dotted = self_ref { "." ident_name } ;    (* $.field  $.nested.field  $ alone *)
+
+reflect_chain  = ( self_ref_dotted | ident_ref ) { !WS! reflect_step } ;
+
+
+(* ------------------------------------------------------------
+   SECTION 20.2 — VARIABLE / SCOPE META-PROPERTIES
+   These replace the former self_ref !WS! keyword rules.
+   All accessed as reflect_chain ending in a known meta-property.
+
+   Syntax              Old form             Runtime value
+   -------             --------             -------------
+   $.@name             $short_name          short unqualified name string
+   $.@names            $names               @array of all name aliases
+   $.@long_name        (implicit)           fully qualified name string
+   $.@cardinality      $cardinality         "single" | "multi" | "optional"
+   $.@multi            $multi               boolean: cardinality == "multi"
+   $.@store            $store_name          primary store name string
+   $.@stores           $store_names         @array of all store names
+
+   ------------------------------------------------------------ *)
+
+var_name_select     = ( "name" | "names" | "long_name" );
+card_select         = ( "cardinality" | "multi" );
+store_select        = ( "store" | "stores" );
+
+
+(* ------------------------------------------------------------
+   SECTION 20.3 — TYPE META-PROPERTIES
+   Accessed as reflect_chain ending in a type-related property.
+
+   Syntax              Old form             Runtime value
+   -------             --------             -------------
+   $.@type             @$                   type descriptor object
+   $.@type_name        $type_names          short type name string
+   $.@long_type        (implicit)           fully qualified type name
+   $.@type_path        $@../type_path       dotted module path string
+   $.@types            $@../types           @array of ancestor type names
+
+   myVar.@type                              type descriptor of myVar
+   myVar.@type.@name                        name of myVar's type
+
+   ------------------------------------------------------------ *)
+
+type_name_select    = ( "type" | "type_name" | "long_type" | "type_path" | "types" );
+
+
+(* ------------------------------------------------------------
+   SECTION 20.4 — ANCESTRY NAVIGATION (grammar-level sugar)
+   Only $.@parent (one level) and $.@root (all the way) are
+   supported as grammar productions.  Deeper ancestry is handled
+   by the REFLECT_ANCESTOR intrinsic (see 28_intrinsics.sqg).
+
+   Syntax                  Meaning
+   -------                 -------
+   $.@parent               descriptor of the immediately enclosing scope
+   $.@parent.@type         type descriptor one level up
+   $.@root                 descriptor of the outermost scope
+   $.@root.@type           type descriptor of the outermost scope
+
+   For arbitrary depth:
+   __ps_proxy REFLECT_ANCESTOR <$, 2>    — two levels up
+   __ps_proxy REFLECT_ANCESTOR <$, 0>    — root (same as $.@root)
+
+   ------------------------------------------------------------ *)
+
+reflect_parent      = self_ref !WS! reflect_step ;   (* $.@parent — one level up  *)
+reflect_root        = self_ref !WS! reflect_step ;   (* $.@root   — outermost     *)
+
+
+(* ------------------------------------------------------------
+   SECTION 20.5 — FIELD AND METHOD ENUMERATION
+   Accessed via reflect_chain or intrinsics.
+
+   Syntax                              Runtime value
+   ------                              -------------
+   $.@fields                           @array of field_descriptor
+   $.@methods                          @array of method_descriptor
+   myVar.@type.@fields                 fields of myVar's type
+
+   field_descriptor = {
+       name:        ""           (* field name                             *)
+       type_name:   ""           (* type name string                       *)
+       is_private:  false        (* true when declared with "-" modifier   *)
+       cardinality: ""           (* "single" | "multi" | "optional"        *)
+   }
+
+   method_descriptor = {
+       name:        ""           (* method name                            *)
+       param_types: @array       (* @array of type name strings            *)
+       return_type: ""           (* return type name string                *)
+       is_private:  false        (* true when declared with "-" modifier   *)
+   }
+
+   ------------------------------------------------------------ *)
+
+field_select        = "fields" ;
+method_select       = "methods" ;
+
+
+(* ------------------------------------------------------------
+   SECTION 20.6 — ASSIGNABILITY / SUBTYPING
+   Checked via intrinsics (see 28_intrinsics.sqg SECTION 18).
+
+   __ps_proxy REFLECT_IS_A        <myVar.@type, @TypeB>  — boolean: A assignable to B
+   __ps_proxy REFLECT_EXTENDS     <myVar.@type>          — @array of ancestor type names
+   __ps_proxy REFLECT_CARDINALITY <myVar>                — "single" | "multi" | "optional"
+   __ps_proxy REFLECT_TYPE_OF     <myVar>                — type descriptor at runtime
+   __ps_proxy REFLECT_TYPE_NAME   <myVar.@type>          — fully qualified name string
+   __ps_proxy REFLECT_RESOLVE     <"TypeName">           — string → type descriptor
+   __ps_proxy REFLECT_ANCESTOR    <$, n>                 — descriptor n levels up
+
+   ------------------------------------------------------------ *)
+
+
+(* ------------------------------------------------------------
+   SECTION 20.7 — SECURE RUNTIME INJECTION
+   Scope extension is capability-gated.  A capability token must
+   be held by the caller; it is obtained from a trust root
+   established at program startup and cannot be forged.
+
+   __ps_proxy REFLECT_INJECT     <myVar.@type, scope_body, cap>
+       Extend the target type with the given scope at runtime.
+       Requires a valid capability token (cap).
+
+   __ps_proxy REFLECT_SEAL       <myVar.@type, cap>
+       Prevent any further injection on the target type.
+
+   __ps_proxy REFLECT_CAN_INJECT <myVar.@type, cap>
+       Boolean: the capability token permits injection on the target type.
+
+   Security notes
+   --------------
+   • Capability tokens are opaque sealed values; they cannot be
+     constructed from Squeeze source — only obtained from the
+     runtime trust root.
+   • Sealed types (REFLECT_SEAL) reject all subsequent injection,
+     even from callers holding a valid capability.
+   • Injection audit trails are mandatory: every injection is
+     recorded with the injector's identity and a UTC timestamp.
+
+   ------------------------------------------------------------ *)
+
+
+(* ------------------------------------------------------------
+   SECTION 20.8 — EXTEND STATEMENT
+   reflect_chain is a valid statement / assign_rhs value.
+   ------------------------------------------------------------ *)
+
+EXTEND<statement> = | reflect_chain ;

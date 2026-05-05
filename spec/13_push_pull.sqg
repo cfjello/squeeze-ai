@@ -52,18 +52,16 @@
 
    13.1.1  Token disambiguation with existing lexer
 
-         "~>" requires a one new case in V13scanOperator:
+         "~>" is implemented in the V17 lexer as the pre-lexed compound token
+         V17_TILDE_GT.  The "~" character alone is ILLEGAL in Squeeze, so the
+         lexer must always look ahead for ">" and emit V17_TILDE_GT — it cannot
+         fall back to a plain V17_TILDE token.
 
            case '~':
-             if ch2 == '>'  →  emit V13_PUSH ("~>")   ADD BEFORE V13_TILDE fallthrough
-             else           →  emit V13_TILDE ("~")    existing
+             if ch2 == '>'  →  emit V17_TILDE_GT ("~>")   [implemented in parser_v17.go]
+             else           →  emit V17_ILLEGAL  ("~")     [~ alone is illegal in Squeeze]
 
-         Currently case '~' has no multi-char lookahead — only V13_TILDE
-         is produced.  Adding the ">>" peek is non-breaking; no existing
-         token starts with "~>".
-
-         No other lexer change is needed.  The second token from the pull
-         model, V13_ITER_RETURN ("<<"), is unchanged.
+         No other lexer change is needed.
 
 
    13.1.2  Three syntactic roles of "~>"
@@ -74,65 +72,94 @@
 
          ROLE                  SYNTAX                     CONTEXT
          ─────────────────────────────────────────────────────────────
-         (A) RECEIVE DECL      ~> ident_name : inspect_type
-                               "~>" is the FIRST token;    func_unit_header
-                               colon follows the name.     or func_stream_args
+         (A) PUSH STREAM DECL  ~> ident_name : inspect_type
+                               "~>" is the FIRST token of  func_args_decl
+                               func_args_decl; colon        (in func_unit header)
+                               follows the name.
+                               Declares the raw push stream
+                               as a named first-class object.
+                               Body loops explicitly with
+                               "stream ~> ( ... )".
+                               Contrast: value form uses
+                               "-> value: @T" (no ~>).
 
          (B) EMIT FORWARD      func_stmt ~>
                                func_stmt is on the LEFT;   func_body_stmt
                                EOL follows "~>" (no RHS).
 
-         (C) PUSH BINDING      push_source ~> ( func_unit | func_call )
-                               push_source is on the LEFT;  statement /
+         (C) PUSH BINDING      collection ~> ( func_unit | func_call )
+                               collection is on the LEFT;   statement /
                                func_unit or func_call on    assignment
                                the RIGHT.
 
          Disambiguation rules for the parser:
-           • Current token is V13_PUSH and no prior expr on same line
-             → Role (A): parse push_recv_decl
-           • Current token is a push_source starter (ident_ref, etc.)
-             AND peek-ahead is V13_PUSH:
-               – If token after V13_PUSH is V13_NL | V13_EOF
+           • Current token is V17_TILDE_GT and no prior expr on same line
+             → Role (A): parse push_recv_decl (raw push stream form)
+           NOTE: the value form "-> value: @T" uses V17_MINUS + V17_GT
+             (into_arrow), not V17_TILDE_GT — it is handled by ParseFuncArgs,
+             not push_recv_decl.
+           • Current token is a collection starter (ident_ref, "[", integer range)
+             AND peek-ahead is V17_TILDE_GT:
+               – If token after V17_TILDE_GT is V17_NL | V17_EOF
                  → Role (B): parse push_forward_stmt
                – Otherwise
                  → Role (C): parse push_stream_bind
            These three cases are lexically non-overlapping because:
-             (A) has no LHS before "~>";
+             (A) has no LHS before "~>" (first token of func_args_decl);
              (B) has LHS and the "~>" is the last token on the line;
              (C) has LHS and a handler RHS after "~>".
 
          Comparison with the pull model (only for analogy):
            Pull:  source >> handler          (binding, same as push role C)
-                  >> rec : @T                (header decl, same direction as role A)
-                  << value                   (yield from body, opposite of role B)
+                  -> value: @T               (value form: func called once per element)
+                  >> iter : @T               (iterator form: raw iterator in header)
+                  result >>                  (postfix yield from body, equivalent of role B)
            Push:  source ~> handler          (role C — binding)
-                  ~> item : @T               (role A — header decl, forward INTO func)
+                  -> value: @T               (value form: handler called once per item, same as pull)
+                  ~> stream : @T             (role A — raw push stream in header; body loops explicitly)
                   result ~>                  (role B — emit forward OUT of func)
 
          KEY DESIGN INSIGHT:
-           In the PULL model the header declaration ">>" points INTO the function
-           and the yield "<<" points OUT; they use OPPOSITE-direction tokens because
-           the consumer and the yield go in opposite directions relative to the
-           iterator's own viewpoint.
+           In the PULL model two header forms exist:
+             • value form    "-> value: @T" — function receives element directly;
+                               called once per element; plumbing invisible.
+             • iterator form ">> iter: @T"  — function receives the raw iterator;
+                               body loops manually.
+           The postfix yield "result >>" sends one item downstream without
+           exiting the loop or func_unit.
 
-           In the PUSH model ALL flow is in the SAME direction (~>): the item
-           arrives into the handler (~> as prefix) and is re-emitted forward
-           (result ~> as postfix).  A single token with two syntactic positions
-           is sufficient because the direction never reverses.
+           The PUSH model has the same two header forms:
+             • value form      "-> value: @T" — handler called once per pushed item;
+                                 push plumbing invisible.  This is the idiomatic form.
+             • push stream form "~> stream: @T" — handler receives the raw push stream;
+                                 body binds and loops explicitly.
+           In both forms the emit direction is always ~> (forward), so a single
+           token in two syntactic positions is sufficient.
 
 
-   13.2  push_source — What Can Be Pushed
+   13.2  collection — What Can Be Pushed
 
-         A push_source is any expression that can deliver a sequence of items
-         to registered sinks.  The definition mirrors iterator_source exactly:
+         A push source is any "collection" expression as defined in
+         spec/04_objects.sqg:
 
-           push_source = array_final        (* immediately pushes all elements  *)
-                       | func_range_args    (* pushes items across the range    *)
-                       | boolean_true       (* infinite generator               *)
-                       | ident_ref          (* reference to an assign_push name *)
-                       | func_call_final ;  (* async call or event source       *)
+           collection = range | array_final ;
 
-         The critical difference from iterator_source is EAGERNESS:
+         "collection" is the canonical source rule for both the pull and push
+         models — no separate "push_source" rule is needed.  An ident_ref that
+         holds a previously assigned collection or assign_push name is covered
+         by the ident_ref path inside array_final.
+
+         Notes on specific source kinds:
+           range              — pushes items across the integer range immediately.
+           array_final        — pushes all elements immediately.
+           ident_ref (as base of array_final)
+                              — reference to a collection value or an assign_push
+                                name (cold push source — see Section 13.7.3).
+           func_call_final (resolved via ident_ref in array_final)
+                              — async call or event source; the compiler generates
+                                a PUSH_ASYNC intrinsic (Section 13.10).
+
+         The critical difference from the pull model is EAGERNESS:
 
            Pull:  nothing executes until the consumer calls .next().
                   The source is completely idle between calls.
@@ -142,21 +169,41 @@
                   consumer's readiness.  Back-pressure must be declared
                   explicitly (see Section 13.5).
 
-         boolean_true as a push_source creates an infinite generator whose
-         body emits items with "result ~>".  The generator MUST eventually
-         cancel itself via PUSH_CANCEL or route a fatal error (Section 13.9).
+         A boolean_true constant used as a collection source creates an infinite
+         generator whose body emits items with "result ~>".  The generator MUST
+         eventually cancel itself via PUSH_CANCEL or route a fatal error
+         (Section 13.9).
 
 
-   13.3  push_record — The Item Record Type
+   13.3  push_record — Compiler-Internal Type
 
-         The library type delivered to a push sink is simpler than
-         iterator_record because the sink is called ONLY when an item is
-         ready — there is no need for an ".ok" polling flag:
+         push_record is defined as a library type in pkg/lib/push.sqz and is
+         used exclusively by the compiler runtime — it is NEVER visible to
+         user-written Squeeze code:
 
            push_record: {
                index: integer   (* 0-based position, tracked by the PRODUCER *)
-               data:  @?        (* the current item, typed by context        *)
+               data:  @?        (* the current item, typed by context; codegen PLACEHOLDER *)
            }
+
+         From the user's perspective, two declaration forms exist for a func_unit
+         body that is bound to a push source via "~>":
+
+           a) VALUE FORM  ( -> value: @my_type )
+              The func_unit is called once per pushed item.  "value" receives the
+              typed element directly.  All push plumbing (.index, dispatch ordering,
+              back-pressure) is handled invisibly by the compiler at the call site.
+              This is the idiomatic form — the function is completely unaware it
+              is being driven by a push source.
+
+           b) PUSH STREAM FORM  ( ~> stream: @my_type )
+              The func_unit receives the raw push stream.  The body must bind and
+              loop over it explicitly with "~> ( ... )".  Use this form when the
+              body needs fine-grained control over push handling (e.g. early
+              cancellation, index inspection).
+
+         Type compatibility between the source collection's element type and the
+         declared argument type is a compile-time error if violated.
 
          Differences from iterator_record:
            - NO "ok" field.  The handler is invoked only when data is present;
@@ -164,22 +211,98 @@
              (Section 13.7.4) rather than by setting ok = false.
            - "index" is owned by the PRODUCER and incremented once per item
              dispatched, before calling any sink.  In the pull model each
-             consumer tracked its own position; here the index is shared
-             (monotonically increasing from the producer's perspective).
-
-         The receive variable in a push handler is declared with the Role (A)
-         syntax inside the func_unit header:
-
-           ~> item: @my_type
-
-         This is the single authoritative form for the push receive declaration
-         in both the inline func_unit (Section 13.7.1) and the function context
-         (Section 13.7.2).  Compare with pull's ">> rec: @T".
+             reader tracked its own independent position; here the index is
+             a single shared counter (monotonically increasing from the
+             producer's perspective).
 
          The "data" field carries @? in the library declaration as a codegen
          PLACEHOLDER.  The same three-strategy type resolution hierarchy as
-         Section 12.3.2 applies (explicit annotation, type unification,
+         Section 13.3.2 applies (explicit annotation, type unification,
          propagate @?) because the underlying Go codegen constraint is identical.
+
+
+   13.3.1  Type Constraints
+
+         The following rules enforce type safety at compile time:
+
+         A) collection source
+            In Squeeze, every value object has a declared type.  A collection
+            used as a push source always carries a concrete element type known at
+            compile time.  @? sources are disallowed as push inputs; the compiler
+            rejects them with a type error.
+
+         B) func_call_final source
+            func_call_final must declare a typed collection return type.
+            A @? return type on a func_call_final used as a push source
+            is a compile error.  The grammar or type-checker must enforce this
+            constraint.
+
+         C) push_forward_stmt type homogeneity (Role B)
+            All Role-B "~>" push-forward statements within a single func_unit body
+            MUST be of the same concrete type.  Heterogeneous emits are a
+            compile error.  The consuming sink declares the expected element
+            type; the compiler verifies all emit sites conform.
+
+         D) boolean_true infinite source
+            The element type is determined by the Role-B "result ~>" emit
+            statement's type annotation.  An unannotated emit under a
+            boolean_true source is a compile error.
+
+
+   13.3.2  Resolution Strategy
+
+         A single strategy applies — explicit typing is always required at the
+         push handler binding site.  However, the definition of "explicitly typed"
+         must account for the generic-method pattern:
+
+         1. VALUE FORM  ( -> value: @T )
+            The type annotation "@T" on the argument is the authoritative element
+            type.  The compiler verifies that the source collection's element type
+            matches @T at compile time.
+
+         1b. PUSH STREAM FORM  ( ~> stream: @T )
+            "@T" declares the element type of the raw push stream.  The compiler
+            verifies the source collection's element type matches @T.
+
+         2. ROLE-B EMIT TYPE
+            All Role-B "~>" emits in one func_unit body must be of the same
+            concrete type.  The compiler infers the downstream element type from
+            the emit type and verifies consistency across all emit sites.
+
+         Regarding @? (any_type) at push binding sites:
+
+         @? is NOT an "unresolved" type — it is a deliberate UNKNOWN-type
+         placeholder whose concrete type is injected at the call site via
+         scope_inject (spec/07_types_scope.sqg).  The same two legitimate uses
+         from Section 12.3.2 apply:
+
+           a) GENERIC METHOD BODY — @? is resolved to the concrete element type
+              by scope_inject during the Parse or Lint phase.  The push handler
+              body never sees a bare @?.
+
+           b) PUSH LIBRARY INTERNALS — the "data : @?" field in push_record
+              (pkg/lib/push.sqz) is a codegen PLACEHOLDER — see Section 13.3.3.
+
+         A bare @? that is NOT resolved by scope_inject or codegen substitution
+         at the push binding site IS a hard compile error (Parse or Lint phase).
+
+
+   13.3.3  Type injection contract for push.sqz
+
+         The "data : @?" field in the library declaration is a codegen
+         PLACEHOLDER.  The code generator MUST substitute the concrete element
+         type at the push binding creation site — BEFORE the handler is invoked.
+
+         The concrete type is determined in priority order:
+           1. Resolved from scope_inject at the call site (generic method pattern).
+           2. Declared explicitly as @T in the func_unit header
+              (-> value: @T or ~> stream: @T).
+           3. Inferred from Role-B push-forward types (Section 13.3.2, point 2).
+
+         A bare @? that survives all three phases to the codegen stage is a
+         code generation error — not a runtime fallback.  The codegen always
+         emits a typed Go channel (chan T); the push binding is strongly typed
+         from creation.
 
 
    13.4  Push Behaviours — Key Differences from Pull
@@ -199,9 +322,11 @@
                                (each reader gets next item)    registrations
          Item position       Consumer-owned index            Single producer-owned
                                                                global index counter
-         Header declaration  >> rec: @T                      ~> item: @T   (Role A)
-         Body emit           << value                        result ~>     (Role B)
-         Completion handler  rec.ok == false in loop         on_done callback
+         Header declaration  -> value: @T (value form)        -> value: @T  (value form, same)
+                             >> iter: @T  (iterator form)      ~> stream: @T (push stream form)
+         Body emit           result >>  (postfix yield)        result ~>     (Role B)
+         Completion handler  iter.ok == false (iterator form)  on_done callback
+                             func returns   (value form)        func returns  (value form)
          Cancel from sink    break (future grammar)          PUSH_CANCEL<binding>
 
          The pull/push choice should be guided by:
@@ -212,6 +337,53 @@
                            broadcast / fan-out to multiple sinks is needed;
                            event-driven or reactive architecture; the producer
                            cannot or should not pause between items.
+
+
+   13.4.1  User-Observable Push Stream State (push stream form only)
+
+         In the PUSH STREAM FORM ( ~> stream: @T ), "stream" is a first-class
+         object in the Squeeze type system.  The following fields and methods
+         are accessible to user code via normal ident_ref dot access:
+
+           stream.index : integer   — 0-based count of items delivered to THIS
+                                      sink so far.  Per-sink: two sinks sharing
+                                      the same broadcast source each have an
+                                      independent index counter.
+                                      The first item delivered has index 0.
+
+           stream.stop              — Signals that this sink is done before the
+                                      source is exhausted.  Cancels the binding
+                                      for THIS sink only.
+
+         PRIVATE PUSH BINDING (single sink):
+           stream.stop cancels the binding cleanly.  After the call the handler
+           is no longer invoked.  The underlying producer goroutine receives
+           the done signal (PUSH_DONE_CH) and shuts down.
+
+         SHARED PUSH SOURCE (multiple sinks — broadcast, Section 13.8):
+           stream.stop cancels ONLY this sink's binding.  The source and all
+           other sinks continue unaffected.  The source shuts down only when
+           ALL sinks have cancelled or on_done has fired.
+           "stop" means "I am done receiving" — it does NOT terminate the
+           source for other sinks.
+
+         ADDITIONAL CONSIDERATIONS:
+
+         1. Per-sink index
+            stream.index is always per-sink.  Because push is a broadcast model,
+            all sinks see every item; the index simply counts how many items this
+            particular sink has processed.
+
+         2. stream.stop is idempotent
+            Calling stream.stop more than once on the same sink is safe and has
+            no additional effect after the first call.
+
+         3. VALUE FORM restriction
+            stream.index and stream.stop are NOT available in the VALUE FORM
+            ( -> value: @T ).  The compiler never exposes the push stream object
+            to the handler body in that form.  A handler that needs manual control
+            (index inspection, early stop) must use the PUSH STREAM FORM
+            ( ~> stream: @T ).
 
 
    13.5  Back-Pressure Strategies
@@ -258,19 +430,15 @@
          The following rules are added to the grammar.
          They are grouped here as the canonical source for the parser.
 
-         (* New token *)
-         push_oper = "~>" ;   (* V13_PUSH — the single new token *)
+         (* New token — already defined in spec/06_functions.sqg *)
+         push_oper = "~>" ;   (* V17_TILDE_GT — the single new token; ~ alone is ILLEGAL *)
 
-         (* Same shape as iterator_source — mirrored exactly *)
-         push_source = array_final
-                     | func_range_args
-                     | boolean_true
-                     | ident_ref
-                     | func_call_final ;
+         (* "collection" is the canonical source rule — defined in spec/04_objects.sqg.
+            No separate "push_source" rule is needed. *)
+         (* collection = range | array_final ; — see spec/04_objects.sqg *)
 
-         (* Role (A) — receive declaration inside a func_unit header or
-                        func_stream_args.  The colon after ident_name is the
-                        mandatory disambiguator. *)
+         (* Role (A) — receive declaration inside a func_unit header.
+                        The colon after ident_name is the mandatory disambiguator. *)
          push_recv_decl = push_oper ident_name ":" inspect_type ;
 
          (* Role (B) — emit forward: push the LHS value to all registered
@@ -280,31 +448,33 @@
 
          (* Role (C) — push binding: connect a source to a handler.
                         Each "~>" in a chain adds one stage. *)
-         push_stream_bind = push_source push_oper ( func_unit | func_call )
+         push_stream_bind = collection push_oper ( func_unit | func_call )
                             { push_oper ( func_unit | func_call ) } ;
 
          (* Cold push source descriptor — activates on first ~> sink bind *)
-         assign_push = push_source push_oper EOL ;
+         assign_push = collection push_oper EOL ;
 
-         (* Extend func_body_stmt to include push operations *)
+         (* Extend func_body_stmt to include push forward and push stream bind *)
          MERGE<func_body_stmt> = | push_forward_stmt
                                  | push_stream_bind ;
 
-         (* Extend func_unit_header to accept the push receive declaration *)
-         MERGE<func_unit_header> = push_recv_decl ;
+         (* Extend func_args_decl to accept the push receive declaration *)
+         (* Note: func_args_decl is the named rule in 06_functions.sqg — not func_unit_header *)
+         MERGE<func_args_decl> = | push_recv_decl ;
 
          Grammar notes:
-           push_recv_decl (Role A) is unambiguous inside a func_unit_header because
-           "~>" can only appear there as the FIRST token of the header; no expr
-           can precede it at that position.
+           push_recv_decl (Role A) is unambiguous inside a func_unit header because
+           "~>" can only appear as the FIRST token of func_args_decl; no expression
+           can precede it at that position.  The colon after ident_name distinguishes
+           it from push_forward_stmt (which has an expression on the LEFT of "~>").
 
            push_forward_stmt (Role B) and push_stream_bind (Role C) are disambiguated
            by the token AFTER "~>":
-             V13_NL | V13_EOF after "~>"  →  push_forward_stmt
+             V17_NL | V17_EOF after "~>"  →  push_forward_stmt
              anything else after "~>"     →  push_stream_bind
 
            assign_push vs push_forward_stmt:
-             Both are "func_stmt ~>" with no RHS.  The distinction is semantic:
+             Both are "collection ~>" with no RHS.  The distinction is semantic:
              assign_push is the RHS of an assignment and creates a cold source;
              push_forward_stmt is a standalone statement in a handler body.
              The parser uses the same production; the compiler resolves context.
@@ -314,25 +484,33 @@
 
    13.7.1  SINK CONTEXT (primary push handling)
 
-         A push source connects to a handler func_unit.  Inside the func_unit
-         header, "~> item: @T" declares the receive variable (Role A).
-         Inside the body, "result ~>" emits to the next downstream stage (Role B).
+         Two forms exist for receiving items inside a func_unit bound to a
+         collection via "~>".  The type annotation is always required.
 
-         Simple push sink — type inferred from source:
+         Simple push sink — value form (handler called once per pushed item):
 
            any_collection ~> (
-               ~> item: @my_type        (* Role A: receive declaration in header *)
-               (* process item *)
+               -> value: @my_type       (* value form: typed item; handler called once per item *)
+               (* Do Stuff with value *)
+           )
+
+         Simple push sink — push stream form (raw push stream received, bound manually):
+
+           any_collection ~> (
+               ~> The_push_stream_itself: @my_type   (* push stream declared in func_unit header *)
+               The_push_stream_itself ~> (
+                   (* Do Stuff with value *)
+               )
            )
 
          A push sink that re-emits transformed items downstream (transformer):
 
            any_collection ~> (
-               ~> item: @my_type        (* Role A: receive *)
+               -> item: @my_type        (* value form: receive typed item *)
                transformed = item       (* process *)
                transformed ~>           (* Role B: push result to next stage *)
            ) ~> (
-               ~> out: @my_type         (* Role A: next stage receives *)
+               -> out: @my_type         (* value form: next stage receives *)
                (* final processing *)
            )
 
@@ -350,13 +528,12 @@
 
    13.7.2  FUNCTION CONTEXT
 
-         func_stream_args in the push model declares the receive parameter with
-         "~>" (Role A) instead of ">>".  When called via a push binding the
-         function is re-invoked for each pushed item; the call is initiated by
-         the PRODUCER:
+         A named function receives pushed items using the value form
+         ( -> arg: @T ).  The function is re-invoked once per item;
+         the push plumbing is completely invisible:
 
            process_event: <- (
-               ~> event: @event_type    (* Role A: typed receive parameter *)
+               -> event: @event_type    (* value form: typed receive parameter; called once per item *)
                (* handle event *)
            )
 
@@ -365,7 +542,7 @@
          A push function that also re-emits (transformer function):
 
            enrich_event: <- (
-               ~> event: @event_type
+               -> event: @event_type    (* value form: typed receive parameter *)
                enriched = event
                (* add fields to enriched *)
                enriched ~>              (* Role B: emit to next stage *)
@@ -373,7 +550,7 @@
 
            event_source ~> enrich_event ~> store_event
 
-         Type compatibility between the source element type and the "~>"
+         Type compatibility between the source element type and the declared
          parameter type is a compile-time error if violated.
 
    13.7.3  ASSIGNMENT CONTEXT (cold push source)
@@ -523,11 +700,11 @@
 
            event_ticker = true ~>       (* cold infinite generator *)
            event_ticker ~> (
-               ~> tick: @tick_type      (* Role A: receive "tick" trigger *)
+               -> tick: @tick_type      (* value form: typed trigger; handler called once per tick *)
                ev = tick_type {}        (* create new event from tick *)
                ev ~>                    (* Role B: emit event to next stage *)
            ) ~> (
-               ~> ev: @event_type       (* Role A: receive generated event *)
+               -> ev: @event_type       (* value form: receive generated event *)
                (* consume event *)
            )
 
@@ -575,11 +752,9 @@
            Pull ~> Push conversion (pull pipeline terminates in a push emit):
 
              items >> (
-                 >> rec: @item_type
-                 rec.ok && (
-                     transformed = rec.data
-                     transformed ~>           (* Role B: emit into push subscribers *)
-                 )
+                 -> value: @item_type         (* value form — called once per element *)
+                 transformed = value          (* transform *)
+                 transformed ~>               (* Role B: emit into push subscribers *)
              )
 
            Push ~> Pull conversion (push feeds lazy pull iteration):
@@ -596,71 +771,81 @@
                         ticks, database change feeds, fan-out / broadcast.
 
 
-   13.13 Required Changes in 06_functions.sqg
+   13.13 Validation of 06_functions.sqg
 
-         The following edits to 06_functions.sqg are needed once this
-         specification is ratified:
+         The following items validate the current state of 06_functions.sqg
+         against the requirements of this specification:
 
-         1. Add the new terminal operator rules:
-              push_oper         = "~>" ;
-              push_recv_decl    = push_oper ident_name ":" inspect_type ;
-              push_source       = array_final | func_range_args | boolean_true
-                                | ident_ref   | func_call_final ;
-              push_forward_stmt = func_stmt push_oper ;
-              push_stream_bind  = push_source push_oper ( func_unit | func_call )
-                                  { push_oper ( func_unit | func_call ) } ;
-              assign_push       = push_source push_oper EOL ;
+         1. push_oper = "~>" is already defined in 06_functions.sqg. ✓
 
-         2. Extend func_body_stmt via MERGE:
-              MERGE<func_body_stmt> = | push_forward_stmt | push_stream_bind ;
+         2. push_loop = collection push_oper ( func_unit | func_call ) is already
+            in 06_functions.sqg and already uses "collection" as the source. ✓
 
-         3. Extend func_unit_header via MERGE:
-              MERGE<func_unit_header> = push_recv_decl ;
+         3. func_body_stmt in 06_functions.sqg:
+              Current (correct):
+                func_body_stmt = assignment | statement | iterator_loop | push_loop |
+                                 func_return_stmt | func_store_stmt ;
+            push_forward_stmt and push_stream_bind are NOT in func_body_stmt by default ✓;
+            they are added via MERGE<func_body_stmt> from this file (Section 13.6).
+
+         4. func_args_decl in 06_functions.sqg:
+              Current (correct):
+                func_args_decl = [ func_args ] [ func_deps ];
+            push_recv_decl is NOT included here ✓; it is added via MERGE<func_args_decl>
+            from this file (Section 13.6).
+
+         5. Note: "func_unit_header" does NOT exist as a named rule in 06_functions.sqg.
+            The correct MERGE target for push_recv_decl is func_args_decl — see Section 13.6.
+
+         6. The comment block in 06_functions.sqg already documents:
+              (* push_recv_decl, push_forward_stmt, push_stream_bind, assign_push —
+                 canonical definitions in spec/13_push_pull.sqg Section 13.6;
+                 added to func_args_decl / func_body_stmt via MERGE from that file *)
+            ✓ Consistent with this specification.
 
 
    13.14 Implementation Plan
 
-   (* TODO — work items in execution order:
-      1.  Add V13_PUSH ("~>") token to the V13 lexer (parser_v13.go):
-            In case '~': add ch2 == '>' branch before the V13_TILDE fallthrough.
+   (* Completed work items (corresponding to the V17 parser):
+      1.  V17_TILDE_GT ("~>") token added to the V17 lexer (parser_v17.go):
+            case '~': if next == '>' → emit V17_TILDE_GT; else → emit V17_ILLEGAL.
+            "~" alone is ILLEGAL in Squeeze.
 
-      2.  Add push AST nodes to parser_v13_functions.go:
-            V13PushOperNode      {}                                  (* token only *)
-            V13PushRecvDeclNode  { Name string; Type *V13InspectTypeNode }
-            V13PushSourceNode    { Value V13Node }
-            V13PushForwardStmtNode { Stmt *V13FuncStmtNode }
-            V13PushStreamBindNode  { Source *V13PushSourceNode
-                                     Stages []V13Node }             (* func_unit | func_call *)
-            V13AssignPushNode    { Source *V13PushSourceNode }
+      2.  V17PushOperNode / ParsePushOper implemented in parser_v17_functions.go.
 
-      3.  Write ParsePushSource (mirrors ParseIteratorSource exactly).
+      3.  V17PushLoopNode / ParsePushLoop implemented in parser_v17_functions.go.
+            Uses ParseCollection (range | array_final) as the push source.
+            Wired into ParseFuncBodyStmt.
 
-      4.  Write ParsePushRecvDecl:
-            expect V13_PUSH; expect IDENT (name); expect COLON; parse inspect_type.
+      4.  ParseFuncCallChain already handles "~>" as a chain operator (alongside
+            "->" and ">>") — no extra work needed for function chaining.
+   *)
 
-      5.  Write ParsePushForwardStmt:
-            parse func_stmt; expect V13_PUSH; expect NL.
-            NOTE: shares the same "func_stmt ~>" surface form as ParseAssignPush;
-            compiler resolves which applies by context (assignment RHS vs. body stmt).
+   (* TODO — remaining work items:
+      5.  Write ParsePushRecvDecl in parser_v17_functions.go:
+            MERGE contribution for func_args_decl (Role A).
+            expect V17_TILDE_GT; expect IDENT (name); expect COLON; parse inspect_type.
+            Wire into ParseFuncArgsDecl alongside ParseIteratorRecvDecl.
 
-      6.  Write ParsePushStreamBind:
-            parse push_source; expect V13_PUSH;
+      6.  Write ParsePushForwardStmt in parser_v17_functions.go:
+            MERGE contribution for func_body_stmt (Role B).
+            parse func_stmt; expect V17_TILDE_GT; peek-ahead: NL/EOF → succeed.
+            NOTE: shares the same "stmt ~>" surface form as assign_push;
+            compiler resolves context (assignment RHS vs. standalone body stmt).
+
+      7.  Write ParsePushStreamBind in parser_v17_functions.go:
+            MERGE contribution for func_body_stmt (Role C chained form).
+            parse collection; expect V17_TILDE_GT;
             loop: parse func_unit or func_call as one stage;
-              while current token is V13_PUSH: expect V13_PUSH, parse next stage.
+              while current token is V17_TILDE_GT: advance, parse next stage.
 
-      7.  Update ParseFuncBodyStmt to handle push:
-            • current token is V13_PUSH                       → ParsePushRecvDecl
-              (ERROR: recv decl belongs in header, not body;
-               emit a descriptive compile error here)
-            • current token is push_source starter AND peek is V13_PUSH:
-                peek+1 is V13_NL | V13_EOF                    → ParsePushForwardStmt
-                otherwise                                     → ParsePushStreamBind
+      8.  Update ParseFuncArgsDecl to try ParsePushRecvDecl alongside
+            ParseIteratorRecvDecl (both are MERGE<func_args_decl> contributions).
 
-      8.  Update ParseFuncUnitHeader:
-            After existing ArgsDecl attempt, if current token is V13_PUSH
-            → ParsePushRecvDecl and store on the header node.
-
-      9.  Apply all three edits listed in Section 13.13 to 06_functions.sqg.
+      9.  Update ParseFuncBodyStmt to include push_forward_stmt and
+            push_stream_bind (MERGE<func_body_stmt> contributions).
+            Ordering: push_forward_stmt (postfix ~> + NL) BEFORE push_stream_bind
+            to avoid greedy collection parse consuming the source of a forward stmt.
 
       10. Write pkg/lib/push.sqz:
               push_record type (index: integer, data: @?)
@@ -669,10 +854,10 @@
       11. Update docs/AST_spec.md with all new push nodes.
 
       12. Write spec_test cases covering:
-              (a) lex: "~>" produces V13_PUSH, "~" still produces V13_TILDE
-              (b) ParsePushRecvDecl
-              (c) ParsePushForwardStmt
-              (d) ParsePushStreamBind: single stage, chained stages
-              (e) ParseAssignPush (cold source assignment)
+              (a) lex: "~>" produces V17_TILDE_GT; "~" alone produces V17_ILLEGAL
+              (b) ParsePushRecvDecl: "~> item: @T" succeeds; "~> item @T" (no colon) fails
+              (c) ParsePushForwardStmt: "value ~>" + NL succeeds; "value ~> handler" fails
+              (d) ParsePushStreamBind: single stage, chained "~> f1 ~> f2" stages
+              (e) ParseAssignPush (cold source: "my_source ~>" + EOL)
    *)
 *)

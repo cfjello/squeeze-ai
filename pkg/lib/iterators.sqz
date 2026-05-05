@@ -1,6 +1,6 @@
 
 (* ============================================================
-   iterators.sqz  —  Iterator standard library
+   iterators.sqz  â€”  Iterator standard library
    Spec: spec/12_iterators.sqg
    ============================================================
 
@@ -10,7 +10,7 @@
    The "data" field is typed @? here as a codegen PLACEHOLDER.
    The code generator MUST substitute the concrete element type
    before iterator creation (see spec Section 12.3.3).
-   At runtime "data" is NEVER bare @? — it is always a concrete
+   At runtime "data" is NEVER bare @? â€” it is always a concrete
    type or interface{}.
 *)
 
@@ -27,18 +27,18 @@ iterator_record: {
 }
 
 (*
-   iterator scope — public API for iterator instances.
+   iterator scope â€” public API for iterator instances.
    The compiler creates one instance per iterator_source binding.
 
    Fields:
-     ref_count   — reference count for shared iterators (ATOMIC_INC/DEC)
-     channel_cap — buffered-channel capacity; 0 = unbuffered (default).
+     ref_count   â€” reference count for shared iterators (ATOMIC_INC/DEC)
+     channel_cap â€” buffered-channel capacity; 0 = unbuffered (default).
                    Set by the Performance Monitor via set_channel_cap.
 
    Methods:
-     next        — advance the iterator; returns updated iterator_record
-     close       — decrement ref_count; close source channel when it hits 0
-     set_channel_cap — Performance Monitor hook to resize the prefetch channel
+     next        â€” advance the iterator; returns updated iterator_record
+     close       â€” decrement ref_count; close source channel when it hits 0
+     set_channel_cap â€” Performance Monitor hook to resize the prefetch channel
 *)
 
 iterators: {
@@ -56,27 +56,27 @@ iterators: {
        For synchronous sources (array_final, func_range_args) returns the
        next element immediately.
        For async sources wrapped in ITER_CHAN, receives from the channel
-       (blocks only when the buffer is empty — back-pressure from producer).
+       (blocks only when the buffer is empty â€” back-pressure from producer).
        When the source is exhausted, returns iterator_record with ok = false. *)
-    (it : @iterators) next: <- (
-        <- ITER_NEXT<it>
+    (it : iterators.@type) next: <- (
+        <- __ps_proxy ITER_NEXT <it>
     )
 
     (* Decrement ref_count.  When ref_count reaches 0 and the source is
        not already exhausted, drain and close the underlying channel. *)
-    (it = @iterators) close: <- (
-        ATOMIC_DEC<it.ref_count>
-        ( it.ref_count == 0 ) & ITER_CLOSE<it>
+    (it = iterators.@type) close: <- (
+        __ps_proxy ATOMIC_DEC <it.ref_count>
+        ( it.ref_count == 0 ) & __ps_proxy ITER_CLOSE <it>
     )
 
     (* Performance Monitor hook.
        cap = 0  ->  unbuffered (Go chan with buffer size 1)
        cap > 0  ->  buffered prefetch channel of given capacity
        Transparent to user code; called reactively after metric observation. *)
-    (it = @iterators) set_channel_cap: <- (
+    (it = iterators.@type) set_channel_cap: <- (
         -> cap: integer
         it.channel_cap = cap
-        ITER_RESIZE<it, cap>
+        __ps_proxy ITER_RESIZE <it, cap>
     )
 
 }

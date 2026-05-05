@@ -1,30 +1,30 @@
 (* ============================================================
-   pkg/lib/logger.sqz  —  Async structured logger
+   pkg/lib/logger.sqz  â€”  Async structured logger
 
    Three types are defined here:
 
-     log_target  — one output destination (stdout / file / http)
-     log_entry   — a single structured log record
-     logger      — multi-target logger with async dispatch queue
+     log_target  â€” one output destination (stdout / file / http)
+     log_entry   â€” a single structured log record
+     logger      â€” multi-target logger with async dispatch queue
 
    Go codegen mappings (uppercase = codegen intrinsics):
-     NOW_ISO8601               → time.Now().UTC().Format(time.RFC3339Nano)
-     FILE_SINK<path,fmt,...>   → lumberjack.Logger wrapped in slog.Handler
+     NOW_ISO8601               â†’ time.Now().UTC().Format(time.RFC3339Nano)
+     FILE_SINK<path,fmt,...>   â†’ lumberjack.Logger wrapped in slog.Handler
                                   (file rotation controlled by max_size_mb /
                                    max_age_days / max_backups)
-     HTTP_SINK<url,fmt,...>    → buffered chan + goroutine; accumulates entries
+     HTTP_SINK<url,fmt,...>    â†’ buffered chan + goroutine; accumulates entries
                                   up to batch_size then HTTP POST as JSON array
                                   to url with optional Authorization header;
                                   per-request deadline = timeout_ms
-     STDOUT_SINK<fmt>          → slog.NewTextHandler(os.Stdout) when fmt="text"
+     STDOUT_SINK<fmt>          â†’ slog.NewTextHandler(os.Stdout) when fmt="text"
                                   slog.NewJSONHandler(os.Stdout) when fmt="json"
-     SINK_FLUSH<tgt>           → write sentinel to target chan, block until the
+     SINK_FLUSH<tgt>           â†’ write sentinel to target chan, block until the
                                   worker goroutine acknowledges drain via done chan
    ============================================================ *)
 
 
 (* ============================================================
-   log_target  —  one output destination
+   log_target  â€”  one output destination
    ============================================================ *)
 
 log_target, lt: {
@@ -38,30 +38,30 @@ log_target, lt: {
     kind,   k   : "stdout"  (* "stdout" | "file" | "http" *)
     format, fmt : "json"    (* "json" | "text" *)
 
-    (* file target — Go: lumberjack.Logger *)
+    (* file target â€” Go: lumberjack.Logger *)
     path         : ""       (* output file path; required when kind = "file" *)
     max_size_mb  : 100      (* rotate after N MiB *)
     max_age_days : 7        (* delete rotated files older than N days *)
     max_backups  : 5        (* keep at most N rotated backup files *)
 
-    (* http(s) target — Go: buffered chan + http.Client goroutine *)
+    (* http(s) target â€” Go: buffered chan + http.Client goroutine *)
     url          : ""       (* https://host/path endpoint; required when kind = "http" *)
     timeout_ms   : 5000     (* per-request timeout in milliseconds *)
     batch_size   : 100      (* flush when queue reaches N entries *)
-    auth_header  : ""       (* "Bearer <token>" — empty = no auth *)
+    auth_header  : ""       (* "Bearer <token>" â€” empty = no auth *)
 
     - init: <- (
-        -> k:   §string_quoted,
-           fmt: §string_quoted,
-           p:   §string_quoted,
-           u:   §string_quoted
+        -> k:   Â§string_quoted,
+           fmt: Â§string_quoted,
+           p:   Â§string_quoted,
+           u:   Â§string_quoted
         k   >< ["stdout", "file", "http"]           (* kind must be one of the three targets *)
         fmt >< ["json", "text"]                     (* format must be json or text *)
         k == "file" & p != ""                       (* file target requires a path *)
         k == "http" & u ~ /^https?:\/\//            (* http target requires a valid url *)
         <- [
-            names:        LHS_CALLER<§assign_lhs.ident_name>,
-            card:         LHS_CALLER<§assign_lhs.cardinality>,
+            names:        __ps_call LHS Â§assign_lhs.ident_name,
+            card:         __ps_call LHS Â§assign_lhs.cardinality,
             type:         $,
             kind:         k,
             format:       fmt,
@@ -78,8 +78,8 @@ log_target, lt: {
 
     (* Return a copy with file rotation parameters overridden.
        Go: reconfigure the lumberjack.Logger bound to this target. *)
-    (lt : @log_target) with_rotation: <- (
-        -> size_mb: §integer, age_days: §integer, backups: §integer
+    (lt : log_target.@type) with_rotation: <- (
+        -> size_mb: Â§integer, age_days: Â§integer, backups: Â§integer
         <- [
             type:         $,
             kind:         lt.kind,
@@ -97,8 +97,8 @@ log_target, lt: {
 
     (* Return a copy with HTTP delivery parameters overridden.
        Go: reconfigure the http.Client and batcher goroutine for this target. *)
-    (lt : @log_target) with_http_opts: <- (
-        -> timeout: §integer, batch: §integer, auth: §string_quoted
+    (lt : log_target.@type) with_http_opts: <- (
+        -> timeout: Â§integer, batch: Â§integer, auth: Â§string_quoted
         <- [
             type:         $,
             kind:         lt.kind,
@@ -117,7 +117,7 @@ log_target, lt: {
 
 
 (* ============================================================
-   log_entry  —  one structured log record
+   log_entry  â€”  one structured log record
    ============================================================ *)
 
 log_entry, le: {
@@ -130,23 +130,23 @@ log_entry, le: {
 
     level,     lvl : "info"  (* "debug" | "info" | "warn" | "error" *)
     message,   msg : ""
-    timestamp, ts  : ""      (* ISO-8601; injected at init time — see NOW_ISO8601 above *)
-    fields,    fld : {}      (* arbitrary key-value context — Go: []slog.Attr *)
-    error_ref, er  : @?      (* optional attached @error_event *)
+    timestamp, ts  : ""      (* ISO-8601; injected at init time â€” see NOW_ISO8601 above *)
+    fields,    fld : {}      (* arbitrary key-value context â€” Go: []slog.Attr *)
+    error_ref, er  : @?      (* optional attached error_event.@type *)
 
     - init: <- (
-        -> lvl: §string_quoted,
-           msg: §string_quoted,
-           fld: §object_final,
-           er:  §any_type
+        -> lvl: Â§string_quoted,
+           msg: Â§string_quoted,
+           fld: Â§object_final,
+           er:  Â§any_type
         lvl >< ["debug", "info", "warn", "error"]
         <- [
-            names:     LHS_CALLER<§assign_lhs.ident_name>,
-            card:      LHS_CALLER<§assign_lhs.cardinality>,
+            names:     __ps_call LHS Â§assign_lhs.ident_name,
+            card:      __ps_call LHS Â§assign_lhs.cardinality,
             type:      $,
             level:     lvl,
             message:   msg,
-            timestamp: NOW_ISO8601,
+            timestamp: __ps_proxy NOW_ISO8601,
             fields:    fld,
             error_ref: er
         ]
@@ -155,15 +155,15 @@ log_entry, le: {
 
 
 (* ============================================================
-   logger  —  async multi-target structured logger
+   logger  â€”  async multi-target structured logger
 
    Async model (Go codegen):
      - Each log_target gets a dedicated buffered channel (size = queue_cap).
      - A worker goroutine per target drains the channel:
-         file   → slog writes via lumberjack.Logger (handles rotation)
-         http   → accumulates entries; HTTP POST when batch_size reached
+         file   â†’ slog writes via lumberjack.Logger (handles rotation)
+         http   â†’ accumulates entries; HTTP POST when batch_size reached
                   or a flush sentinel is received
-         stdout → slog writes to os.Stdout
+         stdout â†’ slog writes to os.Stdout
      - Callers NEVER block: entries are silently dropped on full channel.
      - flush() sends a sentinel and blocks until the worker acknowledges.
    ============================================================ *)
@@ -177,15 +177,15 @@ logger, log: {
     )
 
     min_level, lvl : "info"  (* minimum level to emit: "debug" | "info" | "warn" | "error" *)
-    targets,   tgts: []      (* @log_target[] — registered output targets *)
-    queue_cap       : 4096   (* Go: buffered chan capacity per target — never blocks caller *)
+    targets,   tgts: []      (* log_target.@type[] â€” registered output targets *)
+    queue_cap       : 4096   (* Go: buffered chan capacity per target â€” never blocks caller *)
 
     - init: <- (
-        -> lvl: §string_quoted
+        -> lvl: Â§string_quoted
         lvl >< ["debug", "info", "warn", "error"]
         <- [
-            names:     LHS_CALLER<§assign_lhs.ident_name>,
-            card:      LHS_CALLER<§assign_lhs.cardinality>,
+            names:     __ps_call LHS Â§assign_lhs.ident_name,
+            card:      __ps_call LHS Â§assign_lhs.cardinality,
             type:      $,
             min_level: lvl,
             targets:   [],
@@ -194,22 +194,22 @@ logger, log: {
     )
 
     (* Return a new logger with the given target appended.
-       Immutable update — original logger is unchanged.
+       Immutable update â€” original logger is unchanged.
        Go: launch a worker goroutine for the new target channel. *)
-    (l : @logger) add_target: <- (
-        -> tgt: @log_target
+    (l : logger.@type) add_target: <- (
+        -> tgt: log_target.@type
         <- [ type: $, min_level: l.min_level, targets: l.targets + [tgt], queue_cap: l.queue_cap ]
     )
 
-    (* Internal — dispatch entry to all registered targets asynchronously.
+    (* Internal â€” dispatch entry to all registered targets asynchronously.
        Go: non-blocking send on each target's buffered chan; drop silently on full. *)
-    (l : @logger) _emit: <- (
-        -> entry: @log_entry
+    (l : logger.@type) _emit: <- (
+        -> entry: log_entry.@type
         l.targets >> tgt (
             tgt.next & (
-                tgt.kind == "file"   & entry >> FILE_SINK<tgt.path,   tgt.format, tgt.max_size_mb, tgt.max_age_days, tgt.max_backups>
-                tgt.kind == "http"   & entry >> HTTP_SINK<tgt.url,    tgt.format, tgt.timeout_ms,  tgt.batch_size,   tgt.auth_header>
-                tgt.kind == "stdout" & entry >> STDOUT_SINK<tgt.format>
+                tgt.kind == "file"   & entry >> __ps_proxy FILE_SINK <tgt.path,   tgt.format, tgt.max_size_mb, tgt.max_age_days, tgt.max_backups>
+                tgt.kind == "http"   & entry >> __ps_proxy HTTP_SINK <tgt.url,    tgt.format, tgt.timeout_ms,  tgt.batch_size,   tgt.auth_header>
+                tgt.kind == "stdout" & entry >> __ps_proxy STDOUT_SINK <tgt.format>
             )
         )
     )
@@ -217,8 +217,8 @@ logger, log: {
     (* Log at an explicit level with structured fields.
        The entry is level-gated against min_level before _emit is called.
        Level ordering: debug < info < warn < error. *)
-    (l : @logger) log: <- (
-        -> lvl: §string_quoted, msg: §string_quoted, fld: §object_final
+    (l : logger.@type) log: <- (
+        -> lvl: Â§string_quoted, msg: Â§string_quoted, fld: Â§object_final
         lvl >< ["debug", "info", "warn", "error"]
         entry: log_entry[ lvl, msg, fld, @? ]
         level_pass: (
@@ -230,35 +230,35 @@ logger, log: {
         level_pass & l._emit[ entry ]
     )
 
-    (* Convenience shorthand — delegates to log *)
+    (* Convenience shorthand â€” delegates to log *)
 
-    (l : @logger) debug: <- (
-        -> msg: §string_quoted, fld: §object_final
+    (l : logger.@type) debug: <- (
+        -> msg: Â§string_quoted, fld: Â§object_final
         l.log[ "debug", msg, fld ]
     )
 
-    (l : @logger) info: <- (
-        -> msg: §string_quoted, fld: §object_final
+    (l : logger.@type) info: <- (
+        -> msg: Â§string_quoted, fld: Â§object_final
         l.log[ "info", msg, fld ]
     )
 
-    (l : @logger) warn: <- (
-        -> msg: §string_quoted, fld: §object_final
+    (l : logger.@type) warn: <- (
+        -> msg: Â§string_quoted, fld: Â§object_final
         l.log[ "warn", msg, fld ]
     )
 
-    (* error variant also accepts an optional @error_event for structured capture *)
-    (l : @logger) error: <- (
-        -> msg: §string_quoted, fld: §object_final, er: @error_event
+    (* error variant also accepts an optional error_event.@type for structured capture *)
+    (l : logger.@type) error: <- (
+        -> msg: Â§string_quoted, fld: Â§object_final, er: error_event.@type
         entry: log_entry[ "error", msg, fld, er ]
         l._emit[ entry ]
     )
 
-    (* Flush — drain all target queues synchronously.
+    (* Flush â€” drain all target queues synchronously.
        Go: write sentinel on each chan, block until worker ACK via done chan. *)
-    (l : @logger) flush: <- (
+    (l : logger.@type) flush: <- (
         l.targets >> tgt (
-            tgt.next & SINK_FLUSH<tgt>
+            tgt.next & __ps_proxy SINK_FLUSH <tgt>
         )
     )
 }

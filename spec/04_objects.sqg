@@ -49,16 +49,15 @@ array_lookup         = TYPE_OF array_final<ident_ref> array_begin lookup_idx_exp
 ------------------------------------------------------------ *)
 
 object_init          =  array_begin 
-                            UNIFORM INFER< assignment { "," assignment }>
+                            assignment { "," assignment }
                             [","]  
                         array_end; 
 
 object_merge_tail    = "+" ( TYPE_OF object_init<ident_ref> | object_init )  { "+" ( TYPE_OF object_init<ident_ref> | object_init ) };
 object_omit_tail     = "-" (ident_name | lookup_idx_expr) { "," (ident_name | lookup_idx_expr) }; 
 
-object_merge_or_omit = UNIFORM INFER<
-    ( TYPE_OF object_init<ident_ref> | object_init )
-    ( object_merge_tail | object_omit_tail ) >;
+object_merge_or_omit = ( TYPE_OF object_init<ident_ref> | object_init )
+    ( object_merge_tail | object_omit_tail );
 
 object_final   = object_init | object_merge_or_omit | empty_array_typed;
 

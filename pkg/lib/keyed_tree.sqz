@@ -2,9 +2,9 @@
    pkg/lib/keyed_tree.sqz  --  Squeeze V13 Keyed Tree Type
    ============================================================
 
-   Defines the @keyed_tree type and its methods.
+   Defines the keyed_tree.@type type and its methods.
    A keyed_tree is a general tree where every node carries a
-   globally-unique key (§unique_key) in addition to its value.
+   globally-unique key (Â§unique_key) in addition to its value.
    Nodes are directly addressable by key, enabling efficient
    point access, parent lookup, subtree merging, and targeted
    child insertion.
@@ -21,23 +21,23 @@
    here do not re-validate it but rely on the runtime contract.
 
    Intrinsics used (UPPERCASE builtins):
-     TREE_NODE_COUNT<t>              — total number of nodes
-     TREE_DEPTH<t>                   — max depth from root to leaf
-     TREE_ROOT_VALUE<t>              — value at the root node
-     TREE_CHILDREN_COUNT<t>          — direct root child count
-     TREE_DFS<t>                     — @array of values in DFS pre-order
-     TREE_BFS<t>                     — @array of values in BFS level-order
-     TREE_TO_JSON<t>                 — JSON representation
-     TREE_TO_STRING<t>               — indented text representation
-     TREE_GET_NODE<t, key>           — full node record for key, or null
-     TREE_GET_KEYS<t>                — @array of every key in the tree (DFS)
-     TREE_PARENT_KEY<t, key>         — key of parent node, or null if root
-     TREE_WITH_CHILD_OF<t, pkey, n>  — new tree: node n inserted under pkey
-     TREE_WITHOUT_KEY<t, key>        — new tree: node (and subtree) removed
-     TREE_MERGE<t, other>            — new tree: other's root grafted as child
+     TREE_NODE_COUNT<t>              â€” total number of nodes
+     TREE_DEPTH<t>                   â€” max depth from root to leaf
+     TREE_ROOT_VALUE<t>              â€” value at the root node
+     TREE_CHILDREN_COUNT<t>          â€” direct root child count
+     TREE_DFS<t>                     â€” array.@type of values in DFS pre-order
+     TREE_BFS<t>                     â€” array.@type of values in BFS level-order
+     TREE_TO_JSON<t>                 â€” JSON representation
+     TREE_TO_STRING<t>               â€” indented text representation
+     TREE_GET_NODE<t, key>           â€” full node record for key, or null
+     TREE_GET_KEYS<t>                â€” array.@type of every key in the tree (DFS)
+     TREE_PARENT_KEY<t, key>         â€” key of parent node, or null if root
+     TREE_WITH_CHILD_OF<t, pkey, n>  â€” new tree: node n inserted under pkey
+     TREE_WITHOUT_KEY<t, key>        â€” new tree: node (and subtree) removed
+     TREE_MERGE<t, other>            â€” new tree: other's root grafted as child
    *)
 
-(col : @std.collections)  keyed_tree, keyed_tree_final: {
+(col : std.collections.type.@type)  keyed_tree, keyed_tree_final: {
     names, n, 1..m: ["keyed_tree", "keyed_tree_final"]
     map:     col.map
     filter:  col.filter
@@ -52,9 +52,9 @@
         ver,   v:       "v0.0"
 
         init: <- (
-            -> raw: §keyed_tree_final
-            <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
-                 card:  LHS_CALLER<§assign_lhs.cardinality>,
+            -> raw: Â§keyed_tree_final
+            <- [ names: __ps_call LHS Â§assign_lhs.ident_name,
+                 card:  __ps_call LHS Â§assign_lhs.cardinality,
                  type:  $,
                  data:  raw ]
         )
@@ -65,34 +65,34 @@
        Structural inspection
        --------------------------------------------------------------- *)
 
-    (* node_count — total number of nodes in the tree. *)
-    (t : @keyed_tree) node_count: <- (
-        <- TREE_NODE_COUNT<t>
+    (* node_count â€” total number of nodes in the tree. *)
+    (t : keyed_tree.@type) node_count: <- (
+        <- __ps_proxy TREE_NODE_COUNT <t>
     )
 
-    (* depth — maximum depth from root to any leaf.  Root alone = 1. *)
-    (t : @keyed_tree) depth: <- (
-        <- TREE_DEPTH<t>
+    (* depth â€” maximum depth from root to any leaf.  Root alone = 1. *)
+    (t : keyed_tree.@type) depth: <- (
+        <- __ps_proxy TREE_DEPTH <t>
     )
 
-    (* is_empty — true when the tree has no root node. *)
-    (t : @keyed_tree) is_empty: <- (
+    (* is_empty â€” true when the tree has no root node. *)
+    (t : keyed_tree.@type) is_empty: <- (
         <- t.data.root == null
     )
 
-    (* root_value — the value at the root node. *)
-    (t : @keyed_tree) root_value: <- (
-        <- TREE_ROOT_VALUE<t>
+    (* root_value â€” the value at the root node. *)
+    (t : keyed_tree.@type) root_value: <- (
+        <- __ps_proxy TREE_ROOT_VALUE <t>
     )
 
-    (* children_count — number of direct children of the root node. *)
-    (t : @keyed_tree) children_count: <- (
-        <- TREE_CHILDREN_COUNT<t>
+    (* children_count â€” number of direct children of the root node. *)
+    (t : keyed_tree.@type) children_count: <- (
+        <- __ps_proxy TREE_CHILDREN_COUNT <t>
     )
 
-    (* is_leaf — true when the root has no children. *)
-    (t : @keyed_tree) is_leaf: <- (
-        <- TREE_CHILDREN_COUNT<t> == 0
+    (* is_leaf â€” true when the root has no children. *)
+    (t : keyed_tree.@type) is_leaf: <- (
+        <- __ps_proxy TREE_CHILDREN_COUNT <t> == 0
     )
 
 
@@ -100,14 +100,14 @@
        Traversal
        --------------------------------------------------------------- *)
 
-    (* to_depth_first — @array of node values in DFS pre-order. *)
-    (t : @keyed_tree) to_depth_first: <- (
-        <- [ type: $, data: TREE_DFS<t> ]
+    (* to_depth_first â€” array.@type of node values in DFS pre-order. *)
+    (t : keyed_tree.@type) to_depth_first: <- (
+        <- [ type: $, data: __ps_proxy TREE_DFS <t> ]
     )
 
-    (* to_breadth_first — @array of node values in BFS level-order. *)
-    (t : @keyed_tree) to_breadth_first: <- (
-        <- [ type: $, data: TREE_BFS<t> ]
+    (* to_breadth_first â€” array.@type of node values in BFS level-order. *)
+    (t : keyed_tree.@type) to_breadth_first: <- (
+        <- [ type: $, data: __ps_proxy TREE_BFS <t> ]
     )
 
 
@@ -115,36 +115,36 @@
        Key-addressed access
        --------------------------------------------------------------- *)
 
-    (* contains_key — true if any node in the tree carries key. *)
-    (t : @keyed_tree) contains_key: <- (
+    (* contains_key â€” true if any node in the tree carries key. *)
+    (t : keyed_tree.@type) contains_key: <- (
         -> key: @?
-        <- TREE_GET_NODE<t, key> != null
+        <- __ps_proxy TREE_GET_NODE <t, key> != null
     )
 
-    (* get_node — full node record { key, value, children } for key,
+    (* get_node â€” full node record { key, value, children } for key,
        or null when not found. *)
-    (t : @keyed_tree) get_node: <- (
+    (t : keyed_tree.@type) get_node: <- (
         -> key: @?
-        <- TREE_GET_NODE<t, key>
+        <- __ps_proxy TREE_GET_NODE <t, key>
     )
 
-    (* get_value — value field of the node identified by key, or null. *)
-    (t : @keyed_tree) get_value: <- (
+    (* get_value â€” value field of the node identified by key, or null. *)
+    (t : keyed_tree.@type) get_value: <- (
         -> key: @?
-        node = TREE_GET_NODE<t, key>
+        node = __ps_proxy TREE_GET_NODE <t, key>
         <- ( node == null ) & null ^ node.value
     )
 
-    (* get_keys — @array of every key present in the tree (DFS order). *)
-    (t : @keyed_tree) get_keys: <- (
-        <- [ type: $, data: TREE_GET_KEYS<t> ]
+    (* get_keys â€” array.@type of every key present in the tree (DFS order). *)
+    (t : keyed_tree.@type) get_keys: <- (
+        <- [ type: $, data: __ps_proxy TREE_GET_KEYS <t> ]
     )
 
-    (* parent_key — unique_key of the parent of the node identified by key.
+    (* parent_key â€” unique_key of the parent of the node identified by key.
        Returns null when key is the root or is not found. *)
-    (t : @keyed_tree) parent_key: <- (
+    (t : keyed_tree.@type) parent_key: <- (
         -> key: @?
-        <- TREE_PARENT_KEY<t, key>
+        <- __ps_proxy TREE_PARENT_KEY <t, key>
     )
 
 
@@ -152,35 +152,35 @@
        Functional mutation
        --------------------------------------------------------------- *)
 
-    (* with_child — new keyed_tree with node appended as a direct child
+    (* with_child â€” new keyed_tree with node appended as a direct child
        of the root.  node must carry a key not yet present in the tree. *)
-    (t : @keyed_tree) with_child: <- (
+    (t : keyed_tree.@type) with_child: <- (
         -> node: @?
-        <- [ type: $, data: TREE_WITH_CHILD_OF<t, t.data.root.key, node> ]
+        <- [ type: $, data: __ps_proxy TREE_WITH_CHILD_OF <t, t.data.root.key, node> ]
     )
 
-    (* with_child_of — new keyed_tree with node inserted as a direct child
+    (* with_child_of â€” new keyed_tree with node inserted as a direct child
        of the node identified by parent_key.
        node must carry a key not yet present in the tree. *)
-    (t : @keyed_tree) with_child_of: <- (
+    (t : keyed_tree.@type) with_child_of: <- (
         -> parent_key: @?
         -> node: @?
-        <- [ type: $, data: TREE_WITH_CHILD_OF<t, parent_key, node> ]
+        <- [ type: $, data: __ps_proxy TREE_WITH_CHILD_OF <t, parent_key, node> ]
     )
 
-    (* without_key — new keyed_tree with the node identified by key and its
+    (* without_key â€” new keyed_tree with the node identified by key and its
        entire subtree removed.  Returns the tree unchanged when key is absent. *)
-    (t : @keyed_tree) without_key: <- (
+    (t : keyed_tree.@type) without_key: <- (
         -> key: @?
-        <- [ type: $, data: TREE_WITHOUT_KEY<t, key> ]
+        <- [ type: $, data: __ps_proxy TREE_WITHOUT_KEY <t, key> ]
     )
 
-    (* merge — new keyed_tree with other's root grafted as a direct child
+    (* merge â€” new keyed_tree with other's root grafted as a direct child
        of this tree's root.  All keys across both trees must remain unique;
        the runtime raises an error on conflict. *)
-    (t : @keyed_tree) merge: <- (
-        -> other: @keyed_tree
-        <- [ type: $, data: TREE_MERGE<t, other> ]
+    (t : keyed_tree.@type) merge: <- (
+        -> other: keyed_tree.@type
+        <- [ type: $, data: __ps_proxy TREE_MERGE <t, other> ]
     )
 
 
@@ -188,14 +188,14 @@
        Conversion
        --------------------------------------------------------------- *)
 
-    (* to_json — JSON object representation of the full tree. *)
-    (t : @keyed_tree) to_json: <- (
-        <- TREE_TO_JSON<t>
+    (* to_json â€” JSON object representation of the full tree. *)
+    (t : keyed_tree.@type) to_json: <- (
+        <- __ps_proxy TREE_TO_JSON <t>
     )
 
-    (* to_string — indented text representation; children indented
+    (* to_string â€” indented text representation; children indented
        two spaces per level below their parent. *)
-    (t : @keyed_tree) to_string: <- (
-        <- TREE_TO_STRING<t>
+    (t : keyed_tree.@type) to_string: <- (
+        <- __ps_proxy TREE_TO_STRING <t>
     )
 }

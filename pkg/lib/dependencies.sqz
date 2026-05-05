@@ -1,37 +1,37 @@
 (* ============================================================
-   pkg/lib/dependencies.sqz  —  V13 Dependency Graph Runtime
+   pkg/lib/dependencies.sqz  â€”  V13 Dependency Graph Runtime
 
    Four types are defined here (in dependency order):
 
-     dep_version    — one immutable, UUIDv7-stamped snapshot of published data
-     dep_node       — named graph node: holds versions + dirty-detection state
-     dep_graph      — singleton runtime graph; all registered dep_node instances
-     dep_chain      — one UUIDv7-stamped execution chain instance
+     dep_version    â€” one immutable, UUIDv7-stamped snapshot of published data
+     dep_node       â€” named graph node: holds versions + dirty-detection state
+     dep_graph      â€” singleton runtime graph; all registered dep_node instances
+     dep_chain      â€” one UUIDv7-stamped execution chain instance
 
    Followed by the five public API functions (Section 15 of 11_dependencies.sqg):
      get_depends_on, set_depends_on, get_dependency_graph,
      set_static, update_dependency
 
    Go codegen mappings (uppercase = codegen intrinsics):
-     NEW_UUID_V7               → github.com/google/uuid v7 variant
+     NEW_UUID_V7               â†’ github.com/google/uuid v7 variant
                                   (uuid.New() with version field set to 7)
-     NOW_ISO8601               → time.Now().UTC().Format(time.RFC3339Nano)
-     TOPO_SORT<nodes,edges>    → Kahn's algorithm over adjacency list;
+     NOW_ISO8601               â†’ time.Now().UTC().Format(time.RFC3339Nano)
+     TOPO_SORT<nodes,edges>    â†’ Kahn's algorithm over adjacency list;
                                   returns []string in leaf-first order;
                                   returns error if cycle detected
-     ASYNC_CALL<fn, args>      → go func() { fn(args) }() wrapped in
+     ASYNC_CALL<fn, args>      â†’ go func() { fn(args) }() wrapped in
                                   sync.WaitGroup or errgroup.Group
-     AWAIT_ALL<group>          → errgroup.Wait() — block until all goroutines finish
-     UUID_GT<a, b>             → lexicographic string comparison of two UUIDv7 values;
+     AWAIT_ALL<group>          â†’ errgroup.Wait() â€” block until all goroutines finish
+     UUID_GT<a, b>             â†’ lexicographic string comparison of two UUIDv7 values;
                                   valid because UUIDv7 time-prefix makes lex order = time order
-     ATOMIC_INC<field>         → sync/atomic.AddInt64(&field, +1)
-     ATOMIC_DEC<field>         → sync/atomic.AddInt64(&field, -1)
-     ATOMIC_LOAD<field>        → sync/atomic.LoadInt64(&field)
+     ATOMIC_INC<field>         â†’ sync/atomic.AddInt64(&field, +1)
+     ATOMIC_DEC<field>         â†’ sync/atomic.AddInt64(&field, -1)
+     ATOMIC_LOAD<field>        â†’ sync/atomic.LoadInt64(&field)
    ============================================================ *)
 
 
 (* ============================================================
-   dep_version  —  one immutable published snapshot
+   dep_version  â€”  one immutable published snapshot
    ============================================================ *)
 
 dep_version, dv: {
@@ -42,48 +42,48 @@ dep_version, dv: {
         ver,   v       : "v0.0"
     )
 
-    key,          k   : ""    (* UUIDv7 — sort key and identity of this version *)
-    data,         d   : @?    (* published object_final — immutable after creation *)
+    key,          k   : ""    (* UUIDv7 â€” sort key and identity of this version *)
+    data,         d   : @?    (* published object_final â€” immutable after creation *)
     ref_count,    rc  : 0     (* active chains holding a pointer; Go: int64 atomic *)
-    published_at, pat : ""    (* ISO-8601 — mirrors the timestamp embedded in key *)
+    published_at, pat : ""    (* ISO-8601 â€” mirrors the timestamp embedded in key *)
 
     - init: <- (
-        -> d: §any_type
-        k: NEW_UUID_V7
+        -> d: Â§any_type
+        k: __ps_proxy NEW_UUID_V7
         <- [
-            names:        LHS_CALLER<§assign_lhs.ident_name>,
-            card:         LHS_CALLER<§assign_lhs.cardinality>,
+            names:        __ps_call LHS Â§assign_lhs.ident_name,
+            card:         __ps_call LHS Â§assign_lhs.cardinality,
             type:         $,
             key:          k,
             data:         d,
             ref_count:    0,
-            published_at: NOW_ISO8601
+            published_at: __ps_proxy NOW_ISO8601
         ]
     )
 
     (* Increment ref_count atomically; return immutable data pointer.
        Go: ATOMIC_INC on rc; return pointer to d (never copied). *)
-    (v = @dep_version) acquire: <- (
-        ATOMIC_INC<v.ref_count>
+    (v = dep_version.@type) acquire: <- (
+        __ps_proxy ATOMIC_INC <v.ref_count>
         <- v.data
     )
 
     (* Decrement ref_count atomically.
        Go: ATOMIC_DEC on rc. *)
-    (v = @dep_version) release: <- (
-        ATOMIC_DEC<v.ref_count>
+    (v = dep_version.@type) release: <- (
+        __ps_proxy ATOMIC_DEC <v.ref_count>
     )
 
     (* True when no chain holds a pointer to this version.
        Go: ATOMIC_LOAD(rc) == 0. *)
-    (v : @dep_version) is_reclaimable: <- (
-        <- ATOMIC_LOAD<v.ref_count> == 0
+    (v : dep_version.@type) is_reclaimable: <- (
+        <- __ps_proxy ATOMIC_LOAD <v.ref_count> == 0
     )
 }
 
 
 (* ============================================================
-   dep_node  —  one named node in the dependency graph
+   dep_node  â€”  one named node in the dependency graph
    ============================================================ *)
 
 dep_node, dn: {
@@ -95,19 +95,19 @@ dep_node, dn: {
     )
 
     name,            nm  : ""    (* ident_static_store_name this node is registered under *)
-    is_static,       sta : false (* set_static flag — see spec/11_dependencies.sqg §13.5 *)
+    is_static,       sta : false (* set_static flag â€” see spec/11_dependencies.sqg Â§13.5 *)
     static_executed, se  : false (* true once a set_static node has run once *)
-    deps,            dep : []    (* string[] — compile-time func_deps list; immutable after register *)
-    versions,        vs  : []    (* @dep_version[] sorted ascending by key (UUIDv7) *)
+    deps,            dep : []    (* string[] â€” compile-time func_deps list; immutable after register *)
+    versions,        vs  : []    (* dep_version.@type[] sorted ascending by key (UUIDv7) *)
     current,         cur : ""    (* UUIDv7 of most-recently published version; "" = never published *)
-    last_used,       lu  : {}    (* { dep_name: uuid_v7 } — version consumed per dep when last run *)
+    last_used,       lu  : {}    (* { dep_name: uuid_v7 } â€” version consumed per dep when last run *)
 
     - init: <- (
-        -> nm: §string_quoted, dep_list: §array
+        -> nm: Â§string_quoted, dep_list: Â§array
         nm != ""
         <- [
-            names:           LHS_CALLER<§assign_lhs.ident_name>,
-            card:            LHS_CALLER<§assign_lhs.cardinality>,
+            names:           __ps_call LHS Â§assign_lhs.ident_name,
+            card:            __ps_call LHS Â§assign_lhs.cardinality,
             type:            $,
             name:            nm,
             is_static:       false,
@@ -123,10 +123,10 @@ dep_node, dn: {
        deps_snapshot: object { dep_name: current_uuid_v7 } supplied by dep_graph.snapshot_deps.
        A node with no deps (leaf) is dirty iff it has never published (current == "").
        A set_static node that has already executed is never dirty. *)
-    (n : @dep_node) is_dirty: <- (
-        -> deps_snapshot: §object_final
+    (n : dep_node.@type) is_dirty: <- (
+        -> deps_snapshot: Â§object_final
         n.is_static & n.static_executed & <- false
-        n.current == ""                  & <- true   (* never published → always dirty *)
+        n.current == ""                  & <- true   (* never published â†’ always dirty *)
         dirty: false
         n.deps >> dep_name (
             dep_name.next & (
@@ -142,8 +142,8 @@ dep_node, dn: {
     (* Create a new dep_version, append it, update current.
        Returns the new version's UUIDv7 key.
        Go: append to versions slice (under a per-node RWMutex write lock); update current. *)
-    (n : @dep_node) publish: <- (
-        -> data: §any_type
+    (n : dep_node.@type) publish: <- (
+        -> data: Â§any_type
         new_ver: dep_version[ data ]
         versions = n.versions + [new_ver]
         <- [
@@ -159,7 +159,7 @@ dep_node, dn: {
     )
 
     (* Increment ref_count on the current version; return that version's data pointer. *)
-    (n : @dep_node) acquire_current: <- (
+    (n : dep_node.@type) acquire_current: <- (
         n.current == "" & <- @?    (* nothing published yet *)
         n.versions >> v (
             v.next & v.value.key == n.current & <- v.value.acquire
@@ -168,8 +168,8 @@ dep_node, dn: {
     )
 
     (* Decrement ref_count on the named version. *)
-    (n : @dep_node) release_version: <- (
-        -> key: §string_quoted
+    (n : dep_node.@type) release_version: <- (
+        -> key: Â§string_quoted
         n.versions >> v (
             v.next & v.value.key == key & v.value.release
         )
@@ -177,8 +177,8 @@ dep_node, dn: {
 
     (* Async-delete versions that are reclaimable and not current.
        Go: launch a goroutine; filter versions slice under write lock. *)
-    (n : @dep_node) gc_old_versions: <- (
-        ASYNC_CALL<{
+    (n : dep_node.@type) gc_old_versions: <- (
+        __ps_proxy ASYNC_CALL <{
             n.versions >> v (
                 v.next & v.value.key != n.current & v.value.is_reclaimable & (
                     versions = versions - v.value
@@ -189,8 +189,8 @@ dep_node, dn: {
 
     (* Record which dep versions were consumed in the last run.
        updates: object { dep_name: uuid_v7 } *)
-    (n : @dep_node) record_last_used: <- (
-        -> updates: §object_final
+    (n : dep_node.@type) record_last_used: <- (
+        -> updates: Â§object_final
         <- [
             type:            $,
             name:            n.name,
@@ -206,7 +206,7 @@ dep_node, dn: {
 
 
 (* ============================================================
-   dep_graph  —  singleton runtime dependency graph
+   dep_graph  â€”  singleton runtime dependency graph
    ============================================================ *)
 
 dep_graph, dg: {
@@ -216,12 +216,12 @@ dep_graph, dg: {
         type,  t       : $
         ver,   v       : "v0.0"
 
-        nodes, nd : {}   (* { name: @dep_node } — all registered nodes *)
+        nodes, nd : {}   (* { name: dep_node.@type } â€” all registered nodes *)
 
         init: <- (
             <- [
-                names: LHS_CALLER<§assign_lhs.ident_name>,
-                card:  LHS_CALLER<§assign_lhs.cardinality>,
+                names: __ps_call LHS Â§assign_lhs.ident_name,
+                card:  __ps_call LHS Â§assign_lhs.cardinality,
                 type:  $,
                 nodes: {}
             ]
@@ -231,11 +231,11 @@ dep_graph, dg: {
     (* Register a new named node with its compile-time dep list.
        Emits error_event "duplicate_node" if name already registered.
        Cycle detection is deferred until has_cycle is called. *)
-    (g : @dep_graph) register: <- (
-        -> nm: §string_quoted, dep_list: §array
+    (g : dep_graph.@type) register: <- (
+        -> nm: Â§string_quoted, dep_list: Â§array
         nm != ""
-        g.nodes[nm] != @?   (* already registered — error *)
-            & <- error_event[ "dep_graph.register", "", nm, "duplicate_node", "error", NOW_ISO8601, [name: nm] ]
+        g.nodes[nm] != @?   (* already registered â€” error *)
+            & <- error_event[ "dep_graph.register", "", nm, "duplicate_node", "error", __ps_proxy NOW_ISO8601, [name: nm] ]
         new_node: dep_node[ nm, dep_list ]
         <- [
             type:  $,
@@ -244,18 +244,18 @@ dep_graph, dg: {
     )
 
     (* Return the dep_node for a name; error_event "unknown_node" if not found. *)
-    (g : @dep_graph) get_node: <- (
-        -> nm: §string_quoted
+    (g : dep_graph.@type) get_node: <- (
+        -> nm: Â§string_quoted
         node: g.nodes[nm]
         node == @?
-            & <- error_event[ "dep_graph.get_node", "", nm, "unknown_node", "error", NOW_ISO8601, [name: nm] ]
+            & <- error_event[ "dep_graph.get_node", "", nm, "unknown_node", "error", __ps_proxy NOW_ISO8601, [name: nm] ]
         <- node
     )
 
     (* Return { dep_name: dep_node.current } for all deps of the named node.
        Used by dep_node.is_dirty to compare stale vs. fresh versions. *)
-    (g : @dep_graph) snapshot_deps: <- (
-        -> nm: §string_quoted
+    (g : dep_graph.@type) snapshot_deps: <- (
+        -> nm: Â§string_quoted
         node: g.get_node[ nm ]
         snap: {}
         node.deps >> dep_name (
@@ -269,9 +269,9 @@ dep_graph, dg: {
 
     (* Topological cycle detection using Kahn's algorithm.
        Returns true if a cycle exists; should be called by the parser after
-       all registrations are complete — a true result is a compile error.
+       all registrations are complete â€” a true result is a compile error.
        Go: TOPO_SORT returns an error when a cycle is present. *)
-    (g : @dep_graph) has_cycle: <- (
+    (g : dep_graph.@type) has_cycle: <- (
         node_names: []
         edges:      []
         g.nodes >> entry (
@@ -282,14 +282,14 @@ dep_graph, dg: {
                 )
             )
         )
-        result: TOPO_SORT<node_names, edges>
+        result: __ps_proxy TOPO_SORT <node_names, edges>
         <- result.has_error
     )
 
     (* Return a graph_final representation of the full dependency graph.
        Each graph node carries: name, current uuid_v7, dep count, is_static flag.
        Edges encode the func_deps directed relationships. *)
-    (g : @dep_graph) as_graph_final: <- (
+    (g : dep_graph.@type) as_graph_final: <- (
         g_nodes: []
         g_edges: []
         g.nodes >> entry (
@@ -298,10 +298,10 @@ dep_graph, dg: {
                 meta: [
                     name:      nd.name,
                     current:   nd.current,
-                    dep_count: LENGTH<nd.deps>,
+                    dep_count: __ps_proxy LENGTH <nd.deps,
                     is_static: nd.is_static
                 ]
-                g_nodes = g_nodes + [[key: nd.current != "" & nd.current ^ NEW_UUID_V7, value: meta]]
+                g_nodes = g_nodes + [[key: nd.current != "" & nd.current ^ __ps_proxy NEW_UUID_V7, value: meta]]
                 nd.deps >> dep_name (
                     dep_name.next & g_edges = g_edges + [[from: nd.name, to: dep_name.value]]
                 )
@@ -313,7 +313,7 @@ dep_graph, dg: {
 
 
 (* ============================================================
-   dep_chain  —  one UUIDv7-stamped execution chain instance
+   dep_chain  â€”  one UUIDv7-stamped execution chain instance
    ============================================================ *)
 
 dep_chain, dc: {
@@ -326,17 +326,17 @@ dep_chain, dc: {
 
     chain_uuid,       uid  : ""        (* UUIDv7 stamp for this chain *)
     target,           tgt  : ""        (* name of the root node being updated *)
-    execution_order,  eo   : []        (* string[] — leaf-first topological order *)
+    execution_order,  eo   : []        (* string[] â€” leaf-first topological order *)
     version_snapshot, vs   : {}        (* { name: uuid_v7 } captured at chain creation *)
     status,           stat : "pending" (* "pending" | "running" | "done" | "failed" *)
 
     - init: <- (
-        -> tgt: §string_quoted, g: @dep_graph
+        -> tgt: Â§string_quoted, g: dep_graph.@type
         tgt != ""
-        uid: NEW_UUID_V7
+        uid: __ps_proxy NEW_UUID_V7
         <- [
-            names:            LHS_CALLER<§assign_lhs.ident_name>,
-            card:             LHS_CALLER<§assign_lhs.cardinality>,
+            names:            __ps_call LHS Â§assign_lhs.ident_name,
+            card:             __ps_call LHS Â§assign_lhs.cardinality,
             type:             $,
             chain_uuid:       uid,
             target:           tgt,
@@ -350,8 +350,8 @@ dep_chain, dc: {
        reachable from c.target via func_deps edges.
        Also captures the version_snapshot (current uuid_v7 per dep) at this moment.
        Go: TOPO_SORT over the subgraph; reverse so leaves come first. *)
-    (c : @dep_chain) build_order: <- (
-        -> g: @dep_graph
+    (c : dep_chain.@type) build_order: <- (
+        -> g: dep_graph.@type
         subgraph_nodes: [c.target]
         subgraph_edges: []
         snap: {}
@@ -372,7 +372,7 @@ dep_chain, dc: {
             )
         )
 
-        order: TOPO_SORT<subgraph_nodes, subgraph_edges>
+        order: __ps_proxy TOPO_SORT <subgraph_nodes, subgraph_edges>
         <- [
             type:             $,
             chain_uuid:       c.chain_uuid,
@@ -392,8 +392,8 @@ dep_chain, dc: {
        Any error emits an error_event, logs it via l, and sets status "failed".
        Go: each node runs in its own goroutine; AWAIT_ALL waits for all deps
            before the current node starts (fan-in pattern). *)
-    (c : @dep_chain) execute: <- (
-        -> g: @dep_graph, l: @logger
+    (c : dep_chain.@type) execute: <- (
+        -> g: dep_graph.@type, l: logger.@type
         status = "running"
         err_occurred: false
 
@@ -403,7 +403,7 @@ dep_chain, dc: {
                 snap: g.snapshot_deps[ nm.value ]
 
                 skip: (node.is_static & node.static_executed) ^ node.is_dirty[ snap ] == false
-                skip & <- @?   (* skip node — nothing to do *)
+                skip & <- @?   (* skip node â€” nothing to do *)
 
                 (* Acquire read-only pointers to all dep versions *)
                 dep_data: {}
@@ -414,11 +414,11 @@ dep_chain, dc: {
                     )
                 )
 
-                (* Call main — errors are caught by the Global Error Handler.
+                (* Call main â€” errors are caught by the Global Error Handler.
                    main is expected to publish its result via func_store_stmt (=>),
                    which calls dep_node.publish internally.
                    Go: goroutine per node; AWAIT_ALL ensures deps completed first. *)
-                ASYNC_CALL<node.main, [dep_data, c.chain_uuid]>
+                __ps_proxy ASYNC_CALL <node.main, [dep_data, c.chain_uuid]>
 
                 (* Release acquired dep version pointers after main completes *)
                 node.deps >> dep_name (
@@ -439,8 +439,8 @@ dep_chain, dc: {
 
     (* Release all held version pointers and schedule GC on affected nodes.
        Called after execute() completes regardless of success or failure. *)
-    (c : @dep_chain) finalize: <- (
-        -> g: @dep_graph
+    (c : dep_chain.@type) finalize: <- (
+        -> g: dep_graph.@type
         c.execution_order >> nm (
             nm.next & (
                 node: g.get_node[ nm.value ]
@@ -460,15 +460,15 @@ dep_chain, dc: {
 
 
 (* ============================================================
-   Public API  —  Section 15 of spec/11_dependencies.sqg
+   Public API  â€”  Section 15 of spec/11_dependencies.sqg
 
    These functions operate on the singleton dep_graph maintained
    by the runtime.  RUNTIME_GRAPH is a codegen intrinsic that
    resolves to the process-global *dep_graph instance.
 
    Go codegen mapping:
-     RUNTIME_GRAPH   → package-level var graph *DepGraph (initialised on first use)
-     CHAIN_QUEUE<nm> → per-target serialisation queue (buffered chan of *DepChain)
+     RUNTIME_GRAPH   â†’ package-level var graph *DepGraph (initialised on first use)
+     CHAIN_QUEUE<nm> â†’ per-target serialisation queue (buffered chan of *DepChain)
                         ensures chains for the same target run one at a time
    ============================================================ *)
 
@@ -480,57 +480,57 @@ dependencies, deps: {
         ver,   v       : "v0.0"
     )
 
-    (* 15.1 — Return the compile-time func_deps list for a named node. *)
+    (* 15.1 â€” Return the compile-time func_deps list for a named node. *)
     get_depends_on: <- (
-        -> nm: §string_quoted
+        -> nm: Â§string_quoted
         node: RUNTIME_GRAPH.get_node[ nm ]
         <- node.deps
     )
 
-    (* 15.2 — Append runtime dependencies to an existing named node.
+    (* 15.2 â€” Append runtime dependencies to an existing named node.
        Guards against introducing a cycle; emits error_event "cycle_detected"
        if the modification would create one. *)
     set_depends_on: <- (
-        -> nm: §string_quoted, extra_deps: §array
+        -> nm: Â§string_quoted, extra_deps: Â§array
         node: RUNTIME_GRAPH.get_node[ nm ]
         updated_deps: node.deps + extra_deps
         test_graph: RUNTIME_GRAPH + [nm: dep_node[ nm, updated_deps ]]
         test_graph.has_cycle
-            & <- error_event[ "dependencies.set_depends_on", "", nm, "cycle_detected", "error", NOW_ISO8601, [name: nm, added: extra_deps] ]
+            & <- error_event[ "dependencies.set_depends_on", "", nm, "cycle_detected", "error", __ps_proxy NOW_ISO8601, [name: nm, added: extra_deps] ]
         RUNTIME_GRAPH.nodes[nm].deps = updated_deps
     )
 
-    (* 15.3 — Return a graph_final snapshot of the full dependency graph. *)
+    (* 15.3 â€” Return a graph_final snapshot of the full dependency graph. *)
     get_dependency_graph: <- (
         <- RUNTIME_GRAPH.as_graph_final
     )
 
-    (* 15.4 — Mark a named node as set_static (permanently clean after first execution). *)
+    (* 15.4 â€” Mark a named node as set_static (permanently clean after first execution). *)
     set_static: <- (
-        -> nm: §string_quoted
+        -> nm: Â§string_quoted
         node: RUNTIME_GRAPH.get_node[ nm ]
         node.is_static = true
     )
 
-    (* 15.5 — Build and execute a UUIDv7-stamped chain for the named target.
+    (* 15.5 â€” Build and execute a UUIDv7-stamped chain for the named target.
        Serialised per-target via CHAIN_QUEUE: if a previous chain for the same
        target is running, this chain queues behind it and starts when it finishes.
        Returns the UUIDv7 of the version published by the target node,
        or the existing current UUIDv7 if the target was not dirty. *)
     update_dependency: <- (
-        -> tgt: §string_quoted, l: @logger
+        -> tgt: Â§string_quoted, l: logger.@type
         tgt != ""
 
         chain: dep_chain[ tgt, RUNTIME_GRAPH ]
         chain = chain.build_order[ RUNTIME_GRAPH ]
 
-        (* Serialise per-target — CHAIN_QUEUE blocks until prior chain for tgt finishes *)
-        CHAIN_QUEUE<tgt> >> _ (
+        (* Serialise per-target â€” CHAIN_QUEUE blocks until prior chain for tgt finishes *)
+        __ps_proxy CHAIN_QUEUE <tgt> >> _ (
             _.next & (
                 result_status: chain.execute[ RUNTIME_GRAPH, l ]
                 chain.finalize[ RUNTIME_GRAPH ]
                 result_status == "failed"
-                    & <- error_event[ "dependencies.update_dependency", chain.chain_uuid, tgt, "chain_failed", "error", NOW_ISO8601, [target: tgt] ]
+                    & <- error_event[ "dependencies.update_dependency", chain.chain_uuid, tgt, "chain_failed", "error", __ps_proxy NOW_ISO8601, [target: tgt] ]
             )
         )
 

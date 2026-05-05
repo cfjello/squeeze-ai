@@ -1,0 +1,527 @@
+(* ============================================================
+   pkg/lib/regexp.sqz  --  Squeeze V17 XRegExp-inspired Regexp Library
+   ============================================================
+
+   Defines:
+     match_record.@type  — structured match result (index, value, groups)
+     regexp.@type        — compiled pattern + flags type with instance methods
+     regexp_fns     — static scope of one-shot regexp free-functions
+
+   Design notes:
+     — regexp.@type stores pattern and flags separately so that add_flags /
+       remove_flags can produce new instances without re-parsing.
+     — Two init paths:
+         re: regexp /pattern/flags         — from a regexp_expr literal
+         re: regexp.from_parts("p","gi")   — from separate strings
+     — match_all, replace_all, groups_all and their static equivalents
+       inject the 'g' flag automatically; callers never need to add it.
+     — replace_fn accepts a func_unit callback for computed replacements.
+     — regexp_fns.union combines an array of regexp_expr literals into a
+       single alternation pattern, preserving named groups.
+     — regexp_fns.escape escapes all XRegExp metacharacters via RE_ESCAPE.
+
+   XRegExp flags supported:
+     g — global          i — ignore-case    m — multiline
+     s — single-line     u — unicode        y — sticky
+     x — free-spacing    n — no-capture     A — astral
+
+   Intrinsics used (UPPERCASE builtins from spec/28_intrinsics.sqg):
+     RE_TEST<pattern, flags, str>                    → boolean
+     RE_EXEC<pattern, flags, str>                    → match_record | null
+     RE_MATCH_ALL<pattern, flags, str>               → array of match_record
+     RE_REPLACE<pattern, flags, str, replacement>    → string  (first match)
+     RE_REPLACE_ALL<pattern, flags, str, replacement>→ string  (all matches)
+     RE_SPLIT<pattern, flags, str>                   → array of string
+     RE_SPLIT_LIMIT<pattern, flags, str, limit>      → array of string
+     RE_ESCAPE<str>                                  → string
+     RE_IS_VALID<pattern_str>                        → boolean
+     RE_SPLICE<str, idx, len, sub>                   → string
+     RE_PATTERN<regexp_expr>                         → string  (bare pattern)
+     RE_FLAGS<regexp_expr>                           → string  (flag chars)
+     LENGTH<val>                                     → integer
+   ============================================================ *)
+
+
+(* ============================================================
+   SECTION 1 — match_record
+   ============================================================ *)
+
+(*
+   match_record is the structured result returned by RE_EXEC and by
+   each element of the array returned by RE_MATCH_ALL.
+
+   Fields:
+     index   — 0-based character position where the match starts
+     value   — the matched substring
+     groups  — object of named capture groups; {} when pattern has none
+
+   Instances are read-only; callers cannot mutate any field.
+
+   Example:
+     m = RE_EXEC<"(?<year>\\d{4})-(?<month>\\d{2})", "", "2024-05-03">
+     m.index        (* → 0    *)
+     m.value        (* → "2024-05" *)
+     m.groups.year  (* → "2024"   *)
+*)
+
+match_record: {
+    names, n, 1..1: ["match_record"]
+    - (
+        type,   t: $
+        index:     integer  0
+        value:     ""
+        groups:    {}
+    )
+}
+
+
+(* ============================================================
+   SECTION 2 — regexp.@type TYPE
+   ============================================================ *)
+
+(*
+   regexp.@type wraps a compiled regular-expression pattern together with
+   its flags so both can be inspected and passed as a unit.
+
+   Fields:
+     pattern — bare pattern string without surrounding slashes
+               e.g. "^hello\\s+(\\w+)"
+     flags   — flag characters as a plain string, e.g. "gi"
+               empty string when no flags are set
+     source  — round-trip representation "/pattern/flags"
+
+   Init overloads:
+     From a regexp_expr literal (most common):
+       re: regexp /(\d{4})-(\d{2})/i
+
+     From separate strings (when pattern is computed at runtime):
+       re: regexp.from_parts("\\d+", "gi")
+
+   Instances are immutable.  add_flags and remove_flags return NEW
+   regexp.@type instances rather than mutating the receiver.
+*)
+
+regexp: {
+    names, n, 1..1: ["regexp"]
+    - (
+        card,    c: 1..1
+        type,    t: $
+        ver,     v: "v0.0"
+        pattern:    ""
+        flags:      ""
+        source:     ""
+    )
+
+    (* init — from a regexp_expr literal, e.g.  re: regexp /^hello/im *)
+    init: <- (
+        -> raw: §regexp_expr
+
+        pat  = __ps_proxy RE_PATTERN <raw>
+        flgs = __ps_proxy RE_FLAGS <raw>
+        src  = "/" + pat + "/" + flgs
+
+        <- [
+            names:   __ps_call LHS §assign_lhs.ident_name,
+            card:    __ps_call LHS §assign_lhs.cardinality,
+            type:    $,
+            pattern: pat,
+            flags:   flgs,
+            source:  src
+        ]
+    )
+
+    (* from_parts — construct from separate pattern and flags strings.
+       Validates the pattern before storing it.
+       e.g.  re: regexp.from_parts("^hello", "im") *)
+    from_parts: <- (
+        -> pat: §string_quoted, flgs: §string_quoted
+        __ps_proxy RE_IS_VALID <pat>
+        src = "/" + pat + "/" + flgs
+        <- [
+            names:   __ps_call LHS §assign_lhs.ident_name,
+            card:    __ps_call LHS §assign_lhs.cardinality,
+            type:    $,
+            pattern: pat,
+            flags:   flgs,
+            source:  src
+        ]
+    )
+}
+
+
+(* ============================================================
+   SECTION 3 — regexp.@type INSTANCE METHODS
+   ============================================================ *)
+
+(* ------------------------------------------------------------------
+   3.1  test(str) → boolean
+
+        Returns true when the pattern matches anywhere in str.
+        Analogous to XRegExp.test(str, regex) / RegExp#test(str).
+
+   Example:
+     /\d+/i.test("abc123")   (* → true  *)
+     /^\d+$/.test("abc123")  (* → false *)
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) test: <- (
+    -> str: §string
+    <- __ps_proxy RE_TEST <re.pattern, re.flags, str>
+)
+
+(* ------------------------------------------------------------------
+   3.2  exec(str) → match_record | null
+
+        Returns the first match as a match_record, or null when the
+        pattern does not match.
+        Analogous to XRegExp.exec(str, regex).
+
+   Example:
+     re: regexp /(?<year>\d{4})-(?<month>\d{2})/
+     m = re.exec("shipped 2024-05-03")
+     m.index          (* → 8      *)
+     m.groups.year    (* → "2024" *)
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) exec: <- (
+    -> str: §string
+    <- __ps_proxy RE_EXEC <re.pattern, re.flags, str>
+)
+
+(* ------------------------------------------------------------------
+   3.3  match_all(str) → 1..m match_record.@type
+
+        Returns an array of all non-overlapping matches.
+        The 'g' flag is added internally if absent.
+        Analogous to XRegExp.match(str, regex, 'all') / String#matchAll.
+
+   Example:
+     /\d+/g.match_all("1 two 3 four 5")
+     (* → [{index:0,value:"1"},{index:6,value:"3"},{index:13,value:"5"}] *)
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) match_all: <- (
+    -> str: §string
+    g_flags = re.flags =~ /g/ ^ "g" ^ re.flags + "g"
+    <- __ps_proxy RE_MATCH_ALL <re.pattern, g_flags, str>
+)
+
+(* ------------------------------------------------------------------
+   3.4  replace(str, replacement) → string
+
+        Replaces the FIRST match with replacement.
+        Back-reference tokens in replacement:
+          $1 $2 …  — positional capture groups
+          ${name}  — named capture group
+          $&       — entire match
+          $` $'    — text before / after the match
+        Analogous to XRegExp.replace(str, regex, replacement, 'one').
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) replace: <- (
+    -> str: §string, replacement: §string
+    <- __ps_proxy RE_REPLACE <re.pattern, re.flags, str, replacement>
+)
+
+(* ------------------------------------------------------------------
+   3.5  replace_all(str, replacement) → string
+
+        Replaces ALL non-overlapping matches.
+        The 'g' flag is added internally if absent.
+        Analogous to XRegExp.replace(str, regex, replacement, 'all').
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) replace_all: <- (
+    -> str: §string, replacement: §string
+    g_flags = re.flags =~ /g/ ^ "g" ^ re.flags + "g"
+    <- __ps_proxy RE_REPLACE_ALL <re.pattern, g_flags, str, replacement>
+)
+
+(* ------------------------------------------------------------------
+   3.6  replace_fn(str, fn) → string
+
+        Replaces each match by calling fn(match_record) → string,
+        allowing computed replacements (e.g. uppercase every match).
+        Analogous to XRegExp.replace(str, regex, callback).
+
+   Example:
+     /\b\w/g.replace_fn("hello world", (m) <- UPPERCASE<m.value>)
+     (* → "Hello World" *)
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) replace_fn: <- (
+    -> str: §string, fn: §func_unit
+    g_flags = re.flags =~ /g/ ^ "g" ^ re.flags + "g"
+    matches = __ps_proxy RE_MATCH_ALL <re.pattern, g_flags, str>
+    result  = str
+    offset  = 0
+    matches >> {
+        -> m: match_record.@type
+        sub     = fn(m)
+        adj_idx = m.index + offset
+        val_len = __ps_proxy LENGTH <m.value>
+        sub_len = __ps_proxy LENGTH <sub>
+        result  = __ps_proxy RE_SPLICE <result, adj_idx, val_len, sub>
+        offset += sub_len - val_len
+    }
+    <- result
+)
+
+(* ------------------------------------------------------------------
+   3.7  split(str) → 1..m string
+
+        Splits str on every occurrence of the pattern.
+        Analogous to XRegExp.split(str, separator).
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) split: <- (
+    -> str: §string
+    <- __ps_proxy RE_SPLIT <re.pattern, re.flags, str>
+)
+
+(* ------------------------------------------------------------------
+   3.8  split_limit(str, limit) → 1..limit string
+
+        Splits str into at most limit substrings.
+        Analogous to XRegExp.split(str, separator, limit).
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) split_limit: <- (
+    -> str: §string, limit: §integer
+    ( limit > 0 )
+    <- __ps_proxy RE_SPLIT_LIMIT <re.pattern, re.flags, str, limit>
+)
+
+(* ------------------------------------------------------------------
+   3.9  groups(str) → {}
+
+        Returns the named capture groups from the first match as an
+        object literal, or {} when the pattern does not match.
+        Analogous to XRegExp.exec(str, regex).groups.
+
+   Example:
+     /(?<year>\d{4})-(?<month>\d{2})/.groups("2024-05")
+     (* → { year: "2024", month: "05" } *)
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) groups: <- (
+    -> str: §string
+    m = __ps_proxy RE_EXEC <re.pattern, re.flags, str>
+    m == null & <- {}
+    <- m.groups
+)
+
+(* ------------------------------------------------------------------
+   3.10  groups_all(str) → 1..m {}
+
+         Returns named capture groups from ALL matches as an array of
+         objects.  Each element corresponds to one match.
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) groups_all: <- (
+    -> str: §string
+    g_flags = re.flags =~ /g/ ^ "g" ^ re.flags + "g"
+    matches = __ps_proxy RE_MATCH_ALL <re.pattern, g_flags, str>
+    result, 1..m: []
+    matches >> {
+        -> m: match_record.@type
+        result += m.groups
+    }
+    <- result
+)
+
+(* ------------------------------------------------------------------
+   3.11  add_flags(extra) → regexp.@type
+
+         Returns a NEW regexp.@type with extra flag characters appended,
+         skipping any already present.
+         Analogous to XRegExp.addFlags(regex, flags).
+
+   Example:
+     re.add_flags("g")   (* adds global flag if not already set *)
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) add_flags: <- (
+    -> extra: §string_quoted
+    combined = re.flags
+    extra >> {
+        -> ch: string
+        combined =~ ch ^ combined + ch ^ combined
+    }
+    <- regexp.from_parts(re.pattern, combined)
+)
+
+(* ------------------------------------------------------------------
+   3.12  remove_flags(drop) → regexp.@type
+
+         Returns a NEW regexp.@type with the given flag characters removed.
+         Analogous to XRegExp.removeFlags(regex, flags).
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) remove_flags: <- (
+    -> drop: §string_quoted
+    remaining = re.flags
+    drop >> {
+        -> ch: string
+        remaining =~ /ch/ ^ "" ^ remaining
+    }
+    <- regexp.from_parts(re.pattern, remaining)
+)
+
+(* ------------------------------------------------------------------
+   3.13  Flag-accessor booleans
+
+         Convenience read-only properties that test for a single flag
+         character in re.flags.
+   ------------------------------------------------------------------ *)
+(re : regexp.@type) is_global:       <- ( <- __ps_proxy RE_TEST <"g", "", re.flags> )
+(re : regexp.@type) is_ignore_case:  <- ( <- __ps_proxy RE_TEST <"i", "", re.flags> )
+(re : regexp.@type) is_multiline:    <- ( <- __ps_proxy RE_TEST <"m", "", re.flags> )
+(re : regexp.@type) is_sticky:       <- ( <- __ps_proxy RE_TEST <"y", "", re.flags> )
+(re : regexp.@type) is_unicode:      <- ( <- __ps_proxy RE_TEST <"u", "", re.flags> )
+(re : regexp.@type) is_free_spacing: <- ( <- __ps_proxy RE_TEST <"x", "", re.flags> )
+
+
+(* ============================================================
+   SECTION 4 — regexp_fns STATIC SCOPE
+   ============================================================
+
+   Free functions for one-shot regexp operations without needing
+   to construct a regexp.@type instance first.  Each function accepts
+   a regexp_expr literal directly.
+
+   All functions that perform global matching add the 'g' flag
+   automatically, consistent with the regexp.@type instance methods.
+   ============================================================ *)
+
+regexp_fns: {
+    names, n, 1..1: ["regexp_fns"]
+
+    (* ----------------------------------------------------------
+       4.1  test(rx, str) → boolean
+
+            Quick one-shot test.
+       Example:
+            regexp_fns.test(/^\d+$/, "12345")  (* → true *)
+       ---------------------------------------------------------- *)
+    test: <- (
+        -> rx: §regexp_expr, str: §string
+        pat  = __ps_proxy RE_PATTERN <rx>
+        flgs = __ps_proxy RE_FLAGS <rx>
+        <- __ps_proxy RE_TEST <pat, flgs, str>
+    )
+
+    (* ----------------------------------------------------------
+       4.2  match(rx, str) → match_record | null
+
+            First match only.
+       ---------------------------------------------------------- *)
+    match: <- (
+        -> rx: §regexp_expr, str: §string
+        pat  = __ps_proxy RE_PATTERN <rx>
+        flgs = __ps_proxy RE_FLAGS <rx>
+        <- __ps_proxy RE_EXEC <pat, flgs, str>
+    )
+
+    (* ----------------------------------------------------------
+       4.3  match_all(rx, str) → 1..m match_record.@type
+
+            All non-overlapping matches.  'g' flag added automatically.
+       ---------------------------------------------------------- *)
+    match_all: <- (
+        -> rx: §regexp_expr, str: §string
+        pat    = __ps_proxy RE_PATTERN <rx>
+        flgs   = __ps_proxy RE_FLAGS <rx>
+        g_flgs = flgs =~ /g/ ^ "g" ^ flgs + "g"
+        <- __ps_proxy RE_MATCH_ALL <pat, g_flgs, str>
+    )
+
+    (* ----------------------------------------------------------
+       4.4  replace(rx, str, replacement) → string
+
+            Replace the first match.
+       ---------------------------------------------------------- *)
+    replace: <- (
+        -> rx: §regexp_expr, str: §string, replacement: §string
+        pat  = __ps_proxy RE_PATTERN <rx>
+        flgs = __ps_proxy RE_FLAGS <rx>
+        <- __ps_proxy RE_REPLACE <pat, flgs, str, replacement>
+    )
+
+    (* ----------------------------------------------------------
+       4.5  replace_all(rx, str, replacement) → string
+
+            Replace all matches.  'g' flag added automatically.
+       ---------------------------------------------------------- *)
+    replace_all: <- (
+        -> rx: §regexp_expr, str: §string, replacement: §string
+        pat    = __ps_proxy RE_PATTERN <rx>
+        flgs   = __ps_proxy RE_FLAGS <rx>
+        g_flgs = flgs =~ /g/ ^ "g" ^ flgs + "g"
+        <- __ps_proxy RE_REPLACE_ALL <pat, g_flgs, str, replacement>
+    )
+
+    (* ----------------------------------------------------------
+       4.6  split(rx, str) → 1..m string
+
+            Split on every match.
+       ---------------------------------------------------------- *)
+    split: <- (
+        -> rx: §regexp_expr, str: §string
+        pat  = __ps_proxy RE_PATTERN <rx>
+        flgs = __ps_proxy RE_FLAGS <rx>
+        <- __ps_proxy RE_SPLIT <pat, flgs, str>
+    )
+
+    (* ----------------------------------------------------------
+       4.7  escape(str) → string
+
+            Escapes all XRegExp metacharacters so str can be embedded
+            literally inside a larger pattern.
+            Analogous to XRegExp.escape(str).
+
+       Example:
+            regexp_fns.escape("1 + 1 = 2")  (* → "1 \+ 1 \= 2" *)
+       ---------------------------------------------------------- *)
+    escape: <- (
+        -> str: §string
+        <- __ps_proxy RE_ESCAPE <str>
+    )
+
+    (* ----------------------------------------------------------
+       4.8  is_valid(pattern_str) → boolean
+
+            Returns true when pattern_str is a syntactically valid
+            XRegExp pattern.  Useful for validating user-supplied
+            patterns before passing them to regexp.from_parts.
+       ---------------------------------------------------------- *)
+    is_valid: <- (
+        -> pattern_str: §string
+        <- __ps_proxy RE_IS_VALID <pattern_str>
+    )
+
+    (* ----------------------------------------------------------
+       4.9  groups(rx, str) → {}
+
+            Named capture groups from the first match, or {} on
+            no match.
+       ---------------------------------------------------------- *)
+    groups: <- (
+        -> rx: §regexp_expr, str: §string
+        pat  = __ps_proxy RE_PATTERN <rx>
+        flgs = __ps_proxy RE_FLAGS <rx>
+        m    = __ps_proxy RE_EXEC <pat, flgs, str>
+        m == null & <- {}
+        <- m.groups
+    )
+
+    (* ----------------------------------------------------------
+       4.10  union(patterns, flags) → regexp.@type
+
+             Combines an array of regexp_expr literals into a single
+             alternation pattern, preserving their named groups.
+             Analogous to XRegExp.union([...], flags).
+
+        Example:
+             regexp_fns.union([/(?<year>\d{4})/, /(?<word>[a-z]+)/], "g")
+       ---------------------------------------------------------- *)
+    union: <- (
+        -> patterns, 1..m: §array_final, flags: §string_quoted
+        parts, 1..m: []
+        patterns >> {
+            -> rx: §regexp_expr
+            parts += __ps_proxy RE_PATTERN <rx>
+        }
+        joined   = __ps_proxy JOIN <parts, "|">
+        combined = __ps_proxy CAST string <joined>
+        <- regexp.from_parts(combined, flags)
+    )
+}

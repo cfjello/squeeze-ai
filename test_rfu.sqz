@@ -1,0 +1,6 @@
+﻿<- (
+    -> raw: §array_final
+    cnt = 0
+    len: raw >> cnt++
+    <- [ length: len ]
+)

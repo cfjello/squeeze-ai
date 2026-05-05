@@ -3,52 +3,52 @@
    ============================================================
 
    Implements a functional, versioned key-value store.
-   Every mutating method returns a new @store value; the caller
-   replaces its own reference — no in-place mutation.  This
+   Every mutating method returns a new store.@type value; the caller
+   replaces its own reference â€” no in-place mutation.  This
    is idiomatic Squeeze and maps cleanly onto the language's
    immutable value model.
 
    Requires:
-     hmap.sqz  — heterogeneous string-keyed map  (@hmap)
+     hmap.sqz  â€” heterogeneous string-keyed map  (hmap.@type)
 
    Design
    ------
    Each named slot holds multiple immutable versioned snapshots,
    identified by UUIDv7 store_ids (time-ordered, sortable).
-   Three @hmap fields keep all state flat — no nested mutation:
+   Three hmap.@type fields keep all state flat â€” no nested mutation:
 
-     current_ids   name  → store_id          (most-recently stored)
-     versions      store_id → [ data: @? ]   (one entry per snapshot)
-     name_ids      name  → @array            (store_ids, newest first)
+     current_ids   name  â†’ store_id          (most-recently stored)
+     versions      store_id â†’ [ data: @? ]   (one entry per snapshot)
+     name_ids      name  â†’ array.@type            (store_ids, newest first)
 
-   A snapshot's lifetime is the lifetime of the @store value that
-   holds it.  Because @store is a value type, any consumer holding
-   an older @store automatically retains all snapshots visible at
-   that point — no manual reference counting needed.
+   A snapshot's lifetime is the lifetime of the store.@type value that
+   holds it.  Because store.@type is a value type, any consumer holding
+   an older store.@type automatically retains all snapshots visible at
+   that point â€” no manual reference counting needed.
 
    Methods summary
    ---------------
    Inspection (non-mutating):
-     size()                        → integer
-     has(name)                     → boolean
-     version_count(name)           → integer
-     current_id(name)              → string | null
-     get(name)                     → @? | null          (latest data)
-     get_version(name, store_id)   → @? | null          (specific version)
-     get_ids(name)                 → @array | null      (newest-first id list)
+     size()                        â†’ integer
+     has(name)                     â†’ boolean
+     version_count(name)           â†’ integer
+     current_id(name)              â†’ string | null
+     get(name)                     â†’ @? | null          (latest data)
+     get_version(name, store_id)   â†’ @? | null          (specific version)
+     get_ids(name)                 â†’ array.@type | null      (newest-first id list)
 
-   Mutation (returns updated @store or [ store, store_id ] record):
-     set(name, data)               → [ store: @store, store_id: string ]
-     register(name, data)          → [ store: @store, store_id: string ]
-     unregister(name)              → @store
-     prune_versions(name, keep)    → @store
+   Mutation (returns updated store.@type or [ store, store_id ] record):
+     set(name, data)               â†’ [ store: store.@type, store_id: string ]
+     register(name, data)          â†’ [ store: store.@type, store_id: string ]
+     unregister(name)              â†’ store.@type
+     prune_versions(name, keep)    â†’ store.@type
 
    Intrinsics used (UPPERCASE builtins):
-     NEW_UUID_V7    — time-ordered unique id (UUIDv7)
-     LENGTH<val>    — length of an @array
+     NEW_UUID_V7    â€” time-ordered unique id (UUIDv7)
+     LENGTH<val>    â€” length of an array.@type
    ============================================================ *)
 
-(col : @std.collections)  store: {
+(col : std.collections.type.@type)  store: {
     names, n, 1..m: ["store"]
     map:     col.map
     filter:  col.filter
@@ -62,19 +62,19 @@
         type,  t:       $
         ver,   v:       "v0.0"
 
-        (* Three typed @hmap fields replace untyped {} — satisfies Rule A.
+        (* Three typed hmap.@type fields replace untyped {} â€” satisfies Rule A.
            Each field is a distinct hmap instance initialised empty.
-             current_ids  :  name      → store_id (string)
-             versions     :  store_id  → [ data: @? ]
-             name_ids     :  name      → @array of store_ids, newest first *)
+             current_ids  :  name      â†’ store_id (string)
+             versions     :  store_id  â†’ [ data: @? ]
+             name_ids     :  name      â†’ array.@type of store_ids, newest first *)
         current_ids: hmap []
         versions:    hmap []
         name_ids:    hmap []
 
         init: <- (
             <- [
-                names:       LHS_CALLER<§assign_lhs.ident_name>,
-                card:        LHS_CALLER<§assign_lhs.cardinality>,
+                names:       __ps_call LHS Â§assign_lhs.ident_name,
+                card:        __ps_call LHS Â§assign_lhs.cardinality,
                 type:        $,
                 current_ids: hmap [],
                 versions:    hmap [],
@@ -85,45 +85,45 @@
 
 
     (* ---------------------------------------------------------------
-       Inspection — all non-mutating
+       Inspection â€” all non-mutating
        --------------------------------------------------------------- *)
 
-    (* size — number of distinct names registered in the store. *)
-    (s : @store) size: <- (
+    (* size â€” number of distinct names registered in the store. *)
+    (s : store.@type) size: <- (
         <- s.current_ids.size()
     )
 
-    (* has — true when name has at least one stored version. *)
-    (s : @store) has: <- (
+    (* has â€” true when name has at least one stored version. *)
+    (s : store.@type) has: <- (
         -> name: string
         <- s.current_ids.has(name)
     )
 
-    (* version_count — number of stored snapshots for name.
+    (* version_count â€” number of stored snapshots for name.
        Returns 0 when name is not registered. *)
-    (s : @store) version_count: <- (
+    (s : store.@type) version_count: <- (
         -> name: string
         ( ! s.name_ids.has(name) ) & <- 0
-        <- LENGTH<s.name_ids.get(name)>
+        <- __ps_proxy LENGTH <s.name_ids.get(name)>
     )
 
-    (* current_id — most-recently stored UUIDv7 for name.
+    (* current_id â€” most-recently stored UUIDv7 for name.
        Returns null when name is not registered. *)
-    (s : @store) current_id: <- (
+    (s : store.@type) current_id: <- (
         -> name: string
         <- s.current_ids.get(name)
     )
 
-    (* get_ids — newest-first list of all store_ids for name.
+    (* get_ids â€” newest-first list of all store_ids for name.
        Returns null when name is not registered. *)
-    (s : @store) get_ids: <- (
+    (s : store.@type) get_ids: <- (
         -> name: string
         <- s.name_ids.get(name)
     )
 
-    (* get — retrieve data from the most-recent snapshot for name.
+    (* get â€” retrieve data from the most-recent snapshot for name.
        Returns null when name is not registered. *)
-    (s : @store) get: <- (
+    (s : store.@type) get: <- (
         -> name: string
         ( ! s.current_ids.has(name) ) & <- null
         sid: s.current_ids.get(name)
@@ -131,9 +131,9 @@
         <- s.versions.get(sid).data
     )
 
-    (* get_version — retrieve data from a specific snapshot.
+    (* get_version â€” retrieve data from a specific snapshot.
        Returns null when name or store_id is not found. *)
-    (s : @store) get_version: <- (
+    (s : store.@type) get_version: <- (
         -> name:     string
         -> store_id: string
         ( ! s.current_ids.has(name) ) & <- null
@@ -143,18 +143,18 @@
 
 
     (* ---------------------------------------------------------------
-       Mutation — each method returns a new @store (or a record)
+       Mutation â€” each method returns a new store.@type (or a record)
        --------------------------------------------------------------- *)
 
-    (* set — store a new versioned snapshot of data under name.
+    (* set â€” store a new versioned snapshot of data under name.
        Generates a UUIDv7 store_id for the snapshot.
-       Returns [ store: @store, store_id: string ] so the caller can
-       record the id if needed.  Replace your @store reference with
+       Returns [ store: store.@type, store_id: string ] so the caller can
+       record the id if needed.  Replace your store.@type reference with
        the returned store field. *)
-    (s : @store) set: <- (
+    (s : store.@type) set: <- (
         -> name: string
         -> data: @?
-        sid:         NEW_UUID_V7
+        sid:         __ps_proxy NEW_UUID_V7
         entry:       [ data: data ]
         new_versions: s.versions.put(sid, entry)
         new_current:  s.current_ids.put(name, sid)
@@ -171,17 +171,17 @@
         ]
     )
 
-    (* register — alias for set; use when first creating a named slot.
+    (* register â€” alias for set; use when first creating a named slot.
        Re-registering an existing name adds a new version (no error). *)
-    (s : @store) register: <- (
+    (s : store.@type) register: <- (
         -> name: string
         -> data: @?
         <- s.set(name, data)
     )
 
-    (* unregister — remove all snapshots of name from the store.
+    (* unregister â€” remove all snapshots of name from the store.
        Returns s unchanged when name is not registered. *)
-    (s : @store) unregister: <- (
+    (s : store.@type) unregister: <- (
         -> name: string
         ( ! s.current_ids.has(name) ) & <- s
         ids:         s.name_ids.get(name)
@@ -198,18 +198,18 @@
         ]
     )
 
-    (* prune_versions — keep only the most-recent keep snapshots for name
+    (* prune_versions â€” keep only the most-recent keep snapshots for name
        and discard older ones.  Returns s unchanged when name is not
        registered or keep >= current version count.
        Useful for controlling memory growth in long-running stores. *)
-    (s : @store) prune_versions: <- (
+    (s : store.@type) prune_versions: <- (
         -> name: string
         -> keep: integer
         ( ! s.name_ids.has(name) ) & <- s
         ids: s.name_ids.get(name)
-        ( LENGTH<ids> <= keep ) & <- s
+        ( __ps_proxy LENGTH <ids> <= keep ) & <- s
         keep_ids:    ids.sub_array(1, keep)
-        discard_ids: ids.sub_array(keep + 1, LENGTH<ids>)
+        discard_ids: ids.sub_array(keep + 1, __ps_proxy LENGTH <ids>)
         new_versions = s.versions
         discard_ids >> (
             >> sid: string

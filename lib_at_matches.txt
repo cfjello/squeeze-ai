@@ -1,0 +1,536 @@
+﻿array.sqz:5: Defines the @array type and its 1-based positional methods.
+array.sqz:6: Arrays are uniform (all elements share the same @type) and
+array.sqz:21: (col : @std.collections)  array, array_final : {
+array.sqz:37: @raw == $ (
+array.sqz:39: type: @raw[1]
+array.sqz:42: type: @raw
+array.sqz:49: type:  @array.raw
+array.sqz:50: data:  __ps_proxy CAST @raw <raw>
+array.sqz:62: (arr : @array) set_length: <- (
+array.sqz:70: (arr : @array) first: <- (
+array.sqz:76: (arr : @array) last: <- (
+array.sqz:86: (* sub_array â€” new @array from start to end (1-based, inclusive).
+array.sqz:89: (arr : @array) sub_array: <- (
+array.sqz:109: -> @exceptions: @?
+array.sqz:123: (arr : @array) sub_array_range: <- (
+array.sqz:135: (arr : @array) index_of: <- (
+array.sqz:148: (arr : @array) contains: <- (
+array.sqz:158: (* reverse â€” new @array with elements in reverse order. *)
+array.sqz:159: (arr : @array) reverse: <- (
+array.sqz:179: (arr : @array) to_string: <- (
+array.sqz:193: (arr : @array) to_json: <- (
+bitfield.sqz:5: Defines the @bitfield type and its methods.
+bitfield.sqz:27: flags: @array of { name: string, position: uint8 },
+bitfield.sqz:42: BF_ACTIVE_FLAGS<bf>         â€” @array of names of all set flags
+bitfield.sqz:51: (col : @std.collections)  bitfield, bitfield_final: {
+bitfield.sqz:76: (* flag_names â€” @array of all declared flag name strings. *)
+bitfield.sqz:77: (b : @bitfield) flag_names: <- (
+bitfield.sqz:86: (b : @bitfield) flag_count: <- (
+bitfield.sqz:91: (b : @bitfield) base_type: <- (
+bitfield.sqz:96: (b : @bitfield) max_bits: <- (
+bitfield.sqz:101: (b : @bitfield) has_flag: <- (
+bitfield.sqz:112: (b : @bitfield) is_set: <- (
+bitfield.sqz:118: (b : @bitfield) is_clear: <- (
+bitfield.sqz:123: (* active_flags â€” @array of names of all flags that are currently set. *)
+bitfield.sqz:124: (b : @bitfield) active_flags: <- (
+bitfield.sqz:129: (b : @bitfield) is_none: <- (
+bitfield.sqz:134: (b : @bitfield) is_all: <- (
+bitfield.sqz:144: (b : @bitfield) set: <- (
+bitfield.sqz:150: (b : @bitfield) clear: <- (
+bitfield.sqz:156: (b : @bitfield) toggle: <- (
+bitfield.sqz:170: (b : @bitfield) union: <- (
+bitfield.sqz:171: -> other: @bitfield
+bitfield.sqz:176: (b : @bitfield) intersect: <- (
+bitfield.sqz:177: -> other: @bitfield
+bitfield.sqz:182: (b : @bitfield) difference: <- (
+bitfield.sqz:183: -> other: @bitfield
+bitfield.sqz:190: (b : @bitfield) complement: <- (
+bitfield.sqz:202: (b : @bitfield) none: <- (
+bitfield.sqz:207: (b : @bitfield) all: <- (
+bitfield.sqz:212: names is an @array of flag name strings. *)
+bitfield.sqz:213: (b : @bitfield) of: <- (
+bitfield.sqz:220: (b : @bitfield) mask_of: <- (
+bitfield.sqz:231: (b : @bitfield) to_uint: <- (
+bitfield.sqz:236: (b : @bitfield) to_json: <- (
+bitfield.sqz:242: (b : @bitfield) to_string: <- (
+collections.sqz:10: @iterators object and is called ONCE.  The inner loop block
+collections.sqz:20: MATERIALISER (eager â€” consume iterator, return @array):
+collections.sqz:33: Output @type is determined by the return type of f.
+collections.sqz:47: Output @type is identical to input @type.
+collections.sqz:61: Output @type is identical to input @type.
+collections.sqz:78: Output @type is identical to input @type.
+collections.sqz:116: Output @type == init.@type.
+collections.sqz:193: Input must be a numeric @type.
+collections.sqz:208: Input must be an ordered @type.
+collections.sqz:223: Input must be an ordered @type.
+collections.sqz:237: MATERIALISER â€” consume a lazy stream into an @array
+collections.sqz:242: Drain col into a new @array.
+decimal.sqz:5: Defines the @decimal type and its methods.
+decimal.sqz:70: (d : @decimal) abs: <- (
+decimal.sqz:75: (d : @decimal) sign: <- (
+decimal.sqz:80: (d : @decimal) whole_part: <- (
+decimal.sqz:86: (d : @decimal) frac_part: <- (
+decimal.sqz:91: (d : @decimal) frac_digits: <- (
+decimal.sqz:101: (d : @decimal) is_zero: <- (
+decimal.sqz:106: (d : @decimal) is_positive: <- (
+decimal.sqz:111: (d : @decimal) is_negative: <- (
+decimal.sqz:116: (d : @decimal) is_integer: <- (
+decimal.sqz:126: (d : @decimal) in_range: <- (
+decimal.sqz:137: (d : @decimal) floor: <- (
+decimal.sqz:142: (d : @decimal) ceil: <- (
+decimal.sqz:147: (d : @decimal) round: <- (
+decimal.sqz:153: (d : @decimal) trunc: <- (
+decimal.sqz:165: (d : @decimal) to_string: <- (
+decimal.sqz:172: (d : @decimal) to_string_fixed: <- (
+decimal.sqz:184: (d : @decimal) to_json: <- (
+dependencies.sqz:66: (v = @dep_version) acquire: <- (
+dependencies.sqz:73: (v = @dep_version) release: <- (
+dependencies.sqz:79: (v : @dep_version) is_reclaimable: <- (
+dependencies.sqz:101: versions,        vs  : []    (* @dep_version[] sorted ascending by key (UUIDv7) *)
+dependencies.sqz:126: (n : @dep_node) is_dirty: <- (
+dependencies.sqz:145: (n : @dep_node) publish: <- (
+dependencies.sqz:162: (n : @dep_node) acquire_current: <- (
+dependencies.sqz:171: (n : @dep_node) release_version: <- (
+dependencies.sqz:180: (n : @dep_node) gc_old_versions: <- (
+dependencies.sqz:192: (n : @dep_node) record_last_used: <- (
+dependencies.sqz:219: nodes, nd : {}   (* { name: @dep_node } â€” all registered nodes *)
+dependencies.sqz:234: (g : @dep_graph) register: <- (
+dependencies.sqz:247: (g : @dep_graph) get_node: <- (
+dependencies.sqz:257: (g : @dep_graph) snapshot_deps: <- (
+dependencies.sqz:274: (g : @dep_graph) has_cycle: <- (
+dependencies.sqz:292: (g : @dep_graph) as_graph_final: <- (
+dependencies.sqz:334: -> tgt: Â§string_quoted, g: @dep_graph
+dependencies.sqz:353: (c : @dep_chain) build_order: <- (
+dependencies.sqz:354: -> g: @dep_graph
+dependencies.sqz:395: (c : @dep_chain) execute: <- (
+dependencies.sqz:396: -> g: @dep_graph, l: @logger
+dependencies.sqz:442: (c : @dep_chain) finalize: <- (
+dependencies.sqz:443: -> g: @dep_graph
+dependencies.sqz:521: -> tgt: Â§string_quoted, l: @logger
+enum.sqz:5: Defines the @enum type and its methods.
+enum.sqz:8: Internally members are stored as an ordered @array so that
+enum.sqz:19: ENUM_MEMBERS<e>              â€” @array of member values in declaration order
+enum.sqz:30: (col : @std.collections)  enum, enum_final: {
+enum.sqz:59: (e : @enum) count: <- (
+enum.sqz:63: (* members â€” @array of all member values in declaration order. *)
+enum.sqz:64: (e : @enum) members: <- (
+enum.sqz:69: (e : @enum) is_empty: <- (
+enum.sqz:74: (e : @enum) is_string_enum: <- (
+enum.sqz:79: (e : @enum) is_integer_enum: <- (
+enum.sqz:89: (e : @enum) contains: <- (
+enum.sqz:95: (e : @enum) index_of: <- (
+enum.sqz:101: (e : @enum) value_at: <- (
+enum.sqz:112: (e : @enum) first: <- (
+enum.sqz:117: (e : @enum) last: <- (
+enum.sqz:124: (e : @enum) next: <- (
+enum.sqz:132: (e : @enum) prev: <- (
+enum.sqz:145: (e : @enum) with_member: <- (
+enum.sqz:152: (e : @enum) without_member: <- (
+enum.sqz:162: (* to_array â€” @array of member values in declaration order. *)
+enum.sqz:163: (e : @enum) to_array: <- (
+enum.sqz:168: (e : @enum) to_json: <- (
+enum.sqz:173: (e : @enum) to_string: <- (
+error.sqz:43: (e : @error_event) is_recoverable: <- (
+error.sqz:48: (e : @error_event) is_fatal: <- (
+error.sqz:53: (e : @error_event) promote_fatal: <- (
+error.sqz:71: l must be an initialised @logger — see pkg/lib/logger.sqz.
+error.sqz:73: (e : @error_event) log_to: <- (
+error.sqz:74: -> l: @logger
+error.sqz:92: (e : @error_event) log_and_promote: <- (
+error.sqz:93: -> l: @logger
+graph.sqz:5: Defines the @graph type and its methods.
+graph.sqz:13: nodes â€” @array of { key: unique_key, value: @? }
+graph.sqz:14: edges â€” @array of { from: unique_key, to: unique_key, label?: string }
+graph.sqz:24: GRAPH_GET_KEYS<g>               â€” @array of all node keys
+graph.sqz:25: GRAPH_GET_VALUES<g>             â€” @array of all node values
+graph.sqz:26: GRAPH_EDGES_FROM<g, key>        â€” @array of edges where from == key
+graph.sqz:27: GRAPH_EDGES_TO<g, key>          â€” @array of edges where to == key
+graph.sqz:28: GRAPH_NEIGHBOURS<g, key>        â€” @array of keys reachable from key
+graph.sqz:29: GRAPH_PREDECESSORS<g, key>      â€” @array of keys pointing to key
+graph.sqz:33: GRAPH_ROOTS<g>                  â€” @array of keys with in_degree == 0
+graph.sqz:34: GRAPH_LEAVES<g>                 â€” @array of keys with out_degree == 0
+graph.sqz:37: GRAPH_REACHABLE<g, key>         â€” @array of keys reachable from key (BFS)
+graph.sqz:38: GRAPH_SHORTEST_PATH<g, f, t>    â€” @array of keys on shortest path, or []
+graph.sqz:39: GRAPH_TOPO_ORDER<g>             â€” @array of keys in topological order, or null
+graph.sqz:49: (col : @std.collections)  graph, graph_final: {
+graph.sqz:76: (g : @graph) node_count: <- (
+graph.sqz:81: (g : @graph) edge_count: <- (
+graph.sqz:86: (g : @graph) is_empty: <- (
+graph.sqz:91: (g : @graph) is_labelled: <- (
+graph.sqz:96: (g : @graph) is_acyclic: <- (
+graph.sqz:101: (g : @graph) has_node: <- (
+graph.sqz:107: (g : @graph) has_edge: <- (
+graph.sqz:119: (g : @graph) get_node: <- (
+graph.sqz:125: (g : @graph) get_value: <- (
+graph.sqz:131: (* get_keys â€” @array of all node keys. *)
+graph.sqz:132: (g : @graph) get_keys: <- (
+graph.sqz:136: (* get_values â€” @array of all node values, in key-insertion order. *)
+graph.sqz:137: (g : @graph) get_values: <- (
+graph.sqz:146: (* edges_from â€” @array of edge records { from, to, label } where from == key. *)
+graph.sqz:147: (g : @graph) edges_from: <- (
+graph.sqz:152: (* edges_to â€” @array of edge records { from, to, label } where to == key. *)
+graph.sqz:153: (g : @graph) edges_to: <- (
+graph.sqz:158: (* neighbours â€” @array of keys directly reachable from key (outgoing targets). *)
+graph.sqz:159: (g : @graph) neighbours: <- (
+graph.sqz:164: (* predecessors â€” @array of keys that have an edge pointing to key (incoming sources). *)
+graph.sqz:165: (g : @graph) predecessors: <- (
+graph.sqz:171: (g : @graph) edge_label: <- (
+graph.sqz:183: (g : @graph) out_degree: <- (
+graph.sqz:189: (g : @graph) in_degree: <- (
+graph.sqz:194: (* roots â€” @array of keys with in_degree == 0 (no incoming edges).
+graph.sqz:196: (g : @graph) roots: <- (
+graph.sqz:200: (* leaves â€” @array of keys with out_degree == 0 (no outgoing edges).
+graph.sqz:202: (g : @graph) leaves: <- (
+graph.sqz:211: (* reachable_from â€” @array of all keys reachable from key in BFS order,
+graph.sqz:213: (g : @graph) reachable_from: <- (
+graph.sqz:218: (* shortest_path â€” @array of keys on the shortest directed path from â†’ to
+graph.sqz:220: (g : @graph) shortest_path: <- (
+graph.sqz:226: (* topological_order â€” @array of all keys in topological order.
+graph.sqz:228: (g : @graph) topological_order: <- (
+graph.sqz:239: (g : @graph) with_node: <- (
+graph.sqz:246: (g : @graph) without_node: <- (
+graph.sqz:253: (g : @graph) with_edge: <- (
+graph.sqz:260: (g : @graph) without_edge: <- (
+graph.sqz:268: (g : @graph) merge: <- (
+graph.sqz:269: -> other: @graph
+graph.sqz:279: (g : @graph) to_json: <- (
+graph.sqz:284: (g : @graph) to_string: <- (
+hashmap.sqz:5: Defines the @hmap type: a dynamic string-keyed map whose values
+hashmap.sqz:8: Unlike @object, which enforces UNIFORM INFER across all values,
+hashmap.sqz:9: @hmap places no constraint on value types.  This makes it the
+hashmap.sqz:22: -> m: @hmap
+hashmap.sqz:24: All mutation methods return a new @hmap; @hmap is immutable by
+hashmap.sqz:40: (col : @std.collections)  hmap, hashmap: {
+hashmap.sqz:42: map:     [ key: @string , value: @? ]
+hashmap.sqz:60: -> key: @string
+hashmap.sqz:65: type:  @obj,
+hashmap.sqz:76: (m : @hmap) size: <- (
+hashmap.sqz:81: (m : @hmap) is_empty: <- (
+hashmap.sqz:86: (m : @hmap) has: <- (
+hashmap.sqz:93: (m : @hmap) get: <- (
+hashmap.sqz:99: (* keys â€” sorted @array of all keys. *)
+hashmap.sqz:100: (m : @hmap) keys: <- (
+hashmap.sqz:104: (* values â€” @array of all values ordered by sorted key. *)
+hashmap.sqz:105: (m : @hmap) values: <- (
+hashmap.sqz:109: (* to_array â€” @array of [key: k, value: v] records in key-sorted order.
+hashmap.sqz:111: (m : @hmap) to_array: <- (
+hashmap.sqz:117: Functional mutation â€” each returns a new @hmap
+hashmap.sqz:120: (* put â€” new @hmap with key â†’ val upserted.
+hashmap.sqz:122: (m : @hmap) put: <- (
+hashmap.sqz:128: (* remove â€” new @hmap without key.
+hashmap.sqz:130: (m : @hmap) remove: <- (
+hashmap.sqz:143: (m : @hmap) to_json: <- (
+integer.sqz:6: Defines the @integer type and its methods.
+integer.sqz:52: (n : @integer) abs: <- (
+integer.sqz:57: (n : @integer) sign: <- (
+integer.sqz:62: (n : @integer) is_zero: <- (
+integer.sqz:67: (n : @integer) is_positive: <- (
+integer.sqz:72: (n : @integer) is_negative: <- (
+integer.sqz:82: (n : @integer) in_range: <- (
+integer.sqz:94: (n : @integer) to_string: <- (
+integer.sqz:101: (n : @integer) to_string_radix: <- (
+integer.sqz:114: (n : @integer) to_json: <- (
+iterators.sqz:61: (it : @iterators) next: <- (
+iterators.sqz:67: (it = @iterators) close: <- (
+iterators.sqz:76: (it = @iterators) set_channel_cap: <- (
+keyed_tree.sqz:5: Defines the @keyed_tree type and its methods.
+keyed_tree.sqz:28: TREE_DFS<t>                     â€” @array of values in DFS pre-order
+keyed_tree.sqz:29: TREE_BFS<t>                     â€” @array of values in BFS level-order
+keyed_tree.sqz:33: TREE_GET_KEYS<t>                â€” @array of every key in the tree (DFS)
+keyed_tree.sqz:40: (col : @std.collections)  keyed_tree, keyed_tree_final: {
+keyed_tree.sqz:69: (t : @keyed_tree) node_count: <- (
+keyed_tree.sqz:74: (t : @keyed_tree) depth: <- (
+keyed_tree.sqz:79: (t : @keyed_tree) is_empty: <- (
+keyed_tree.sqz:84: (t : @keyed_tree) root_value: <- (
+keyed_tree.sqz:89: (t : @keyed_tree) children_count: <- (
+keyed_tree.sqz:94: (t : @keyed_tree) is_leaf: <- (
+keyed_tree.sqz:103: (* to_depth_first â€” @array of node values in DFS pre-order. *)
+keyed_tree.sqz:104: (t : @keyed_tree) to_depth_first: <- (
+keyed_tree.sqz:108: (* to_breadth_first â€” @array of node values in BFS level-order. *)
+keyed_tree.sqz:109: (t : @keyed_tree) to_breadth_first: <- (
+keyed_tree.sqz:119: (t : @keyed_tree) contains_key: <- (
+keyed_tree.sqz:126: (t : @keyed_tree) get_node: <- (
+keyed_tree.sqz:132: (t : @keyed_tree) get_value: <- (
+keyed_tree.sqz:138: (* get_keys â€” @array of every key present in the tree (DFS order). *)
+keyed_tree.sqz:139: (t : @keyed_tree) get_keys: <- (
+keyed_tree.sqz:145: (t : @keyed_tree) parent_key: <- (
+keyed_tree.sqz:157: (t : @keyed_tree) with_child: <- (
+keyed_tree.sqz:165: (t : @keyed_tree) with_child_of: <- (
+keyed_tree.sqz:173: (t : @keyed_tree) without_key: <- (
+keyed_tree.sqz:181: (t : @keyed_tree) merge: <- (
+keyed_tree.sqz:182: -> other: @keyed_tree
+keyed_tree.sqz:192: (t : @keyed_tree) to_json: <- (
+keyed_tree.sqz:198: (t : @keyed_tree) to_string: <- (
+logger.sqz:81: (lt : @log_target) with_rotation: <- (
+logger.sqz:100: (lt : @log_target) with_http_opts: <- (
+logger.sqz:135: error_ref, er  : @?      (* optional attached @error_event *)
+logger.sqz:180: targets,   tgts: []      (* @log_target[] â€” registered output targets *)
+logger.sqz:199: (l : @logger) add_target: <- (
+logger.sqz:200: -> tgt: @log_target
+logger.sqz:206: (l : @logger) _emit: <- (
+logger.sqz:207: -> entry: @log_entry
+logger.sqz:220: (l : @logger) log: <- (
+logger.sqz:235: (l : @logger) debug: <- (
+logger.sqz:240: (l : @logger) info: <- (
+logger.sqz:245: (l : @logger) warn: <- (
+logger.sqz:250: (* error variant also accepts an optional @error_event for structured capture *)
+logger.sqz:251: (l : @logger) error: <- (
+logger.sqz:252: -> msg: Â§string_quoted, fld: Â§object_final, er: @error_event
+logger.sqz:259: (l : @logger) flush: <- (
+object.sqz:5: Defines the @object type (associative array: string keys â†’ @? values)
+object.sqz:20: OBJ_KEYS<obj>                â€” sorted @array of all keys
+object.sqz:21: OBJ_VALUES<obj>              â€” @array of values in key-sorted order
+object.sqz:22: OBJ_TO_ARRAY<obj>            â€” @array of [key: k, value: v] records
+object.sqz:23: OBJ_WITH_KEY<obj, key, val>  â€” new @object with key â†’ val upserted
+object.sqz:24: OBJ_WITHOUT_KEY<obj, key>    â€” new @object with key removed
+object.sqz:28: (col : @std.collections)  object, object_final: {
+object.sqz:56: (obj : @object) length: <- (
+object.sqz:61: (obj : @object) contains_key: <- (
+object.sqz:68: (obj : @object) get: <- (
+object.sqz:80: (* get_keys â€” @array of all keys in sorted order.
+object.sqz:82: (obj : @object) get_keys: <- (
+object.sqz:86: (* get_values â€” @array of all values ordered by sorted key.
+object.sqz:89: (obj : @object) get_values: <- (
+object.sqz:93: (* to_array â€” converts to an @array of [key: k, value: v] records
+object.sqz:96: (obj : @object) to_array: <- (
+object.sqz:108: (obj : @object) to_json: <- (
+object.sqz:124: Functional mutation â€” return a new @object, never mutates obj
+object.sqz:127: (* with_key â€” new @object with key â†’ val upserted.
+object.sqz:129: (obj : @object) with_key: <- (
+object.sqz:135: (* without_key â€” new @object with key removed.
+object.sqz:137: (obj : @object) without_key: <- (
+regexp.sqz:6: @match_record  — structured match result (index, value, groups)
+regexp.sqz:7: @regexp        — compiled pattern + flags type with instance methods
+regexp.sqz:11: — @regexp stores pattern and flags separately so that add_flags /
+regexp.sqz:79: SECTION 2 — @regexp TYPE
+regexp.sqz:83: @regexp wraps a compiled regular-expression pattern together with
+regexp.sqz:101: @regexp instances rather than mutating the receiver.
+regexp.sqz:153: SECTION 3 — @regexp INSTANCE METHODS
+regexp.sqz:166: (re : @regexp) test: <- (
+regexp.sqz:184: (re : @regexp) exec: <- (
+regexp.sqz:190: 3.3  match_all(str) → 1..m @match_record
+regexp.sqz:200: (re : @regexp) match_all: <- (
+regexp.sqz:217: (re : @regexp) replace: <- (
+regexp.sqz:229: (re : @regexp) replace_all: <- (
+regexp.sqz:246: (re : @regexp) replace_fn: <- (
+regexp.sqz:253: -> m: @match_record
+regexp.sqz:270: (re : @regexp) split: <- (
+regexp.sqz:281: (re : @regexp) split_limit: <- (
+regexp.sqz:298: (re : @regexp) groups: <- (
+regexp.sqz:311: (re : @regexp) groups_all: <- (
+regexp.sqz:317: -> m: @match_record
+regexp.sqz:324: 3.11  add_flags(extra) → @regexp
+regexp.sqz:326: Returns a NEW @regexp with extra flag characters appended,
+regexp.sqz:333: (re : @regexp) add_flags: <- (
+regexp.sqz:344: 3.12  remove_flags(drop) → @regexp
+regexp.sqz:346: Returns a NEW @regexp with the given flag characters removed.
+regexp.sqz:349: (re : @regexp) remove_flags: <- (
+regexp.sqz:365: (re : @regexp) is_global:       <- ( <- __ps_proxy RE_TEST <"g", "", re.flags> )
+regexp.sqz:366: (re : @regexp) is_ignore_case:  <- ( <- __ps_proxy RE_TEST <"i", "", re.flags> )
+regexp.sqz:367: (re : @regexp) is_multiline:    <- ( <- __ps_proxy RE_TEST <"m", "", re.flags> )
+regexp.sqz:368: (re : @regexp) is_sticky:       <- ( <- __ps_proxy RE_TEST <"y", "", re.flags> )
+regexp.sqz:369: (re : @regexp) is_unicode:      <- ( <- __ps_proxy RE_TEST <"u", "", re.flags> )
+regexp.sqz:370: (re : @regexp) is_free_spacing: <- ( <- __ps_proxy RE_TEST <"x", "", re.flags> )
+regexp.sqz:378: to construct a @regexp instance first.  Each function accepts
+regexp.sqz:382: automatically, consistent with the @regexp instance methods.
+regexp.sqz:415: 4.3  match_all(rx, str) → 1..m @match_record
+regexp.sqz:507: 4.10  union(patterns, flags) → @regexp
+sorted_tree.sqz:5: Defines the @sorted_tree type and its methods.
+sorted_tree.sqz:29: TREE_DFS<t>                     â€” @array of values in DFS pre-order
+sorted_tree.sqz:30: TREE_BFS<t>                     â€” @array of values in BFS level-order
+sorted_tree.sqz:32: TREE_GET_KEYS<t>                â€” @array of every key in the tree (DFS)
+sorted_tree.sqz:39: STREE_RANGE<t, lo, hi>          â€” @array of values whose keys are lo..hi
+sorted_tree.sqz:46: (col : @std.collections)  sorted_tree, sorted_tree_final: {
+sorted_tree.sqz:79: (t : @sorted_tree) node_count: <- (
+sorted_tree.sqz:84: (t : @sorted_tree) depth: <- (
+sorted_tree.sqz:89: (t : @sorted_tree) is_empty: <- (
+sorted_tree.sqz:94: (t : @sorted_tree) root_value: <- (
+sorted_tree.sqz:99: (t : @sorted_tree) children_count: <- (
+sorted_tree.sqz:104: (t : @sorted_tree) is_leaf: <- (
+sorted_tree.sqz:113: (* to_depth_first â€” @array of node values in DFS pre-order. *)
+sorted_tree.sqz:114: (t : @sorted_tree) to_depth_first: <- (
+sorted_tree.sqz:118: (* to_breadth_first â€” @array of node values in BFS level-order. *)
+sorted_tree.sqz:119: (t : @sorted_tree) to_breadth_first: <- (
+sorted_tree.sqz:125: Key-addressed access (shared with @keyed_tree)
+sorted_tree.sqz:129: (t : @sorted_tree) contains_key: <- (
+sorted_tree.sqz:136: (t : @sorted_tree) get_node: <- (
+sorted_tree.sqz:142: (t : @sorted_tree) get_value: <- (
+sorted_tree.sqz:148: (* get_keys â€” @array of every key present in the tree (DFS order). *)
+sorted_tree.sqz:149: (t : @sorted_tree) get_keys: <- (
+sorted_tree.sqz:155: (t : @sorted_tree) parent_key: <- (
+sorted_tree.sqz:168: (t : @sorted_tree) search: <- (
+sorted_tree.sqz:174: (t : @sorted_tree) min_key: <- (
+sorted_tree.sqz:179: (t : @sorted_tree) max_key: <- (
+sorted_tree.sqz:183: (* range_values â€” @array of values whose keys satisfy lo <= key <= hi.
+sorted_tree.sqz:185: (t : @sorted_tree) range_values: <- (
+sorted_tree.sqz:193: (t : @sorted_tree) successor: <- (
+sorted_tree.sqz:200: (t : @sorted_tree) predecessor: <- (
+sorted_tree.sqz:213: (t : @sorted_tree) with_node: <- (
+sorted_tree.sqz:221: (t : @sorted_tree) without_key: <- (
+sorted_tree.sqz:232: (t : @sorted_tree) to_json: <- (
+sorted_tree.sqz:238: (t : @sorted_tree) to_string: <- (
+store.sqz:6: Every mutating method returns a new @store value; the caller
+store.sqz:12: hmap.sqz  â€” heterogeneous string-keyed map  (@hmap)
+store.sqz:18: Three @hmap fields keep all state flat â€” no nested mutation:
+store.sqz:22: name_ids      name  â†’ @array            (store_ids, newest first)
+store.sqz:24: A snapshot's lifetime is the lifetime of the @store value that
+store.sqz:25: holds it.  Because @store is a value type, any consumer holding
+store.sqz:26: an older @store automatically retains all snapshots visible at
+store.sqz:38: get_ids(name)                 â†’ @array | null      (newest-first id list)
+store.sqz:40: Mutation (returns updated @store or [ store, store_id ] record):
+store.sqz:41: set(name, data)               â†’ [ store: @store, store_id: string ]
+store.sqz:42: register(name, data)          â†’ [ store: @store, store_id: string ]
+store.sqz:43: unregister(name)              â†’ @store
+store.sqz:44: prune_versions(name, keep)    â†’ @store
+store.sqz:48: LENGTH<val>    â€” length of an @array
+store.sqz:51: (col : @std.collections)  store: {
+store.sqz:65: (* Three typed @hmap fields replace untyped {} â€” satisfies Rule A.
+store.sqz:69: name_ids     :  name      â†’ @array of store_ids, newest first *)
+store.sqz:92: (s : @store) size: <- (
+store.sqz:97: (s : @store) has: <- (
+store.sqz:104: (s : @store) version_count: <- (
+store.sqz:112: (s : @store) current_id: <- (
+store.sqz:119: (s : @store) get_ids: <- (
+store.sqz:126: (s : @store) get: <- (
+store.sqz:136: (s : @store) get_version: <- (
+store.sqz:146: Mutation â€” each method returns a new @store (or a record)
+store.sqz:151: Returns [ store: @store, store_id: string ] so the caller can
+store.sqz:152: record the id if needed.  Replace your @store reference with
+store.sqz:154: (s : @store) set: <- (
+store.sqz:176: (s : @store) register: <- (
+store.sqz:184: (s : @store) unregister: <- (
+store.sqz:205: (s : @store) prune_versions: <- (
+string.sqz:22: (s : @string) copy: <- (
+string.sqz:26: (s : @string) trim: <- (
+string.sqz:32: (s : @string) quote: <- (
+string.sqz:37: (s : @string) length: <- (
+string.sqz:42: (s : @string) substr: <- (
+string.sqz:62: (s : @string) substr_range: <- (
+string.sqz:67: (s : @string) substr_range: <- (
+string_tree.sqz:5: Defines the @string_tree type and its methods.
+string_tree.sqz:6: A string_tree is structurally identical to @tree but the grammar
+string_tree.sqz:15: The path_to result is an @array of string node values from the
+string_tree.sqz:23: TREE_DFS<t>                  â€” @array of string values in DFS pre-order
+string_tree.sqz:24: TREE_BFS<t>                  â€” @array of string values in BFS level-order
+string_tree.sqz:30: TREE_PATH_TO<t, value>       â€” @array path of strings from root to first match
+string_tree.sqz:31: TREE_TO_PATHS<t>             â€” @array of @array (each root-to-leaf path)
+string_tree.sqz:34: (col : @std.collections)  string_tree, string_tree_final: {
+string_tree.sqz:63: (t : @string_tree) node_count: <- (
+string_tree.sqz:68: (t : @string_tree) depth: <- (
+string_tree.sqz:73: (t : @string_tree) is_empty: <- (
+string_tree.sqz:78: (t : @string_tree) root_value: <- (
+string_tree.sqz:83: (t : @string_tree) children_count: <- (
+string_tree.sqz:88: (t : @string_tree) is_leaf: <- (
+string_tree.sqz:97: (* to_depth_first â€” @array of string values in DFS pre-order. *)
+string_tree.sqz:98: (t : @string_tree) to_depth_first: <- (
+string_tree.sqz:102: (* to_breadth_first â€” @array of string values in BFS level-order. *)
+string_tree.sqz:103: (t : @string_tree) to_breadth_first: <- (
+string_tree.sqz:113: (t : @string_tree) contains: <- (
+string_tree.sqz:119: (t : @string_tree) find: <- (
+string_tree.sqz:124: (* path_to â€” @array of string values along the path from the root
+string_tree.sqz:127: (t : @string_tree) path_to: <- (
+string_tree.sqz:137: (* to_paths â€” @array of @array; each inner array is the sequence of
+string_tree.sqz:139: (t : @string_tree) to_paths: <- (
+string_tree.sqz:143: (* to_paths_joined â€” @array of string; each element is one
+string_tree.sqz:146: (t : @string_tree) to_paths_joined: <- (
+string_tree.sqz:166: (t : @string_tree) with_child: <- (
+string_tree.sqz:177: (t : @string_tree) to_json: <- (
+string_tree.sqz:183: (t : @string_tree) to_string: <- (
+table.sqz:5: Defines the @table type and its relational methods.
+table.sqz:7: Every method returns a new @table; none mutate in place.
+table.sqz:17: (map, filter, reduce, â€¦) in collections.sqz work on @table
+table.sqz:26: TBL_GET_ROW<t, key>           â€” row by key value â†’ @object or null
+table.sqz:27: TBL_GET_ROW_AT<t, index>      â€” row by 1-based position â†’ @object
+table.sqz:28: TBL_WITH_ROW<t, row>          â€” upsert row â†’ new @table
+table.sqz:29: TBL_WITHOUT_KEY<t, key>       â€” remove row by key â†’ new @table
+table.sqz:30: TBL_WITHOUT_ROW_AT<t, index>  â€” remove row by position â†’ new @table
+table.sqz:32: TBL_PROJECT<t, names>         â€” column subset â†’ new @table
+table.sqz:33: TBL_WHERE<t, pred>            â€” filter rows â†’ new @table
+table.sqz:34: TBL_ORDER_BY<t, col, asc>     â€” sort rows â†’ new @table
+table.sqz:36: TBL_INNER_JOIN<t1, t2, col>   â€” inner join on column â†’ new @table
+table.sqz:37: TBL_LEFT_JOIN<t1, t2, col>    â€” left join on column â†’ new @table
+table.sqz:38: TBL_GROUP_BY<t, col>          â€” partition rows â†’ @object of @tables
+table.sqz:39: TBL_TO_ARRAY<t>               â€” rows as array of @object records
+table.sqz:44: (col : @std.collections)  table, table_final: {
+table.sqz:76: (t : @table) column_count: <- (
+table.sqz:81: (t : @table) row_count: <- (
+table.sqz:85: (* column_names â€” @array of all column name strings. *)
+table.sqz:86: (t : @table) column_names: <- (
+table.sqz:90: (* key_column_names â€” @array of key column name strings. *)
+table.sqz:91: (t : @table) key_column_names: <- (
+table.sqz:96: (t : @table) has_column: <- (
+table.sqz:97: -> name: @string
+table.sqz:102: (t : @table) is_empty: <- (
+table.sqz:111: (* first_row â€” row at index 1 as an @object, or null when empty. *)
+table.sqz:112: (t : @table) first_row: <- (
+table.sqz:117: (* last_row â€” row at the final index as an @object, or null when empty. *)
+table.sqz:118: (t : @table) last_row: <- (
+table.sqz:124: (* get_row_at â€” row by 1-based position as an @object. *)
+table.sqz:125: (t : @table) get_row_at: <- (
+table.sqz:130: (* get_row â€” row by primary key value as an @object, or null when absent.
+table.sqz:132: (t : @table) get_row: <- (
+table.sqz:140: All methods return a new @table; the original is unchanged.
+table.sqz:145: (t : @table) with_row: <- (
+table.sqz:146: -> row: @object
+table.sqz:150: (* without_key â€” new @table with the row matching key removed.
+table.sqz:152: (t : @table) without_key: <- (
+table.sqz:157: (* without_row_at â€” new @table with the row at the given 1-based
+table.sqz:159: (t : @table) without_row_at: <- (
+table.sqz:169: (* get_column â€” @array of all values for the named column, in row order.
+table.sqz:171: (t : @table) get_column: <- (
+table.sqz:172: -> name: @string
+table.sqz:176: (* project â€” new @table containing only the named columns.
+table.sqz:178: (t : @table) project: <- (
+table.sqz:179: -> col_names: @array
+table.sqz:188: (* where â€” new @table of rows for which predicate returns true. *)
+table.sqz:189: (t : @table) where: <- (
+table.sqz:194: (* order_by â€” new @table sorted ascending by the named column.
+table.sqz:196: (t : @table) order_by: <- (
+table.sqz:197: -> col_name: @string
+table.sqz:201: (* order_by_desc â€” new @table sorted descending by the named column.
+table.sqz:203: (t : @table) order_by_desc: <- (
+table.sqz:204: -> col_name: @string
+table.sqz:208: (* limit â€” new @table with at most n rows, taken from the start. *)
+table.sqz:209: (t : @table) limit: <- (
+table.sqz:221: (* merge â€” new @table combining rows from both tables.
+table.sqz:225: (t : @table) merge: <- (
+table.sqz:226: -> other: @table
+table.sqz:237: (t : @table) inner_join: <- (
+table.sqz:238: -> other:  @table
+table.sqz:239: -> on_col: @string
+table.sqz:245: (t : @table) left_join: <- (
+table.sqz:246: -> other:  @table
+table.sqz:247: -> on_col: @string
+table.sqz:256: (* group_by â€” @object whose keys are the distinct values of col_name
+table.sqz:257: and whose values are @table partitions containing matching rows. *)
+table.sqz:258: (t : @table) group_by: <- (
+table.sqz:259: -> col_name: @string
+table.sqz:268: (* to_array â€” rows as an @array of @object records { col: val, â€¦ }.
+table.sqz:269: This is the escape hatch: once you have an @array you can use
+table.sqz:272: (t : @table) to_array: <- (
+table.sqz:277: (t : @table) to_json: <- (
+table.sqz:283: (t : @table) to_string: <- (
+template.sqz:53: -> segments: @string_array
+tree.sqz:5: Defines the @tree type and its methods.
+tree.sqz:23: TREE_DFS<t>                  â€” @array of values in DFS pre-order
+tree.sqz:24: TREE_BFS<t>                  â€” @array of values in BFS level-order
+tree.sqz:26: TREE_FIND_ALL<t, pred>       â€” @array of all values matching pred
+tree.sqz:34: (col : @std.collections)  tree, tree_final: {
+tree.sqz:61: (t : @tree) node_count: <- (
+tree.sqz:66: (t : @tree) depth: <- (
+tree.sqz:71: (t : @tree) is_empty: <- (
+tree.sqz:76: (t : @tree) root_value: <- (
+tree.sqz:81: (t : @tree) children_count: <- (
+tree.sqz:86: (t : @tree) is_leaf: <- (
+tree.sqz:95: (* to_depth_first â€” @array of node values in DFS pre-order.
+tree.sqz:97: (t : @tree) to_depth_first: <- (
+tree.sqz:101: (* to_breadth_first â€” @array of node values in BFS level-order.
+tree.sqz:103: (t : @tree) to_breadth_first: <- (
+tree.sqz:113: (t : @tree) find: <- (
+tree.sqz:118: (* find_all â€” @array of all values for which predicate returns true, DFS order. *)
+tree.sqz:119: (t : @tree) find_all: <- (
+tree.sqz:131: (t : @tree) with_child: <- (
+tree.sqz:138: (t : @tree) map: <- (
+tree.sqz:146: (t : @tree) prune: <- (
+tree.sqz:157: (t : @tree) to_json: <- (
+tree.sqz:163: (t : @tree) to_string: <- (

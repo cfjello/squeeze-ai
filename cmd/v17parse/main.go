@@ -195,6 +195,13 @@ func dispatchTable(p *parser.V17Parser) map[string]func() (any, error) {
 		"update_mutable":          func() (any, error) { return p.ParseUpdateMutable() },
 		"assignment":              func() (any, error) { return p.ParseAssignment() },
 		"self_ref":                func() (any, error) { return p.ParseSelfRef() },
+
+		// --- 07_types_scope ---
+		"import_assign":    func() (any, error) { return p.ParseImportAssign() },
+		"scope_assign":     func() (any, error) { return p.ParseScopeAssign() },
+		"scope_merge_tail": func() (any, error) { return p.ParseScopeMergeTail() },
+		"scope_final":      func() (any, error) { return p.ParseScopeFinal() },
+		"parser_root":      func() (any, error) { return p.ParseParserRoot() },
 	}
 }
 
@@ -235,6 +242,8 @@ func knownRules() []string {
 		"assign_read_only_ref", "assign_rhs", "assign_single", "assign_version",
 		"assignment", "private_modifier", "update_mutable", "update_mutable_oper",
 		"self_ref",
+		// 07_types_scope
+		"import_assign", "scope_assign", "scope_final", "scope_merge_tail", "parser_root",
 	}
 	sort.Strings(rules)
 	return rules
@@ -290,20 +299,13 @@ func main() {
 		sourceText = string(src)
 	}
 
-	// Lex
-	fmt.Printf("=== Tokenising %s ===\n", sourceLabel)
-	lex := parser.NewV17Lexer(sourceText)
-	tokens, err := lex.V17Tokenize()
+	// Build parser (no pre-lexing step)
+	fmt.Printf("=== Parsing %s ===\n", sourceLabel)
+	p, err := parser.NewV17ParserFromSource(sourceText)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "lexer error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "parser error: %v\n", err)
 		os.Exit(1)
 	}
-	for i, t := range tokens {
-		fmt.Printf("  [%3d] %-22s %q  (line %d, col %d)\n", i, t.Type, t.Value, t.Line, t.Col)
-	}
-
-	// Build parser
-	p := parser.NewV17Parser(tokens, sourceText)
 
 	if *debugFlag {
 		p.EnableDebug()
@@ -314,7 +316,7 @@ func main() {
 	// Determine entry point
 	rule := strings.TrimSpace(*tokenFlag)
 	if rule == "" {
-		rule = "constant"
+		rule = "parser_root"
 	}
 
 	fn, ok := table[rule]

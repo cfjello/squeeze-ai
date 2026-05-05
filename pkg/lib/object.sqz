@@ -2,30 +2,30 @@
    pkg/lib/object.sqz  --  Squeeze V13 Object Type
    ============================================================
 
-   Defines the @object type (associative array: string keys → @? values)
+   Defines the object.@type type (associative array: string keys â†’ @? values)
    and its key-based methods.
 
    Key order is undefined at the Go runtime level (Go maps are unordered).
    All methods that return or iterate keys yield them in sorted order for
    deterministic, reproducible behaviour.
 
-   To use collection-generic operations (map, filter, reduce, …) over an
+   To use collection-generic operations (map, filter, reduce, â€¦) over an
    object's contents, convert first:
-     obj.get_values()   — iterator of values (key-sorted order)
-     obj.to_array()     — iterator of [key: k, value: v] records
+     obj.get_values()   â€” iterator of values (key-sorted order)
+     obj.to_array()     â€” iterator of [key: k, value: v] records
 
    Intrinsics used (UPPERCASE builtins):
-     LENGTH<obj>                  — count of key-value pairs
-     OBJ_HAS<obj, key>            — O(1) boolean key-presence check
-     OBJ_KEYS<obj>                — sorted @array of all keys
-     OBJ_VALUES<obj>              — @array of values in key-sorted order
-     OBJ_TO_ARRAY<obj>            — @array of [key: k, value: v] records
-     OBJ_WITH_KEY<obj, key, val>  — new @object with key → val upserted
-     OBJ_WITHOUT_KEY<obj, key>    — new @object with key removed
-     TO_JSON<val>                 — JSON-serialise a single value
+     LENGTH<obj>                  â€” count of key-value pairs
+     OBJ_HAS<obj, key>            â€” O(1) boolean key-presence check
+     OBJ_KEYS<obj>                â€” sorted array.@type of all keys
+     OBJ_VALUES<obj>              â€” array.@type of values in key-sorted order
+     OBJ_TO_ARRAY<obj>            â€” array.@type of [key: k, value: v] records
+     OBJ_WITH_KEY<obj, key, val>  â€” new object.@type with key â†’ val upserted
+     OBJ_WITHOUT_KEY<obj, key>    â€” new object.@type with key removed
+     TO_JSON<val>                 â€” JSON-serialise a single value
    *)
 
-(col : @std.collections)  object, object_final: {
+(col : std.collections.type.@type)  object, object_final: {
     names: ["object", "object_final"]
     map:     col.map
     filter:  col.filter
@@ -35,13 +35,13 @@
     - (
         card,  c:       1..1
         type,  t:       $
-        data,  d:       @?     (* raw associative map; assigned by init from §object_final *)
+        data,  d:       @?     (* raw associative map; assigned by init from Â§object_final *)
         ver,   v:       "v0.0"
 
         init: <- (
-            -> raw: §object_final
-            <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
-                 card:  LHS_CALLER<§assign_lhs.cardinality>,
+            -> raw: Â§object_final
+            <- [ names: __ps_call LHS Â§assign_lhs.ident_name,
+                 card:  __ps_call LHS Â§assign_lhs.cardinality,
                  type:  $,
                  data:  raw ]
         )
@@ -52,23 +52,23 @@
        O(1) access
        --------------------------------------------------------------- *)
 
-    (* length — number of key-value pairs. *)
-    (obj : @object) length: <- (
-        <- LENGTH<obj.data>
+    (* length â€” number of key-value pairs. *)
+    (obj : object.@type) length: <- (
+        <- __ps_proxy LENGTH <obj.data>
     )
 
-    (* contains_key — O(1) hash check; true when key is present. *)
-    (obj : @object) contains_key: <- (
+    (* contains_key â€” O(1) hash check; true when key is present. *)
+    (obj : object.@type) contains_key: <- (
         -> key: string
-        <- OBJ_HAS<obj.data, key>
+        <- __ps_proxy OBJ_HAS <obj.data, key>
     )
 
-    (* get — safe key access; returns default when the key is absent.
+    (* get â€” safe key access; returns default when the key is absent.
        Avoids a guarded double-lookup at every call site. *)
-    (obj : @object) get: <- (
+    (obj : object.@type) get: <- (
         -> key:     string
         -> default: @?
-        ( OBJ_HAS<obj.data, key> ) & <- obj.data[key]
+        ( __ps_proxy OBJ_HAS <obj.data, key> ) & <- obj.data[key]
         <- default
     )
 
@@ -77,24 +77,24 @@
        Projection
        --------------------------------------------------------------- *)
 
-    (* get_keys — @array of all keys in sorted order.
+    (* get_keys â€” array.@type of all keys in sorted order.
        Sorted order guarantees repeatable iteration and JSON output. *)
-    (obj : @object) get_keys: <- (
-        <- OBJ_KEYS<obj.data>
+    (obj : object.@type) get_keys: <- (
+        <- __ps_proxy OBJ_KEYS <obj.data>
     )
 
-    (* get_values — @array of all values ordered by sorted key.
+    (* get_values â€” array.@type of all values ordered by sorted key.
        Use this as the input to collection pipelines when only values
        are needed. *)
-    (obj : @object) get_values: <- (
-        <- OBJ_VALUES<obj.data>
+    (obj : object.@type) get_values: <- (
+        <- __ps_proxy OBJ_VALUES <obj.data>
     )
 
-    (* to_array — converts to an @array of [key: k, value: v] records
+    (* to_array â€” converts to an array.@type of [key: k, value: v] records
        in sorted key order.  Enables full collection-generic pipelines
        over key-value pairs via collections.sqz. *)
-    (obj : @object) to_array: <- (
-        <- OBJ_TO_ARRAY<obj.data>
+    (obj : object.@type) to_array: <- (
+        <- __ps_proxy OBJ_TO_ARRAY <obj.data>
     )
 
 
@@ -102,10 +102,10 @@
        Serialisation
        --------------------------------------------------------------- *)
 
-    (* to_json — JSON object string: '{"k1": v1, "k2": v2, ...}'.
+    (* to_json â€” JSON object string: '{"k1": v1, "k2": v2, ...}'.
        Keys are emitted in sorted order for deterministic output.
        Delegates value formatting to TO_JSON<> for correct quoting. *)
-    (obj : @object) to_json: <- (
+    (obj : object.@type) to_json: <- (
         keys:  obj.get_keys()
         result = "{"
         first  = true
@@ -113,7 +113,7 @@
             >> key: string
             sep_now = first & "" ^ ", "
             ( first ) & first = false
-            result = result + sep_now + TO_JSON<key> + ": " + TO_JSON<obj.data[key]>
+            result = result + sep_now + __ps_proxy TO_JSON <key> + ": " + __ps_proxy TO_JSON <obj.data[key]>
         )
         result = result + "}"
         <- result
@@ -121,22 +121,22 @@
 
 
     (* ---------------------------------------------------------------
-       Functional mutation — return a new @object, never mutates obj
+       Functional mutation â€” return a new object.@type, never mutates obj
        --------------------------------------------------------------- *)
 
-    (* with_key — new @object with key → val upserted.
+    (* with_key â€” new object.@type with key â†’ val upserted.
        Adds the key when absent; replaces the value when present. *)
-    (obj : @object) with_key: <- (
+    (obj : object.@type) with_key: <- (
         -> key: string
         -> val: @?
-        <- [ type: $, data: OBJ_WITH_KEY<obj.data, key, val> ]
+        <- [ type: $, data: __ps_proxy OBJ_WITH_KEY <obj.data, key, val> ]
     )
 
-    (* without_key — new @object with key removed.
+    (* without_key â€” new object.@type with key removed.
        Returns obj unchanged when key is not present. *)
-    (obj : @object) without_key: <- (
+    (obj : object.@type) without_key: <- (
         -> key: string
-        ( ! OBJ_HAS<obj.data, key> ) & <- obj
-        <- [ type: $, data: OBJ_WITHOUT_KEY<obj.data, key> ]
+        ( ! __ps_proxy OBJ_HAS <obj.data, key> ) & <- obj
+        <- [ type: $, data: __ps_proxy OBJ_WITHOUT_KEY <obj.data, key> ]
     )
 }

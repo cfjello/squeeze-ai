@@ -50,7 +50,7 @@ coerce_to_string : <- {
      => "Hello Alice, you have 3 messages"
 *)
 tmpl_render : <- {
-    -> segments: @string_array
+    -> segments: string_array.@type
     <- join(segments, "")
 }
 

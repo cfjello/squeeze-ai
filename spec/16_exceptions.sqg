@@ -605,5 +605,5 @@ MERGE<parser_root> = | scope_with_catch;
    Existing reserved names not affected by this spec:
      store_ctrl — defined in spec/06_functions.sqg
      $          — self_ref
-     @          — type_prefix
+     @          — reflect_prefix
 *)

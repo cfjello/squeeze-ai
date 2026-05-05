@@ -1,6 +1,6 @@
 
 (* ============================================================
-   20_bootstrap.sqg  —  Squeeze Grammar Directive Reference
+   30_bootstrap.sqg  —  Squeeze Grammar Directive Reference
    ============================================================
    This file is the canonical reference for all Squeeze grammar
    parser directives.  It is intentionally non-executable:
@@ -8,38 +8,68 @@
    ============================================================ *)
 
 (* ------------------------------------------------------------
-   SECTION 20 — IMPLICIT PARSER BEHAVIOUR
+   SECTION 30 — IMPLICIT PARSER BEHAVIOUR
    Behaviours that apply automatically without explicit syntax.
    ------------------------------------------------------------ *)
 
 (*
-   20.1  Array Indexing
+   30.1  Array Indexing
         Indexing of arrays starts with 1 in the Squeeze language 
 *)
 
 
 (* ------------------------------------------------------------
-   SECTION 21 — SQUEEZE Bootstarp ANGLE-BRACKET DIRECTIVES 
-   Syntax:  DIRECTIVE<  expression  >
-   The angle-bracket group is always preceded by a directive keyword.
-   The parser acts on the result of the enclosed expression.
+   SECTION 31 — SQUEEZE Bootstrap
+   Syntax:  ps_call ps_args __token
    ------------------------------------------------------------ *)
 
 (*
-   21.1 LENGTH<array_final>
+   31.0 "§" token 
+        Instructs the parser to check "token" against a list of all tokens/rules in the grammar. 
+        The reference can include dots, for example like in assign_version.digits , to reference a sub_token within the rule.
+
+        A type reference is then "@§", for example @assign_version.digits 
+
+   31.1 ps_call LENGTH §array_final
         Instructs the parser to return the LENGTH of the enclosed array.
 
-   21.2 LHS_CALLER<§assign_lhs.ident_name>
-        Instructs the parser to do a Look Behind to find the one or more ident_name(s) that this assigment is made to.
-        if the expression has no LHS the use the name "unknown" 
+   31.2 LHS
+        Instructs the parser to do a Look Behind to find the assign_lhs object of the variable that this assignment is being made to.
 
-   21.2 LHS_CALLER<§assign_lhs.cardinality>
-        Instructs the parser to do a Look Behind to find the cardinality of the named variable that this assigment is made to.
-        if the expression has no LHS the default to "1..1"
-
-   21.3  SUB_RANGE
-        RANGE start..end<§array_final>
-        Returns the sub-range of the array that falls within the 
-        start..end range, both inclusive. Be aware that start and/or end are integers and can have sign negative to indicate backwards indexing.
-        Fails if out of range.
 *)
+
+include "./28_intrinsics.sqg";
+include "./29_grammer_tokens.sqg";
+
+__ps_token_ref = ps_prefix ( __token ) { "." __token };
+
+__ps_obj_self  = __ps_token_ref ".$";
+
+
+__ps_arg   = "TO_JSON" "LENGTH" | "LHS_CALLER" | "CAST_TO_STRING" | "INFER" | "REF_OF" | "LHS" ;
+
+__ps_type_of    = __ps_token_ref !WS! "." !WS! reflect_prefix !WS! "type" ;
+
+ident_type_of   = ( ident_ref !WS! "." !WS! reflect_prefix !WS! "type" )  ;
+
+__ps_cast  = "CAST" ( "string" | "integer" | "bit_array" | ps_type_of );
+
+__ps_call  = "__ps_call" [ __ps_arg | __ps_cast | __ps_type_of ]  [ __ ps_token_ref | ident_ref ];
+
+__ps_proxy_range = "RANGE" range;
+
+__ps_proxy_args  = intrinsics | "UNIQUE" | "UNIFORM" | "VALUE_OF"  | __ps_proxy_range | __ps_type_of;
+
+__ps_proxy_extra_args = ( __ps_type_of | ident_type_of  | ident_ref ) { "," [ reflect_prefix ] ( __ps_type_of | ident_type_of  | ident_ref ) };
+
+__ps_proxy = "__ps_proxy" __ps_proxy_args [ __ps_proxy_extra_args ] [ func_call_args ] [ "<" func_call_args ">" ] ;
+
+(* 
+   New DIRECTIVE: PREFIX -  Put the new added token(s), in the case below it is __ps_token as they are, 
+   in front of the existing ident_ref tokens within round brackets, The round bracket aorund the existing 
+   token(s) are needed to insure consistency
+*)
+PREFIX<ident_ref> = __ps_token_ref |;
+EXTEND<statement> = | __ps_call | __ps_proxy; 
+
+

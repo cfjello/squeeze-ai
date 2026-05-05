@@ -13,7 +13,6 @@ import (
 	"os"
 	"regexp"
 	"strings"
-	"unicode"
 )
 
 // =============================================================================
@@ -108,6 +107,15 @@ const (
 
 	// Two-character operator added for 04_objects.sqg
 	V17_GTGT // >>
+
+	// =~ operator for jp_filter_oper (05_json_path.sqg).
+	// Note: ~ alone is ILLEGAL so this must remain a compound lexer token.
+	// It is ONLY consumed by ParseJpFilterOper — never by any other rule.
+	V17_EQ_TILDE // =~
+
+	// ~> operator — push_oper (06_functions.sqg / 13_push_pull.sqg).
+	// Note: ~ alone is ILLEGAL so this must be a compound lexer token.
+	V17_TILDE_GT // ~>
 )
 
 // v17tokenNames maps each V17TokenType to its display name.
@@ -135,6 +143,8 @@ var v17tokenNames = map[V17TokenType]string{
 	V17_COLON_TILDE: ":~",
 	V17_DOLLAR:      "$",
 	V17_GTGT:        ">>",
+	V17_EQ_TILDE:    "=~",
+	V17_TILDE_GT:    "~>",
 }
 
 // String returns the display name of a V17TokenType.
@@ -177,479 +187,43 @@ var v17keywords = map[string]V17TokenType{
 	"Many":     V17_MANY,
 }
 
-// V17Lexer holds the mutable scan state.
-type V17Lexer struct {
-	input []rune
-	pos   int
-	line  int
-	col   int
-	last  V17TokenType // type of most-recently emitted non-NL token
-}
-
-// NewV17Lexer constructs a fresh V17Lexer for the given source string.
-func NewV17Lexer(src string) *V17Lexer {
-	return &V17Lexer{
-		input: []rune(src),
-		pos:   0,
-		line:  1,
-		col:   0,
-		last:  V17_BOF,
-	}
-}
-
-// V17Tokenize scans the entire input and returns the complete token slice.
-// The first token is always BOF; the last is always EOF.
-func (l *V17Lexer) V17Tokenize() ([]V17Token, error) {
-	tokens := []V17Token{l.makeTok(V17_BOF, "", 1, 0)}
-	for {
-		tok, err := l.scan()
-		if err != nil {
-			return tokens, err
-		}
-		if tok.Type != V17_NL {
-			l.last = tok.Type
-		}
-		tokens = append(tokens, tok)
-		if tok.Type == V17_EOF {
-			break
-		}
-	}
-	return tokens, nil
-}
-
-// --------------------------------------------------------------------------
-// internal helpers
-// --------------------------------------------------------------------------
-
-func (l *V17Lexer) peek() rune {
-	if l.pos >= len(l.input) {
-		return 0
-	}
-	return l.input[l.pos]
-}
-
-func (l *V17Lexer) peek2() rune {
-	if l.pos+1 >= len(l.input) {
-		return 0
-	}
-	return l.input[l.pos+1]
-}
-
-func (l *V17Lexer) advance() rune {
-	if l.pos >= len(l.input) {
-		return 0
-	}
-	ch := l.input[l.pos]
-	l.pos++
-	if ch == '\n' {
-		l.line++
-		l.col = 0
-	} else {
-		l.col++
-	}
-	return ch
-}
-
-func (l *V17Lexer) skipHorizWS() {
-	for l.pos < len(l.input) {
-		ch := l.input[l.pos]
-		if ch == ' ' || ch == '\t' {
-			l.advance()
-		} else {
-			break
-		}
-	}
-}
-
-func (l *V17Lexer) makeTok(typ V17TokenType, val string, line, col int) V17Token {
-	return V17Token{Type: typ, Value: val, Line: line, Col: col}
-}
-
-// v17prevIsValue returns true when the previous token closes a value —
-// meaning a following '/' is division, not a regexp delimiter.
-func v17prevIsValue(t V17TokenType) bool {
-	switch t {
-	case V17_DIGITS, V17_STRING_SQ, V17_STRING_DQ, V17_STRING_TQ, V17_REGEXP,
-		V17_IDENT, V17_TRUE, V17_FALSE, V17_NULL, V17_NAN, V17_INFINITY,
-		V17_RPAREN, V17_RBRACKET, V17_RBRACE,
-		V17_DOT, V17_DOTDOT: // after "." or ".." the '/' is always a path separator, never regexp
-		return true
-	}
-	return false
-}
-
-// --------------------------------------------------------------------------
-// scan — top-level dispatch
-// --------------------------------------------------------------------------
-
-func (l *V17Lexer) scan() (V17Token, error) {
-	l.skipHorizWS()
-
-	if l.pos >= len(l.input) {
-		return l.makeTok(V17_EOF, "", l.line, l.col), nil
-	}
-
-	line, col := l.line, l.col
-	ch := l.peek()
-
-	// Newline
-	if ch == '\r' || ch == '\n' {
-		return l.scanNL(line, col)
-	}
-	// Comment  (*
-	if ch == '(' && l.peek2() == '*' {
-		return l.scanComment(line, col)
-	}
-	// Identifier / keyword
-	if unicode.IsLetter(ch) || ch == '_' {
-		return l.scanIdentOrKeyword(line, col), nil
-	}
-	// Comment end — *) can appear mid-stream after an opening (*
-	if ch == '*' && l.peek2() == ')' {
-		return l.scanCommentEnd(line, col), nil
-	}
-	// Digits
-	if unicode.IsDigit(ch) {
-		return l.scanDigits(line, col), nil
-	}
-	// @ or @?
-	if ch == '@' {
-		return l.scanAt(line, col)
-	}
-	// String literals
-	switch ch {
-	case '\'':
-		return l.scanSingleQuoted(line, col)
-	case '"':
-		return l.scanDoubleQuoted(line, col)
-	case '`':
-		return l.scanTemplateQuoted(line, col)
-	case '/':
-		return l.scanSlashOrRegexp(line, col)
-	}
-	return l.scanOperator(line, col)
-}
-
-// --------------------------------------------------------------------------
-// Newline scanner
-// --------------------------------------------------------------------------
-
-func (l *V17Lexer) scanNL(line, col int) (V17Token, error) {
-	var sb strings.Builder
-	for l.pos < len(l.input) {
-		wsStart := l.pos
-		for l.pos < len(l.input) && (l.input[l.pos] == ' ' || l.input[l.pos] == '\t') {
-			l.advance()
-		}
-		if l.pos >= len(l.input) || (l.input[l.pos] != '\r' && l.input[l.pos] != '\n') {
-			l.pos = wsStart
-			break
-		}
-		for i := wsStart; i < l.pos; i++ {
-			sb.WriteRune(l.input[i])
-		}
-		consumed := false
-		for l.pos < len(l.input) && (l.input[l.pos] == '\r' || l.input[l.pos] == '\n') {
-			ch := l.advance()
-			sb.WriteRune(ch)
-			if ch == '\r' && l.pos < len(l.input) && l.input[l.pos] == '\n' {
-				sb.WriteRune(l.advance())
-			}
-			consumed = true
-		}
-		if !consumed {
-			break
-		}
-	}
-	return l.makeTok(V17_NL, sb.String(), line, col), nil
-}
-
-// --------------------------------------------------------------------------
-// Comment scanner  (* ... *)  — nested comments handled at parse level.
-// The lexer emits V17_COMMENT_BEGIN for "(*" and then tokenises the interior
-// as normal tokens until it emits V17_COMMENT_END for "*)".  Nesting is the
-// parser's responsibility (ParseComment recurses on nested "(*").
-// --------------------------------------------------------------------------
-
-func (l *V17Lexer) scanComment(line, col int) (V17Token, error) {
-	// Consume "(*" and emit V17_COMMENT_BEGIN.
-	l.advance()
-	l.advance()
-	return l.makeTok(V17_COMMENT_BEGIN, "(*", line, col), nil
-}
-
-// scanCommentEnd is called by scan() when "*)" is encountered mid-stream.
-func (l *V17Lexer) scanCommentEnd(line, col int) V17Token {
-	l.advance() // *
-	l.advance() // )
-	return l.makeTok(V17_COMMENT_END, "*)", line, col)
-}
-
-// --------------------------------------------------------------------------
-// Identifier / keyword scanner
-// --------------------------------------------------------------------------
-
-func (l *V17Lexer) scanIdentOrKeyword(line, col int) V17Token {
-	var sb strings.Builder
-	for l.pos < len(l.input) {
-		ch := l.input[l.pos]
-		if unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' {
-			sb.WriteRune(ch)
-			l.advance()
-		} else {
-			break
-		}
-	}
-	val := sb.String()
-	if kw, ok := v17keywords[val]; ok {
-		return l.makeTok(kw, val, line, col)
-	}
-	return l.makeTok(V17_IDENT, val, line, col)
-}
-
-// --------------------------------------------------------------------------
-// Digit scanner
-// --------------------------------------------------------------------------
-
-func (l *V17Lexer) scanDigits(line, col int) V17Token {
-	var sb strings.Builder
-	for l.pos < len(l.input) && unicode.IsDigit(l.input[l.pos]) {
-		sb.WriteRune(l.advance())
-	}
-	return l.makeTok(V17_DIGITS, sb.String(), line, col)
-}
-
-// --------------------------------------------------------------------------
-// @ and @? scanner
-// --------------------------------------------------------------------------
-
-func (l *V17Lexer) scanAt(line, col int) (V17Token, error) {
-	l.advance() // consume @
-	if l.pos < len(l.input) && l.input[l.pos] == '?' {
-		l.advance()
-		return l.makeTok(V17_ANY_TYPE, "@?", line, col), nil
-	}
-	return l.makeTok(V17_AT, "@", line, col), nil
-}
-
-// --------------------------------------------------------------------------
-// String literal scanners
-// --------------------------------------------------------------------------
-
-func (l *V17Lexer) scanSingleQuoted(line, col int) (V17Token, error) {
-	l.advance() // consume opening '
-	var sb strings.Builder
-	for l.pos < len(l.input) {
-		ch := l.peek()
-		if ch == '\\' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '\'' {
-			sb.WriteRune(l.advance())
-			sb.WriteRune(l.advance())
-			continue
-		}
-		if ch == '\'' {
-			l.advance()
-			return l.makeTok(V17_STRING_SQ, sb.String(), line, col), nil
-		}
-		sb.WriteRune(l.advance())
-	}
-	return l.makeTok(V17_ILLEGAL, sb.String(), line, col), fmt.Errorf("unclosed single-quoted string at L%d:C%d", line, col)
-}
-
-func (l *V17Lexer) scanDoubleQuoted(line, col int) (V17Token, error) {
-	l.advance() // consume opening "
-	var sb strings.Builder
-	for l.pos < len(l.input) {
-		ch := l.peek()
-		if ch == '\\' && l.pos+1 < len(l.input) && l.input[l.pos+1] == '"' {
-			sb.WriteRune(l.advance())
-			sb.WriteRune(l.advance())
-			continue
-		}
-		if ch == '"' {
-			l.advance()
-			return l.makeTok(V17_STRING_DQ, sb.String(), line, col), nil
-		}
-		sb.WriteRune(l.advance())
-	}
-	return l.makeTok(V17_ILLEGAL, sb.String(), line, col), fmt.Errorf("unclosed double-quoted string at L%d:C%d", line, col)
-}
-
-func (l *V17Lexer) scanTemplateQuoted(line, col int) (V17Token, error) {
-	l.advance() // consume opening `
-	var sb strings.Builder
-	for l.pos < len(l.input) {
-		ch := l.peek()
-		if ch == '`' {
-			l.advance()
-			return l.makeTok(V17_STRING_TQ, sb.String(), line, col), nil
-		}
-		sb.WriteRune(l.advance())
-	}
-	return l.makeTok(V17_ILLEGAL, sb.String(), line, col), fmt.Errorf("unclosed template string at L%d:C%d", line, col)
-}
-
-// --------------------------------------------------------------------------
-// Slash / regexp scanner
-// --------------------------------------------------------------------------
-
-func (l *V17Lexer) scanSlashOrRegexp(line, col int) (V17Token, error) {
-	// If the previous token was a value-ending token, '/' is division (or /=).
-	if v17prevIsValue(l.last) {
-		l.advance()
-		if l.pos < len(l.input) && l.input[l.pos] == '=' {
-			l.advance()
-			return l.makeTok(V17_SLASH_EQ, "/=", line, col), nil
-		}
-		return l.makeTok(V17_SLASH, "/", line, col), nil
-	}
-	// Regexp literal: /pattern/[flags]
-	l.advance() // consume opening /
-	var sb strings.Builder
-	for l.pos < len(l.input) {
-		ch := l.peek()
-		if ch == '\\' && l.pos+1 < len(l.input) {
-			sb.WriteRune(l.advance())
-			sb.WriteRune(l.advance())
-			continue
-		}
-		if ch == '/' {
-			l.advance() // consume closing /
-			// Consume flag letters (a-zA-Z) — stored in the token value after the closing /
-			// SIR-4: flags are V17_IDENT tokens; we do NOT pre-scan them into the regexp token.
-			return l.makeTok(V17_REGEXP, sb.String(), line, col), nil
-		}
-		if ch == '\n' || ch == '\r' {
-			return l.makeTok(V17_ILLEGAL, sb.String(), line, col),
-				fmt.Errorf("unterminated regexp at L%d:C%d", line, col)
-		}
-		sb.WriteRune(l.advance())
-	}
-	return l.makeTok(V17_ILLEGAL, sb.String(), line, col),
-		fmt.Errorf("unterminated regexp at L%d:C%d", line, col)
-}
-
-// --------------------------------------------------------------------------
-// Operator scanner
-// --------------------------------------------------------------------------
-
-func (l *V17Lexer) scanOperator(line, col int) (V17Token, error) {
-	ch := l.advance()
-	switch ch {
-	case '.':
-		if l.pos < len(l.input) && l.input[l.pos] == '.' {
-			l.advance()
-			return l.makeTok(V17_DOTDOT, "..", line, col), nil
-		}
-		return l.makeTok(V17_DOT, ".", line, col), nil
-	case '+':
-		if l.pos < len(l.input) && l.input[l.pos] == '+' {
-			l.advance()
-			return l.makeTok(V17_PLUSPLUS, "++", line, col), nil
-		}
-		if l.pos < len(l.input) && l.input[l.pos] == '=' {
-			l.advance()
-			return l.makeTok(V17_PLUS_EQ, "+=", line, col), nil
-		}
-		return l.makeTok(V17_PLUS, "+", line, col), nil
-	case '-':
-		if l.pos < len(l.input) && l.input[l.pos] == '-' {
-			l.advance()
-			return l.makeTok(V17_MINUSMINUS, "--", line, col), nil
-		}
-		if l.pos < len(l.input) && l.input[l.pos] == '=' {
-			l.advance()
-			return l.makeTok(V17_MINUS_EQ, "-=", line, col), nil
-		}
-		return l.makeTok(V17_MINUS, "-", line, col), nil
-	case '*':
-		if l.pos < len(l.input) && l.input[l.pos] == '*' {
-			l.advance()
-			return l.makeTok(V17_STARSTAR, "**", line, col), nil
-		}
-		if l.pos < len(l.input) && l.input[l.pos] == '=' {
-			l.advance()
-			return l.makeTok(V17_STAR_EQ, "*=", line, col), nil
-		}
-		return l.makeTok(V17_STAR, "*", line, col), nil
-	case '=':
-		if l.pos < len(l.input) && l.input[l.pos] == '=' {
-			l.advance()
-			return l.makeTok(V17_EQEQ, "==", line, col), nil
-		}
-		return l.makeTok(V17_EQ, "=", line, col), nil
-	case '!':
-		if l.pos < len(l.input) && l.input[l.pos] == '=' {
-			l.advance()
-			return l.makeTok(V17_NEQ, "!=", line, col), nil
-		}
-		return l.makeTok(V17_BANG, "!", line, col), nil
-	case '>':
-		if l.pos < len(l.input) && l.input[l.pos] == '>' {
-			l.advance()
-			return l.makeTok(V17_GTGT, ">>", line, col), nil
-		}
-		if l.pos < len(l.input) && l.input[l.pos] == '=' {
-			l.advance()
-			return l.makeTok(V17_GTE, ">=", line, col), nil
-		}
-		return l.makeTok(V17_GT, ">", line, col), nil
-	case '<':
-		if l.pos < len(l.input) && l.input[l.pos] == '=' {
-			l.advance()
-			return l.makeTok(V17_LTE, "<=", line, col), nil
-		}
-		return l.makeTok(V17_LT, "<", line, col), nil
-	case '%':
-		return l.makeTok(V17_PERCENT, "%", line, col), nil
-	case '&':
-		return l.makeTok(V17_AMP, "&", line, col), nil
-	case '|':
-		return l.makeTok(V17_PIPE, "|", line, col), nil
-	case '^':
-		return l.makeTok(V17_CARET, "^", line, col), nil
-	case ':':
-		if l.pos < len(l.input) && l.input[l.pos] == '~' {
-			l.advance()
-			return l.makeTok(V17_COLON_TILDE, ":~", line, col), nil
-		}
-		return l.makeTok(V17_COLON, ":", line, col), nil
-	case ';':
-		return l.makeTok(V17_SEMICOLON, ";", line, col), nil
-	case ',':
-		return l.makeTok(V17_COMMA, ",", line, col), nil
-	case '(':
-		return l.makeTok(V17_LPAREN, "(", line, col), nil
-	case ')':
-		return l.makeTok(V17_RPAREN, ")", line, col), nil
-	case '[':
-		return l.makeTok(V17_LBRACKET, "[", line, col), nil
-	case ']':
-		return l.makeTok(V17_RBRACKET, "]", line, col), nil
-	case '{':
-		return l.makeTok(V17_LBRACE, "{", line, col), nil
-	case '}':
-		return l.makeTok(V17_RBRACE, "}", line, col), nil
-	case '?':
-		return l.makeTok(V17_QUESTION, "?", line, col), nil
-	case '$':
-		return l.makeTok(V17_DOLLAR, "$", line, col), nil
-	case '§':
-		return l.makeTok(V17_IDENT, "§", line, col), nil
-	}
-	return l.makeTok(V17_ILLEGAL, string(ch), line, col),
-		fmt.Errorf("unexpected character %q at L%d:C%d", ch, line, col)
-}
-
 // =============================================================================
 // PARSER STRUCT
 // =============================================================================
 
+// V17Pos captures the full parser position for backtracking.
+// It holds both the legacy token-slice index (during migration) and the
+// rune-stream cursor used by the new match-primitive API.
+// All savePos/restorePos call sites use := with type inference, so the
+// change from plain int is transparent to every caller.
+type V17Pos struct {
+	tokenPos int // index into p.tokens (legacy token-slice API)
+	runePos  int // byte-index into p.input (rune-stream API)
+	runeLine int
+	runeCol  int
+	atBOF    bool // mirrors p.atBOF so backtracking restores BOF state
+}
+
 // V17Parser is a hand-written recursive-descent parser for spec/01_definitions.sqg.
 type V17Parser struct {
-	tokens         []V17Token
-	pos            int
+	// ── legacy token-slice API (kept while terminal methods are migrated) ──
+	tokens []V17Token
+	pos    int
+
+	// ── rune-stream API (new match-primitive layer) ──
+	// The parser owns the source as a []rune so that every character is
+	// classified for the first time inside the grammar rule function that
+	// needs it (SIR-4).  No pre-tokenization step exists for this API.
+	input      []rune
+	runePos    int
+	runeLine   int   // 1-based
+	runeCol    int   // 0-based
+	lineStarts []int // lineStarts[i] = rune index of start of line i+1 (0-indexed array, 1-based lines)
+
+	// ── shared ──
 	DebugFlag      bool
 	debugDepth     int
+	atBOF          bool     // true until the first ParseNl consumes the BOF position
 	src            string   // raw source text
 	callStack      []string // live rule-name stack; always maintained
 	lastErrorStack []string // snapshot of callStack at the time of the last errAt call
@@ -657,28 +231,43 @@ type V17Parser struct {
 }
 
 // NewV17Parser constructs a V17Parser from an already-lexed token slice.
-// src is the original source string (used for debug preview only).
+// src is the original source string (used for debug preview and the rune-stream API).
 func NewV17Parser(tokens []V17Token, src string) *V17Parser {
+	runes := []rune(src)
+	// Precompute rune index of the start of each line for O(1) line/col → rune-offset mapping.
+	lineStarts := []int{0}
+	for i, r := range runes {
+		if r == '\n' {
+			lineStarts = append(lineStarts, i+1)
+		}
+	}
 	p := &V17Parser{
 		tokens:      tokens,
 		src:         src,
+		input:       runes,
+		runeLine:    1,
+		runePos:     0,
+		runeCol:     0,
+		lineStarts:  lineStarts,
+		atBOF:       true,
 		SourceLines: strings.Split(src, "\n"),
 	}
 	// Skip the synthetic BOF token so cur() returns the first real token.
 	if len(tokens) > 0 && tokens[0].Type == V17_BOF {
 		p.pos = 1
 	}
+	// Sync rune cursor to the first real token so mixed-mode code sees a
+	// consistent position before any advance() is called.
+	// Only sync if there are tokens; with no tokens the rune cursor stays at 0.
+	if len(tokens) > 0 {
+		p.syncRuneToToken()
+	}
 	return p
 }
 
-// NewV17ParserFromSource lexes src and returns a ready-to-use V17Parser.
+// NewV17ParserFromSource constructs a V17Parser directly from source (no pre-lexing).
 func NewV17ParserFromSource(src string) (*V17Parser, error) {
-	l := NewV17Lexer(src)
-	tokens, err := l.V17Tokenize()
-	if err != nil {
-		return nil, fmt.Errorf("lex error: %w", err)
-	}
-	return NewV17Parser(tokens, src), nil
+	return NewV17Parser(nil, src), nil
 }
 
 // EnableDebug turns on parse trace output to stderr.
@@ -705,26 +294,138 @@ func (p *V17Parser) peek1() V17Token {
 }
 
 // advance consumes and returns the current token.
+// It also keeps the rune cursor in sync so that mixed-mode callers (methods
+// that still use the token API alongside rune-stream methods) see a
+// consistent position after every token advance.
 func (p *V17Parser) advance() V17Token {
 	tok := p.cur()
 	if p.pos < len(p.tokens) {
 		p.pos++
 	}
+	p.syncRuneToToken() // keep rune cursor in sync
 	return tok
 }
 
 // skipNL advances past any V17_NL tokens.
 func (p *V17Parser) skipNL() {
-	for p.cur().Type == V17_NL {
-		p.advance()
+	for {
+		// Skip horizontal whitespace
+		for p.runePos < len(p.input) && (p.input[p.runePos] == ' ' || p.input[p.runePos] == '\t') {
+			p.runeAdvanceBy(1)
+		}
+		if p.runePos < len(p.input) && (p.input[p.runePos] == '\n' || p.input[p.runePos] == '\r') {
+			p.runeAdvanceBy(1)
+			p.syncTokenToRune()
+		} else {
+			break
+		}
 	}
 }
 
-// savePos returns the current position for backtracking.
-func (p *V17Parser) savePos() int { return p.pos }
+// skipNLAndComments extends skipNL to also consume (possibly nested) (* … *)
+// block comments, which may appear inline after a value on any line.
+// It alternates between skipNL and comment-skipping until no further progress.
+func (p *V17Parser) skipNLAndComments() {
+	for {
+		p.skipNL()
+		// Peek for horizontal whitespace then "(*"
+		i := p.runePos
+		for i < len(p.input) && (p.input[i] == ' ' || p.input[i] == '\t') {
+			i++
+		}
+		if i+1 < len(p.input) && p.input[i] == '(' && p.input[i+1] == '*' {
+			// Advance past the whitespace so matchLit("(*") can find it
+			p.runePos = i
+			p.syncTokenToRune()
+			if _, err := p.matchLit("(*"); err != nil {
+				break
+			}
+			// Skip comment body (nesting aware)
+			depth := 1
+			for depth > 0 && p.runePos < len(p.input) {
+				if p.runePos+1 < len(p.input) && p.input[p.runePos] == '(' && p.input[p.runePos+1] == '*' {
+					depth++
+					p.runeAdvanceBy(2)
+				} else if p.runePos+1 < len(p.input) && p.input[p.runePos] == '*' && p.input[p.runePos+1] == ')' {
+					depth--
+					p.runeAdvanceBy(2)
+				} else {
+					p.runeAdvanceBy(1)
+				}
+			}
+			p.syncTokenToRune()
+		} else {
+			break
+		}
+	}
+}
 
-// restorePos resets the parser to a saved position.
-func (p *V17Parser) restorePos(pos int) { p.pos = pos }
+// savePos captures the complete parser position for backtracking.
+// Returns V17Pos which holds both the token-slice index and the rune-stream
+// cursor.  All call sites use := so the type change from plain int is
+// transparent — no call site needs editing.
+func (p *V17Parser) savePos() V17Pos {
+	return V17Pos{p.pos, p.runePos, p.runeLine, p.runeCol, p.atBOF}
+}
+
+// restorePos resets the parser to a previously saved position.
+func (p *V17Parser) restorePos(s V17Pos) {
+	p.pos = s.tokenPos
+	p.runePos = s.runePos
+	p.runeLine = s.runeLine
+	p.runeCol = s.runeCol
+	p.atBOF = s.atBOF
+}
+
+// =============================================================================
+// BIDIRECTIONAL SYNC — keeps the legacy token cursor and the rune cursor
+// consistent so that mixed-mode code (some methods converted, others not)
+// works correctly throughout Phase 2 migration.
+//
+// Invariant:
+//   After any advance() call  : runePos == start-of-new-current-token
+//   After any matchLit/matchRe: p.pos   == first unconsumed token
+// =============================================================================
+
+// syncRuneToToken sets the rune cursor to the start of the current token.
+// Called by advance() so that callers who then invoke rune-stream primitives
+// find the rune cursor already positioned correctly.
+func (p *V17Parser) syncRuneToToken() {
+	tok := p.cur()
+	if tok.Type == V17_EOF {
+		p.runePos = len(p.input)
+		// leave runeLine/runeCol as-is; they are only meaningful when runePos < len(input)
+		return
+	}
+	line := tok.Line // 1-based
+	col := tok.Col   // 0-based
+	if line >= 1 && line <= len(p.lineStarts) {
+		p.runePos = p.lineStarts[line-1] + col
+		p.runeLine = line
+		p.runeCol = col
+	}
+}
+
+// syncTokenToRune advances the token cursor forward until p.tokens[p.pos]
+// starts at or after the current rune position.  Called by matchLit/matchRe
+// so that subsequent token-API code sees the correct next token.
+func (p *V17Parser) syncTokenToRune() {
+	for p.pos < len(p.tokens) {
+		tok := p.tokens[p.pos]
+		if tok.Type == V17_EOF {
+			break
+		}
+		var tokRuneOffset int
+		line := tok.Line
+		if line >= 1 && line <= len(p.lineStarts) {
+			tokRuneOffset = p.lineStarts[line-1] + tok.Col
+		}
+		if tokRuneOffset >= p.runePos {
+			break
+		}
+		p.pos++
+	}
+}
 
 // expect consumes the current token if it matches typ and returns it.
 // Returns an error if the token does not match.
@@ -740,24 +441,409 @@ func (p *V17Parser) expect(typ V17TokenType) (V17Token, error) {
 
 // expectLit consumes the current token if its Value matches lit and returns it.
 func (p *V17Parser) expectLit(lit string) (V17Token, error) {
-	tok := p.cur()
-	if tok.Value != lit {
-		return tok, fmt.Errorf("expected %q, got %s %q at L%d:C%d",
-			lit, tok.Type, tok.Value, tok.Line, tok.Col)
-	}
-	p.advance()
-	return tok, nil
+	return p.matchLit(lit)
 }
 
 // errAt creates a position-stamped error at the current token and snapshots
 // the call stack for use by FormatParseError.
 func (p *V17Parser) errAt(format string, args ...any) error {
-	tok := p.cur()
 	msg := fmt.Sprintf(format, args...)
 	// Snapshot the live call stack; the defers will unwind it before the caller
 	// of FormatParseError can inspect it, so we must capture it here.
 	p.lastErrorStack = append([]string{}, p.callStack...)
-	return fmt.Errorf("%s at L%d:C%d", msg, tok.Line, tok.Col)
+	return fmt.Errorf("%s at L%d:C%d", msg, p.runeLine, p.runeCol)
+}
+
+// =============================================================================
+// MATCH PRIMITIVES  (rune-stream API — SIR-4 compliant)
+//
+// These are the only methods that ever touch p.input directly.  Every
+// terminal grammar rule function calls exactly one of these; no ParseXxx
+// method touches p.input any other way.
+//
+// Conventions:
+//   - All primitives skip horizontal whitespace (space, tab) first, per
+//     directive 1.1 in spec/00_directives.sqg, UNLESS the caller has
+//     annotated the adjacency "!WS!" — handled by calling matchLitNoWS.
+//   - On success  the rune cursor is advanced past the matched text.
+//   - On failure  the rune cursor is NOT advanced (caller can backtrack).
+//   - Line/col in the returned V17Token reflect the start of the match
+//     (after WS skip), not the pre-skip position.
+// =============================================================================
+
+// runeAdvanceBy advances the rune cursor by n runes, tracking line/col.
+func (p *V17Parser) runeAdvanceBy(n int) {
+	for i := 0; i < n && p.runePos < len(p.input); i++ {
+		if p.input[p.runePos] == '\n' {
+			p.runeLine++
+			p.runeCol = 0
+		} else {
+			p.runeCol++
+		}
+		p.runePos++
+	}
+}
+
+// skipRuneHorizWS consumes horizontal whitespace (space, tab) at the rune
+// cursor.  It does NOT consume newlines (those are grammar-level NL tokens).
+func (p *V17Parser) skipRuneHorizWS() {
+	for p.runePos < len(p.input) {
+		ch := p.input[p.runePos]
+		if ch == ' ' || ch == '\t' {
+			p.runeAdvanceBy(1)
+		} else {
+			break
+		}
+	}
+}
+
+// peekAfterWS returns the rune that would be seen after skipping horizontal
+// whitespace, without consuming anything.  Returns 0 at end of input.
+func (p *V17Parser) peekAfterWS() rune {
+	i := p.runePos
+	for i < len(p.input) && (p.input[i] == ' ' || p.input[i] == '\t') {
+		i++
+	}
+	if i >= len(p.input) {
+		return 0
+	}
+	return p.input[i]
+}
+
+// peekLit returns true if the literal string s appears at the current rune
+// position (after skipping horizontal whitespace), without consuming anything.
+func (p *V17Parser) peekLit(s string) bool {
+	runes := []rune(s)
+	i := p.runePos
+	for i < len(p.input) && (p.input[i] == ' ' || p.input[i] == '\t') {
+		i++
+	}
+	if i+len(runes) > len(p.input) {
+		return false
+	}
+	for j, r := range runes {
+		if p.input[i+j] != r {
+			return false
+		}
+	}
+	return true
+}
+
+// matchLit skips horizontal whitespace and then attempts to match the literal
+// string s at the rune cursor.  On success the cursor advances past s and the
+// token cursor is synced forward (bidirectional sync for Phase 2 migration).
+// On failure the cursor is unchanged and an error is returned.
+func (p *V17Parser) matchLit(s string) (V17Token, error) {
+	p.skipRuneHorizWS()
+	line, col := p.runeLine, p.runeCol
+	runes := []rune(s)
+	if p.runePos+len(runes) > len(p.input) {
+		return V17Token{}, fmt.Errorf("expected %q, got EOF at L%d:C%d", s, line, col)
+	}
+	for i, r := range runes {
+		if p.input[p.runePos+i] != r {
+			got := string(p.input[p.runePos:min(p.runePos+len(runes), len(p.input))])
+			return V17Token{}, fmt.Errorf("expected %q, got %q at L%d:C%d", s, got, line, col)
+		}
+	}
+	p.runeAdvanceBy(len(runes))
+	p.syncTokenToRune()
+	return V17Token{Value: s, Line: line, Col: col}, nil
+}
+
+// matchKeyword is like matchLit but also enforces a word-boundary after the
+// matched literal — the next rune must not be alphanumeric or '_'. This
+// prevents "true" from matching the first four runes of "truthy".
+// Internally saves and restores position on any failure, so it is safe for
+// both required and optional (try-style) call sites.
+func (p *V17Parser) matchKeyword(word string) (V17Token, error) {
+	saved := p.savePos()
+	tok, err := p.matchLit(word)
+	if err != nil {
+		p.restorePos(saved)
+		return V17Token{}, err
+	}
+	// Word-boundary: next rune must not be alphanumeric or underscore.
+	if p.runePos < len(p.input) {
+		ch := p.input[p.runePos]
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') || ch == '_' {
+			p.restorePos(saved)
+			return V17Token{}, fmt.Errorf("expected keyword %q but got longer identifier at L%d:C%d",
+				word, saved.runeLine, saved.runeCol)
+		}
+	}
+	return tok, nil
+}
+
+// matchLitNoWS is like matchLit but does NOT skip horizontal whitespace first.
+// Use this when the grammar spec has annotated the adjacency with !WS!.
+func (p *V17Parser) matchLitNoWS(s string) (V17Token, error) {
+	line, col := p.runeLine, p.runeCol
+	runes := []rune(s)
+	if p.runePos+len(runes) > len(p.input) {
+		return V17Token{}, fmt.Errorf("expected %q (no-WS), got EOF at L%d:C%d", s, line, col)
+	}
+	for i, r := range runes {
+		if p.input[p.runePos+i] != r {
+			got := string(p.input[p.runePos:min(p.runePos+len(runes), len(p.input))])
+			return V17Token{}, fmt.Errorf("expected %q (no-WS), got %q at L%d:C%d", s, got, line, col)
+		}
+	}
+	p.runeAdvanceBy(len(runes))
+	p.syncTokenToRune()
+	return V17Token{Value: s, Line: line, Col: col}, nil
+}
+
+// matchReNoWS is like matchRe but does NOT skip horizontal whitespace first.
+// Use this when the grammar spec has annotated the adjacency with !WS!.
+func (p *V17Parser) matchReNoWS(re *regexp.Regexp) (V17Token, error) {
+	line, col := p.runeLine, p.runeCol
+	remaining := string(p.input[p.runePos:])
+	m := re.FindString(remaining)
+	if m == "" {
+		return V17Token{}, fmt.Errorf("no match (no-WS) for %s at L%d:C%d", re.String(), line, col)
+	}
+	p.runeAdvanceBy(len([]rune(m)))
+	p.syncTokenToRune()
+	return V17Token{Value: m, Line: line, Col: col}, nil
+}
+
+// matchRe skips horizontal whitespace and then attempts to match the compiled
+// regular expression re at the rune cursor.  re MUST be anchored at the start
+// with "^" — callers compile patterns at package init time.
+// On success the cursor advances past the full match and the token cursor is
+// synced forward (bidirectional sync for Phase 2 migration).
+// On failure the cursor is unchanged and an error is returned.
+func (p *V17Parser) matchRe(re *regexp.Regexp) (V17Token, error) {
+	p.skipRuneHorizWS()
+	line, col := p.runeLine, p.runeCol
+	remaining := string(p.input[p.runePos:])
+	m := re.FindString(remaining)
+	if m == "" {
+		preview := remaining
+		if len(preview) > 20 {
+			preview = preview[:20]
+		}
+		return V17Token{}, fmt.Errorf("no match for %s at L%d:C%d (got %q)", re.String(), line, col, preview)
+	}
+	p.runeAdvanceBy(len([]rune(m)))
+	p.syncTokenToRune()
+	return V17Token{Value: m, Line: line, Col: col}, nil
+}
+
+// min is a local helper (Go 1.20 has a built-in; keep this for older toolchains).
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// =============================================================================
+// SPECIALISED MATCH HELPERS  (rune-stream, for use by converted ParseXxx methods)
+// =============================================================================
+
+// matchDigits matches one or more ASCII digits ([0-9]+) at the current rune
+// position after skipping horizontal whitespace.
+func (p *V17Parser) matchDigits() (V17Token, error) {
+	p.skipRuneHorizWS()
+	line, col := p.runeLine, p.runeCol
+	start := p.runePos
+	for p.runePos < len(p.input) && p.input[p.runePos] >= '0' && p.input[p.runePos] <= '9' {
+		p.runeAdvanceBy(1)
+	}
+	if p.runePos == start {
+		return V17Token{}, fmt.Errorf("digits: expected [0-9]+ at L%d:C%d", line, col)
+	}
+	p.syncTokenToRune()
+	return V17Token{Value: string(p.input[start:p.runePos]), Line: line, Col: col}, nil
+}
+
+// matchDigitsN matches exactly min..max consecutive ASCII digits.
+// Fails if fewer than min digits are available, or if more than max consecutive
+// digits immediately follow (to avoid silently partial-matching "123" as "12").
+func (p *V17Parser) matchDigitsN(minD, maxD int) (V17Token, error) {
+	saved := p.savePos()
+	p.skipRuneHorizWS()
+	line, col := p.runeLine, p.runeCol
+	start := p.runePos
+	n := 0
+	for p.runePos < len(p.input) && n < maxD && p.input[p.runePos] >= '0' && p.input[p.runePos] <= '9' {
+		p.runeAdvanceBy(1)
+		n++
+	}
+	// Too few digits?
+	if n < minD {
+		p.restorePos(saved)
+		return V17Token{}, fmt.Errorf("digits: expected %d-%d digits at L%d:C%d, got %d", minD, maxD, line, col, n)
+	}
+	// Too many (more digits follow immediately)?
+	if p.runePos < len(p.input) && p.input[p.runePos] >= '0' && p.input[p.runePos] <= '9' {
+		p.restorePos(saved)
+		return V17Token{}, fmt.Errorf("digits: too many consecutive digits (expected %d-%d) at L%d:C%d", minD, maxD, line, col)
+	}
+	p.syncTokenToRune()
+	return V17Token{Value: string(p.input[start:p.runePos]), Line: line, Col: col}, nil
+}
+
+// matchHexExact matches exactly n consecutive hex digits [0-9a-fA-F]{n} after
+// skipping horizontal whitespace.
+func (p *V17Parser) matchHexExact(n int) (V17Token, error) {
+	p.skipRuneHorizWS()
+	line, col := p.runeLine, p.runeCol
+	start := p.runePos
+	for i := 0; i < n; i++ {
+		if p.runePos >= len(p.input) {
+			return V17Token{}, fmt.Errorf("hex: expected %d hex digits, got EOF at L%d:C%d", n, line, col)
+		}
+		ch := p.input[p.runePos]
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) {
+			return V17Token{}, fmt.Errorf("hex: expected hex digit at L%d:C%d, got %q", line, col, ch)
+		}
+		p.runeAdvanceBy(1)
+	}
+	p.syncTokenToRune()
+	return V17Token{Value: string(p.input[start:p.runePos]), Line: line, Col: col}, nil
+}
+
+// matchSingleQuoted matches a single-quoted string at the current rune position.
+// Returns a token whose Value is the raw content between the quotes
+// (identical to what V17_STRING_SQ used to carry).
+func (p *V17Parser) matchSingleQuoted() (V17Token, error) {
+	p.skipRuneHorizWS()
+	line, col := p.runeLine, p.runeCol
+	if p.runePos >= len(p.input) || p.input[p.runePos] != '\'' {
+		return V17Token{}, fmt.Errorf("single_quoted: expected \"'\", got EOF at L%d:C%d", line, col)
+	}
+	p.runeAdvanceBy(1) // consume opening '
+	var sb strings.Builder
+	for p.runePos < len(p.input) {
+		ch := p.input[p.runePos]
+		if ch == '\\' && p.runePos+1 < len(p.input) && p.input[p.runePos+1] == '\'' {
+			sb.WriteRune('\\')
+			sb.WriteRune('\'')
+			p.runeAdvanceBy(2)
+			continue
+		}
+		if ch == '\'' {
+			p.runeAdvanceBy(1) // consume closing '
+			p.syncTokenToRune()
+			return V17Token{Value: sb.String(), Line: line, Col: col}, nil
+		}
+		sb.WriteRune(ch)
+		p.runeAdvanceBy(1)
+	}
+	return V17Token{}, fmt.Errorf("single_quoted: unterminated string at L%d:C%d", line, col)
+}
+
+// matchDoubleQuoted matches a double-quoted string at the current rune position.
+// Returns a token whose Value is the raw content between the quotes.
+func (p *V17Parser) matchDoubleQuoted() (V17Token, error) {
+	p.skipRuneHorizWS()
+	line, col := p.runeLine, p.runeCol
+	if p.runePos >= len(p.input) || p.input[p.runePos] != '"' {
+		return V17Token{}, fmt.Errorf("double_quoted: expected '\"', got EOF at L%d:C%d", line, col)
+	}
+	p.runeAdvanceBy(1) // consume opening "
+	var sb strings.Builder
+	for p.runePos < len(p.input) {
+		ch := p.input[p.runePos]
+		if ch == '\\' && p.runePos+1 < len(p.input) && p.input[p.runePos+1] == '"' {
+			sb.WriteRune('\\')
+			sb.WriteRune('"')
+			p.runeAdvanceBy(2)
+			continue
+		}
+		if ch == '"' {
+			p.runeAdvanceBy(1) // consume closing "
+			p.syncTokenToRune()
+			return V17Token{Value: sb.String(), Line: line, Col: col}, nil
+		}
+		sb.WriteRune(ch)
+		p.runeAdvanceBy(1)
+	}
+	return V17Token{}, fmt.Errorf("double_quoted: unterminated string at L%d:C%d", line, col)
+}
+
+// matchTemplateQuoted matches a backtick-quoted template string.
+// Returns a token whose Value is the raw content between the backticks.
+func (p *V17Parser) matchTemplateQuoted() (V17Token, error) {
+	p.skipRuneHorizWS()
+	line, col := p.runeLine, p.runeCol
+	if p.runePos >= len(p.input) || p.input[p.runePos] != '`' {
+		return V17Token{}, fmt.Errorf("tmpl_quoted: expected backtick, got EOF at L%d:C%d", line, col)
+	}
+	p.runeAdvanceBy(1) // consume opening `
+	var sb strings.Builder
+	for p.runePos < len(p.input) {
+		ch := p.input[p.runePos]
+		if ch == '`' {
+			p.runeAdvanceBy(1) // consume closing `
+			p.syncTokenToRune()
+			return V17Token{Value: sb.String(), Line: line, Col: col}, nil
+		}
+		sb.WriteRune(ch)
+		p.runeAdvanceBy(1)
+	}
+	return V17Token{}, fmt.Errorf("tmpl_quoted: unterminated template string at L%d:C%d", line, col)
+}
+
+// matchRegexpLiteral matches a /pattern/ regexp literal at the current rune
+// position. Returns a token whose Value is the pattern between the slashes
+// (identical to what V17_REGEXP used to carry).
+func (p *V17Parser) matchRegexpLiteral() (V17Token, error) {
+	p.skipRuneHorizWS()
+	line, col := p.runeLine, p.runeCol
+	if p.runePos >= len(p.input) || p.input[p.runePos] != '/' {
+		return V17Token{}, fmt.Errorf("regexp_expr: expected '/', got EOF at L%d:C%d", line, col)
+	}
+	p.runeAdvanceBy(1) // consume opening /
+	var sb strings.Builder
+	for p.runePos < len(p.input) {
+		ch := p.input[p.runePos]
+		if ch == '\\' && p.runePos+1 < len(p.input) {
+			sb.WriteRune(ch)
+			sb.WriteRune(p.input[p.runePos+1])
+			p.runeAdvanceBy(2)
+			continue
+		}
+		if ch == '/' {
+			p.runeAdvanceBy(1) // consume closing /
+			p.syncTokenToRune()
+			return V17Token{Value: sb.String(), Line: line, Col: col}, nil
+		}
+		if ch == '\n' || ch == '\r' {
+			return V17Token{}, fmt.Errorf("regexp_expr: unterminated regexp at L%d:C%d", line, col)
+		}
+		sb.WriteRune(ch)
+		p.runeAdvanceBy(1)
+	}
+	return V17Token{}, fmt.Errorf("regexp_expr: unterminated regexp at L%d:C%d", line, col)
+}
+
+// matchCommentTxt matches the body of a comment — all characters up to (but
+// not including) the next "(*" or "*)" delimiter.  Accepts any Unicode rune.
+// Go's RE2 engine lacks negative-lookahead so this is hand-coded instead of
+// using matchRe.
+func (p *V17Parser) matchCommentTxt() (V17Token, error) {
+	// No WS skip: comment body starts immediately after "(*" including any space.
+	line, col := p.runeLine, p.runeCol
+	start := p.runePos
+	for p.runePos < len(p.input) {
+		ch := p.input[p.runePos]
+		// Stop at "(*" — start of nested comment
+		if ch == '(' && p.runePos+1 < len(p.input) && p.input[p.runePos+1] == '*' {
+			break
+		}
+		// Stop at "*)" — end of comment
+		if ch == '*' && p.runePos+1 < len(p.input) && p.input[p.runePos+1] == ')' {
+			break
+		}
+		p.runeAdvanceBy(1)
+	}
+	p.syncTokenToRune()
+	return V17Token{Value: string(p.input[start:p.runePos]), Line: line, Col: col}, nil
 }
 
 // --------------------------------------------------------------------------
@@ -931,6 +1017,29 @@ var (
 	reDigits2 = regexp.MustCompile(`^[0-9]{1,2}$`)
 	reDigits3 = regexp.MustCompile(`^[0-9]{1,3}$`)
 	reDigits4 = regexp.MustCompile(`^[0-9]{4}$`)
+
+	// Scan-oriented patterns (no $ anchor) — used by rune-stream match helpers.
+	// NL = /([ \t]*[\r\n]+)+/
+	reNlScan = regexp.MustCompile(`^([ \t]*[\r\n]+)+`)
+	// identifier = /[a-zA-Z_][a-zA-Z0-9_]*/
+	reIdentScan         = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*`)
+	reIdentNameScan     = regexp.MustCompile(`^[\p{L}][\p{L}0-9_]*`) // Unicode ident_name
+	reIdentNameScanNoWS = reIdentNameScan                            // alias — used with matchReNoWS
+	// regexp flags = /[gimsuyxnA]+/
+	reRegexpFlagsScan = regexp.MustCompile(`^[gimsuyxnA]+`)
+	// ULID = /[0-7][0-9A-HJKMNP-TV-Z]{25}/
+	reUlidScan = regexp.MustCompile(`(?i)^[0-7][0-9A-HJKMNP-TV-Z]{25}`)
+	// NanoID = /[A-Za-z0-9_\-]{21}/
+	reNanoIdScan = regexp.MustCompile(`^[A-Za-z0-9_-]{21}`)
+	// HTTP URL scan
+	reHttpUrlScan = regexp.MustCompile(`(?i)^https?://(?:[\w-]+\.)+[\w-]+(?::\d+)?(?:/[^\s]*)?(?:\?[^\s]*)?(?:#[^\s]*)?`)
+	// File URL scan
+	reFileUrlScan = regexp.MustCompile(`^file:///[^\s\x00]+`)
+	// Single regexp flag character
+	reRegexpFlagOneScan = regexp.MustCompile(`^[gimsuyxnA]`)
+	// UUID v7 version/variant fields (rune-stream scan, no $ anchor)
+	reUuidV7VerScan = regexp.MustCompile(`(?i)^7[0-9a-fA-F]{3}`)
+	reUuidV7VarScan = regexp.MustCompile(`(?i)^[89abAB][0-9a-fA-F]{3}`)
 )
 
 // matchHex validates the current token value against a hex pattern without

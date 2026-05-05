@@ -1,0 +1,146 @@
+(* ============================================================
+   pkg/lib/hmap.sqz  --  Squeeze V13 Heterogeneous Map Type
+   ============================================================
+
+   Defines the hmap.@type type: a dynamic string-keyed map whose values
+   may each be of a different type  (string â†’ @?).
+
+   Unlike object.@type, which enforces UNIFORM INFER across all values,
+   hmap.@type places no constraint on value types.  This makes it the
+   right choice for runtime registries, caches, and stores where
+   the value type varies per entry.
+
+   Instantiation (Rule A â€” typed assignment):
+     my_map: hmap []
+
+   The "[]" is the empty_array_typed production: the type name
+   "hmap" followed by the empty-array literal.  There are no further
+   initialisation arguments; the backing store is always created
+   empty.  Entries are added with put().
+
+   Function parameter (Rule B â€” receiver/argument type):
+     -> m: hmap.@type
+
+   All mutation methods return a new hmap.@type; hmap.@type is immutable by
+   convention â€” no method mutates in place.
+
+   Intrinsics used (UPPERCASE builtins):
+     HMAP_NEW                    â€” Go: map[string]any{}
+     HMAP_HAS<m, key>            â€” Go: _, ok := m[key]; return ok
+     HMAP_GET<m, key>            â€” Go: m[key]  (nil/zero when absent)
+     HMAP_PUT<m, key, val>       â€” Go: shallow copy of m with m[key] = val
+     HMAP_DEL<m, key>            â€” Go: shallow copy of m without key
+     HMAP_SIZE<m>                â€” Go: len(m)
+     HMAP_KEYS<m>                â€” Go: sorted []string of all keys
+     HMAP_VALUES<m>              â€” Go: []any in key-sorted order
+     HMAP_TO_ARRAY<m>            â€” Go: []struct{Key string; Value any} sorted by key
+     HMAP_TO_JSON<m>             â€” JSON object string, keys in sorted order
+   ============================================================ *)
+
+(col : std.collections.type.@type)  hmap, hashmap: {
+    names, n, 1..m: ["hmap", "hashmap"]
+    map:     [ key: string.@type , value: @? ] 
+    filter:  col.filter
+    reduce:  col.reduce
+    count:   col.count
+    first:   col.first
+    last:    col.last
+    collect: col.collect
+    - (
+        card,  c:       1..1
+        type,  t:       $
+        data,  d:       @?     (* internal raw Go map[string]any; assigned by init via HMAP_NEW *)
+        ver,   v:       "v0.0"
+
+        (* init â€” invoked when the user writes:  my_map: hmap []
+           The "[]" argument is always the empty_array_decl; the backing
+           store is constructed fresh each time via HMAP_NEW. *)
+
+        init: <- (
+            -> key: string.@type
+            -> obj: @?
+            <- [
+                names: __ps_call LHS Â§assign_lhs.ident_name,
+                card:  __ps_call LHS Â§assign_lhs.cardinality,
+                type:  obj.@type,
+                data:  obj
+            ]
+        )
+    )
+} 
+    (* ---------------------------------------------------------------
+       Inspection â€” non-mutating
+       --------------------------------------------------------------- *)
+
+    (* size â€” number of key-value entries. *)
+    (m : hmap.@type) size: <- (
+        <- __ps_proxy HMAP_SIZE <m.data>
+    )
+
+    (* is_empty â€” true when the map holds no entries. *)
+    (m : hmap.@type) is_empty: <- (
+        <- __ps_proxy HMAP_SIZE <m.data> == 0
+    )
+
+    (* has â€” O(1) key-presence check; true when key exists. *)
+    (m : hmap.@type) has: <- (
+        -> key: string
+        <- __ps_proxy HMAP_HAS <m.data, key>
+    )
+
+    (* get â€” value for key, or null when absent.
+       Use has() first when storing null as a valid value. *)
+    (m : hmap.@type) get: <- (
+        -> key: string
+        ( __ps_proxy HMAP_HAS <m.data, key> ) & <- __ps_proxy HMAP_GET <m.data, key>
+        <- null
+    )
+
+    (* keys â€” sorted array.@type of all keys. *)
+    (m : hmap.@type) keys: <- (
+        <- __ps_proxy HMAP_KEYS <m.data>
+    )
+
+    (* values â€” array.@type of all values ordered by sorted key. *)
+    (m : hmap.@type) values: <- (
+        <- __ps_proxy HMAP_VALUES <m.data>
+    )
+
+    (* to_array â€” array.@type of [key: k, value: v] records in key-sorted order.
+       Enables collection-generic pipelines (map, filter, reduce â€¦) over entries. *)
+    (m : hmap.@type) to_array: <- (
+        <- __ps_proxy HMAP_TO_ARRAY <m.data>
+    )
+
+
+    (* ---------------------------------------------------------------
+       Functional mutation â€” each returns a new hmap.@type
+       --------------------------------------------------------------- *)
+
+    (* put â€” new hmap.@type with key â†’ val upserted.
+       Adds the key when absent; replaces the stored value when present. *)
+    (m : hmap.@type) put: <- (
+        -> key: string
+        -> val: @?
+        <- [ type: $, data: __ps_proxy HMAP_PUT <m.data, key, val> ]
+    )
+
+    (* remove â€” new hmap.@type without key.
+       Returns m unchanged when key is not present. *)
+    (m : hmap.@type) remove: <- (
+        -> key: string
+        ( ! __ps_proxy HMAP_HAS <m.data, key> ) & <- m
+        <- [ type: $, data: __ps_proxy HMAP_DEL <m.data, key> ]
+    )
+
+
+    (* ---------------------------------------------------------------
+       Serialisation
+       --------------------------------------------------------------- *)
+
+    (* to_json â€” JSON object string '{"k1": v1, "k2": v2, â€¦}'.
+       Keys are emitted in sorted order for deterministic output. *)
+    (m : hmap.@type) to_json: <- (
+        <- __ps_proxy HMAP_TO_JSON <m.data>
+    )
+}

@@ -26,8 +26,8 @@ error_event, err_ev: {
            ctx: §object_final
         sev >< ["recoverable", "error", "fatal"]    (* severity must be one of the three tiers *)
         <- [
-            names:           LHS_CALLER<§assign_lhs.ident_name>,
-            card:            LHS_CALLER<§assign_lhs.cardinality>,
+            names:           __ps_call LHS §assign_lhs.ident_name,
+            card:            __ps_call LHS §assign_lhs.cardinality,
             type:            $,
             program_pointer: pp,
             chain_uuid:      uid,
@@ -40,17 +40,17 @@ error_event, err_ev: {
     )
 
     (* Returns true if the error can be recovered from by a policy *)
-    (e : @error_event) is_recoverable: <- (
+    (e : error_event.@type) is_recoverable: <- (
         <- e.severity == "recoverable"
     )
 
     (* Returns true if the error is fatal — log and terminate only *)
-    (e : @error_event) is_fatal: <- (
+    (e : error_event.@type) is_fatal: <- (
         <- e.severity == "fatal"
     )
 
     (* Returns a copy of this error_event with severity promoted to "fatal" *)
-    (e : @error_event) promote_fatal: <- (
+    (e : error_event.@type) promote_fatal: <- (
         <- [
             type:            $,
             program_pointer: e.program_pointer,
@@ -68,10 +68,10 @@ error_event, err_ev: {
          "recoverable" → l.warn  (structured fields only — no error_ref attachment)
          "error"       → l.error (structured fields + this event as error_ref)
          "fatal"       → l.error (structured fields + this event as error_ref)
-       l must be an initialised @logger — see pkg/lib/logger.sqz.
+       l must be an initialised logger.@type — see pkg/lib/logger.sqz.
        The call never blocks: the logger's buffered channel absorbs the entry. *)
-    (e : @error_event) log_to: <- (
-        -> l: @logger
+    (e : error_event.@type) log_to: <- (
+        -> l: logger.@type
         fld: [
             program_pointer: e.program_pointer,
             chain_uuid:      e.chain_uuid,
@@ -89,8 +89,8 @@ error_event, err_ev: {
            err.log_and_promote[ app_log ] => fatal_result
 
        Go codegen: calls log_to then returns promote_fatal — two non-blocking ops. *)
-    (e : @error_event) log_and_promote: <- (
-        -> l: @logger
+    (e : error_event.@type) log_and_promote: <- (
+        -> l: logger.@type
         e.log_to[ l ]
         <- e.promote_fatal
     )

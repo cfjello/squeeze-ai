@@ -2,10 +2,10 @@
    pkg/lib/enum.sqz  --  Squeeze V13 Enum Type
    ============================================================
 
-   Defines the @enum type and its methods.
+   Defines the enum.@type type and its methods.
    An enum is a named domain of unique string or integer constants
    (a type declaration, not a mutable data collection).
-   Internally members are stored as an ordered @array so that
+   Internally members are stored as an ordered array.@type so that
    ordinal position and navigation are well-defined.
 
    Grammar declares members at parse time via:
@@ -16,18 +16,18 @@
    All methods return new values; none mutate in place.
 
    Intrinsics used (UPPERCASE builtins):
-     ENUM_MEMBERS<e>              — @array of member values in declaration order
-     ENUM_CONTAINS<e, value>      — boolean: value is a valid member
-     ENUM_INDEX_OF<e, value>      — zero-based ordinal of value, or -1
-     ENUM_VALUE_AT<e, index>      — member at ordinal index, or null
-     ENUM_WITH_MEMBER<e, value>   — new enum data with value appended; error on dup
-     ENUM_WITHOUT_MEMBER<e, val>  — new enum data with value removed; unchanged if absent
-     ENUM_IS_STRING<e>            — boolean: all members are string literals
-     ENUM_IS_INTEGER<e>            — boolean: all members are integers
-     TO_JSON<val>                 — JSON-serialise a value
+     ENUM_MEMBERS<e>              â€” array.@type of member values in declaration order
+     ENUM_CONTAINS<e, value>      â€” boolean: value is a valid member
+     ENUM_INDEX_OF<e, value>      â€” zero-based ordinal of value, or -1
+     ENUM_VALUE_AT<e, index>      â€” member at ordinal index, or null
+     ENUM_WITH_MEMBER<e, value>   â€” new enum data with value appended; error on dup
+     ENUM_WITHOUT_MEMBER<e, val>  â€” new enum data with value removed; unchanged if absent
+     ENUM_IS_STRING<e>            â€” boolean: all members are string literals
+     ENUM_IS_INTEGER<e>            â€” boolean: all members are integers
+     TO_JSON<val>                 â€” JSON-serialise a value
    *)
 
-(col : @std.collections)  enum, enum_final: {
+(col : std.collections.type.@type)  enum, enum_final: {
     names,n, 1..2: ["enum", "enum_final"]
     map:     col.map
     filter:  col.filter
@@ -38,13 +38,13 @@
     - (
         card,  c:       1..1
         type,  t:       $
-        data,  d:       @?     (* raw values array; assigned by init from §array_final *)
+        data,  d:       @?     (* raw values array; assigned by init from Â§array_final *)
         ver,   v:       "v0.0"
 
         init: <- (
-            -> raw: §enum_final
-            <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
-                 card:  LHS_CALLER<§assign_lhs.cardinality>,
+            -> raw: Â§enum_final
+            <- [ names: __ps_call LHS Â§assign_lhs.ident_name,
+                 card:  __ps_call LHS Â§assign_lhs.cardinality,
                  type:  $,
                  data:  raw ]
         )
@@ -55,29 +55,29 @@
        Inspection
        --------------------------------------------------------------- *)
 
-    (* count — number of declared members. *)
-    (e : @enum) count: <- (
-        <- LENGTH<ENUM_MEMBERS<e>>
+    (* count â€” number of declared members. *)
+    (e : enum.@type) count: <- (
+        <- __ps_proxy LENGTH <__ps_proxy ENUM_MEMBERS <e>>
     )
 
-    (* members — @array of all member values in declaration order. *)
-    (e : @enum) members: <- (
-        <- [ type: $, data: ENUM_MEMBERS<e> ]
+    (* members â€” array.@type of all member values in declaration order. *)
+    (e : enum.@type) members: <- (
+        <- [ type: $, data: __ps_proxy ENUM_MEMBERS <e> ]
     )
 
-    (* is_empty — true if the enum has no members. *)
-    (e : @enum) is_empty: <- (
-        <- LENGTH<ENUM_MEMBERS<e>> == 0
+    (* is_empty â€” true if the enum has no members. *)
+    (e : enum.@type) is_empty: <- (
+        <- __ps_proxy LENGTH <__ps_proxy ENUM_MEMBERS <e>> == 0
     )
 
-    (* is_string_enum — true if all members are string literals. *)
-    (e : @enum) is_string_enum: <- (
-        <- ENUM_IS_STRING<e>
+    (* is_string_enum â€” true if all members are string literals. *)
+    (e : enum.@type) is_string_enum: <- (
+        <- __ps_proxy ENUM_IS_STRING <e>
     )
 
-    (* is_integer_enum — true if all members are integers. *)
-    (e : @enum) is_integer_enum: <- (
-        <- ENUM_IS_INTEGER<e>
+    (* is_integer_enum â€” true if all members are integers. *)
+    (e : enum.@type) is_integer_enum: <- (
+        <- __ps_proxy ENUM_IS_INTEGER <e>
     )
 
 
@@ -85,22 +85,22 @@
        Membership and lookup
        --------------------------------------------------------------- *)
 
-    (* contains — true if value is a declared member of this enum. *)
-    (e : @enum) contains: <- (
+    (* contains â€” true if value is a declared member of this enum. *)
+    (e : enum.@type) contains: <- (
         -> value: @?
-        <- ENUM_CONTAINS<e, value>
+        <- __ps_proxy ENUM_CONTAINS <e, value>
     )
 
-    (* index_of — zero-based ordinal position of value, or -1 if absent. *)
-    (e : @enum) index_of: <- (
+    (* index_of â€” zero-based ordinal position of value, or -1 if absent. *)
+    (e : enum.@type) index_of: <- (
         -> value: @?
-        <- ENUM_INDEX_OF<e, value>
+        <- __ps_proxy ENUM_INDEX_OF <e, value>
     )
 
-    (* value_at — member at zero-based ordinal index, or null if out of range. *)
-    (e : @enum) value_at: <- (
+    (* value_at â€” member at zero-based ordinal index, or null if out of range. *)
+    (e : enum.@type) value_at: <- (
         -> index: @?
-        <- ENUM_VALUE_AT<e, index>
+        <- __ps_proxy ENUM_VALUE_AT <e, index>
     )
 
 
@@ -108,31 +108,31 @@
        Navigation  (useful for state machines)
        --------------------------------------------------------------- *)
 
-    (* first — first declared member, or null if the enum is empty. *)
-    (e : @enum) first: <- (
-        <- ENUM_VALUE_AT<e, 0>
+    (* first â€” first declared member, or null if the enum is empty. *)
+    (e : enum.@type) first: <- (
+        <- __ps_proxy ENUM_VALUE_AT <e, 0>
     )
 
-    (* last — last declared member, or null if the enum is empty. *)
-    (e : @enum) last: <- (
-        len = LENGTH<ENUM_MEMBERS<e>>
-        <- ( len == 0 ) & null ^ ENUM_VALUE_AT<e, len - 1>
+    (* last â€” last declared member, or null if the enum is empty. *)
+    (e : enum.@type) last: <- (
+        len = __ps_proxy LENGTH <__ps_proxy ENUM_MEMBERS <e>>
+        <- ( len == 0 ) & null ^ __ps_proxy ENUM_VALUE_AT <e, len - 1>
     )
 
-    (* next — member immediately after value in declaration order,
+    (* next â€” member immediately after value in declaration order,
        or null when value is the last member or is not present. *)
-    (e : @enum) next: <- (
+    (e : enum.@type) next: <- (
         -> value: @?
-        idx = ENUM_INDEX_OF<e, value>
-        <- ( idx < 0 ) & null ^ ENUM_VALUE_AT<e, idx + 1>
+        idx = __ps_proxy ENUM_INDEX_OF <e, value>
+        <- ( idx < 0 ) & null ^ __ps_proxy ENUM_VALUE_AT <e, idx + 1>
     )
 
-    (* prev — member immediately before value in declaration order,
+    (* prev â€” member immediately before value in declaration order,
        or null when value is the first member or is not present. *)
-    (e : @enum) prev: <- (
+    (e : enum.@type) prev: <- (
         -> value: @?
-        idx = ENUM_INDEX_OF<e, value>
-        <- ( idx <= 0 ) & null ^ ENUM_VALUE_AT<e, idx - 1>
+        idx = __ps_proxy ENUM_INDEX_OF <e, value>
+        <- ( idx <= 0 ) & null ^ __ps_proxy ENUM_VALUE_AT <e, idx - 1>
     )
 
 
@@ -140,18 +140,18 @@
        Functional mutation  (mirrors grammar ENUM / EXTEND)
        --------------------------------------------------------------- *)
 
-    (* with_member — new enum with value appended in last position.
+    (* with_member â€” new enum with value appended in last position.
        The runtime raises an error when value is already a member. *)
-    (e : @enum) with_member: <- (
+    (e : enum.@type) with_member: <- (
         -> value: @?
-        <- [ type: $, data: ENUM_WITH_MEMBER<e, value> ]
+        <- [ type: $, data: __ps_proxy ENUM_WITH_MEMBER <e, value> ]
     )
 
-    (* without_member — new enum with value removed.
+    (* without_member â€” new enum with value removed.
        Returns the enum unchanged when value is not a member. *)
-    (e : @enum) without_member: <- (
+    (e : enum.@type) without_member: <- (
         -> value: @?
-        <- [ type: $, data: ENUM_WITHOUT_MEMBER<e, value> ]
+        <- [ type: $, data: __ps_proxy ENUM_WITHOUT_MEMBER <e, value> ]
     )
 
 
@@ -159,23 +159,23 @@
        Conversion
        --------------------------------------------------------------- *)
 
-    (* to_array — @array of member values in declaration order. *)
-    (e : @enum) to_array: <- (
-        <- [ type: $, data: ENUM_MEMBERS<e> ]
+    (* to_array â€” array.@type of member values in declaration order. *)
+    (e : enum.@type) to_array: <- (
+        <- [ type: $, data: __ps_proxy ENUM_MEMBERS <e> ]
     )
 
-    (* to_json — JSON array of all member values. *)
-    (e : @enum) to_json: <- (
-        <- TO_JSON<ENUM_MEMBERS<e>>
+    (* to_json â€” JSON array of all member values. *)
+    (e : enum.@type) to_json: <- (
+        <- __ps_proxy TO_JSON <__ps_proxy ENUM_MEMBERS <e>>
     )
 
-    (* to_string — comma-separated member string, e.g. "active, inactive, pending". *)
-    (e : @enum) to_string: <- (
-        members = ENUM_MEMBERS<e>
+    (* to_string â€” comma-separated member string, e.g. "active, inactive, pending". *)
+    (e : enum.@type) to_string: <- (
+        members = __ps_proxy ENUM_MEMBERS <e>
         result  = ""
         first   = true
         >> m: members
-            result = first & CAST string<m> ^ (result + ", " + CAST string<m>)
+            result = first & __ps_proxy CAST string <m> ^ (result + ", " + __ps_proxy CAST string <m>)
             first  = false
         <- result
     )

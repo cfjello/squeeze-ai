@@ -2,7 +2,7 @@
    pkg/lib/decimal.sqz  --  Squeeze V13 Decimal Type
    ============================================================
 
-   Defines the @decimal type and its methods.
+   Defines the decimal.@type type and its methods.
    Decimals are fixed-point, immutable value types written as
    sign? digits "." digits (e.g. -3.14, +0.001, 42.0).
 
@@ -11,20 +11,20 @@
    the library level.  The whole part determines which internal
    container is used:
 
-     decimal8   — whole part in  -128..127
-     decimal16  — whole part in  -32768..32767
-     decimal32  — whole part in  -2147483648..2147483647
-     decimal64  — whole part in  -9223372036854775808..9223372036854775807
-     decimal128 — whole part in  -170141183460469231731687303715884105728
+     decimal8   â€” whole part in  -128..127
+     decimal16  â€” whole part in  -32768..32767
+     decimal32  â€” whole part in  -2147483648..2147483647
+     decimal64  â€” whole part in  -9223372036854775808..9223372036854775807
+     decimal128 â€” whole part in  -170141183460469231731687303715884105728
                                   ..170141183460469231731687303715884105727
 
    Intrinsics used (UPPERCASE builtins):
-     CAST string<val>          — coerce a value to its string form
-     DEC_FLOOR<d>              — largest integer <= d
-     DEC_CEIL<d>               — smallest integer >= d
-     DEC_ROUND<d, places>      — round to given decimal places
-     DEC_TRUNC<d, places>      — truncate to given decimal places
-     DEC_FRAC_DIGITS<d>        — count of digits after the decimal point
+     CAST string<val>          â€” coerce a value to its string form
+     DEC_FLOOR<d>              â€” largest integer <= d
+     DEC_CEIL<d>               â€” smallest integer >= d
+     DEC_ROUND<d, places>      â€” round to given decimal places
+     DEC_TRUNC<d, places>      â€” truncate to given decimal places
+     DEC_FRAC_DIGITS<d>        â€” count of digits after the decimal point
    *)
 
 decimal, decimal_num: {
@@ -35,61 +35,61 @@ decimal, decimal_num: {
         data,  d:       [ sign: '+', whole: 0, frac: "0" ]
         ver,   v:       "v0.0"
 
-        (* init — parse a raw decimal literal.
+        (* init â€” parse a raw decimal literal.
            The sign and whole part are separated from the fractional string so
            that fixed-point precision is never lost, and the whole part is held
            in the narrowest fitting signed container. *)
         init: <- (
-            -> raw: §decimal
-            sign: §char '+'
-            ( raw < 0 ) & sign: §char '-'
+            -> raw: Â§decimal
+            sign: Â§char '+'
+            ( raw < 0 ) & sign: Â§char '-'
 
             (* split on the decimal point *)
-            whole_part: DEC_FLOOR<raw>
-            ( raw < 0 ) & whole_part: DEC_CEIL<raw>
+            whole_part: __ps_proxy DEC_FLOOR <raw>
+            ( raw < 0 ) & whole_part: __ps_proxy DEC_CEIL <raw>
             mag_whole:  whole_part
             ( raw < 0 ) & mag_whole: 0 - whole_part
 
-            frac_str: DEC_FRAC_STR<raw>
+            frac_str: __ps_proxy DEC_FRAC_STR <raw>
 
             (* select narrowest container by whole-part magnitude *)
-            ( mag_whole <= 127 )                                                                     & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, whole: decimal8   whole_part, frac: frac_str ] ]
-            ( mag_whole <= 32767 )                                                                   & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, whole: decimal16  whole_part, frac: frac_str ] ]
-            ( mag_whole <= 2147483647 )                                                              & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, whole: decimal32  whole_part, frac: frac_str ] ]
-            ( mag_whole <= 9223372036854775807 )                                                     & <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, whole: decimal64  whole_part, frac: frac_str ] ]
-            <- [ names: LHS_CALLER<§assign_lhs.ident_name>, card: LHS_CALLER<§assign_lhs.cardinality>, type: $, data: [ sign: sign, whole: decimal128 whole_part, frac: frac_str ] ]
+            ( mag_whole <= 127 )                   & <- [ names: __ps_call LHS Â§assign_lhs.ident_name, card: __ps_call LHS Â§assign_lhs.cardinality, type: $, data: [ sign: sign, whole: decimal8   whole_part, frac: frac_str ] ]
+            ( mag_whole <= 32767 )                 & <- [ names: __ps_call LHS Â§assign_lhs.ident_name, card: __ps_call LHS Â§assign_lhs.cardinality, type: $, data: [ sign: sign, whole: decimal16  whole_part, frac: frac_str ] ]
+            ( mag_whole <= 2147483647 )            & <- [ names: __ps_call LHS Â§assign_lhs.ident_name, card: __ps_call LHS Â§assign_lhs.cardinality, type: $, data: [ sign: sign, whole: decimal32  whole_part, frac: frac_str ] ]
+            ( mag_whole <= 9223372036854775807 )   & <- [ names: __ps_call LHS Â§assign_lhs.ident_name, card: __ps_call LHS Â§assign_lhs.cardinality, type: $, data: [ sign: sign, whole: decimal64  whole_part, frac: frac_str ] ]
+            <- [ names: __ps_call LHS Â§assign_lhs.ident_name, card: __ps_call LHS Â§assign_lhs.cardinality, type: $, data: [ sign: sign, whole: decimal128 whole_part, frac: frac_str ] ]
         )
     )
 
-
+} 
     (* ---------------------------------------------------------------
        Sign and parts
        --------------------------------------------------------------- *)
 
-    (* abs — magnitude as a non-negative decimal. *)
-    (d : @decimal) abs: <- (
+    (* abs â€” magnitude as a non-negative decimal. *)
+    (d : decimal.@type) abs: <- (
         <- [ type: $, data: [ sign: '+', whole: d.data.whole, frac: d.data.frac ] ]
     )
 
-    (* sign — returns "+" or "-" as a string. *)
-    (d : @decimal) sign: <- (
-        <- CAST string<d.data.sign>
+    (* sign â€” returns "+" or "-" as a string. *)
+    (d : decimal.@type) sign: <- (
+        <- __ps_proxy CAST string <d.data.sign>
     )
 
-    (* whole_part — integer part as a signed integer (negative when d < 0). *)
-    (d : @decimal) whole_part: <- (
+    (* whole_part â€” integer part as a signed integer (negative when d < 0). *)
+    (d : decimal.@type) whole_part: <- (
         <- d.data.whole
     )
 
-    (* frac_part — fractional digits as a string, e.g. "14" for 3.14.
+    (* frac_part â€” fractional digits as a string, e.g. "14" for 3.14.
        Trailing zeros are preserved. *)
-    (d : @decimal) frac_part: <- (
+    (d : decimal.@type) frac_part: <- (
         <- d.data.frac
     )
 
-    (* frac_digits — number of digits after the decimal point. *)
-    (d : @decimal) frac_digits: <- (
-        <- DEC_FRAC_DIGITS<d>
+    (* frac_digits â€” number of digits after the decimal point. *)
+    (d : decimal.@type) frac_digits: <- (
+        <- __ps_proxy DEC_FRAC_DIGITS <d>
     )
 
 
@@ -97,23 +97,23 @@ decimal, decimal_num: {
        Predicates
        --------------------------------------------------------------- *)
 
-    (* is_zero — true when the value is exactly 0.0 (any number of trailing zeros). *)
-    (d : @decimal) is_zero: <- (
+    (* is_zero â€” true when the value is exactly 0.0 (any number of trailing zeros). *)
+    (d : decimal.@type) is_zero: <- (
         <- d.data.whole == 0 & d.data.frac =~ /^0+$/
     )
 
-    (* is_positive — true when value > 0. *)
-    (d : @decimal) is_positive: <- (
+    (* is_positive â€” true when value > 0. *)
+    (d : decimal.@type) is_positive: <- (
         <- d.data.sign == '+' & !d.is_zero()
     )
 
-    (* is_negative — true when value < 0. *)
-    (d : @decimal) is_negative: <- (
+    (* is_negative â€” true when value < 0. *)
+    (d : decimal.@type) is_negative: <- (
         <- d.data.sign == '-'
     )
 
-    (* is_integer — true when the fractional part is all zeros (value is a whole number). *)
-    (d : @decimal) is_integer: <- (
+    (* is_integer â€” true when the fractional part is all zeros (value is a whole number). *)
+    (d : decimal.@type) is_integer: <- (
         <- d.data.frac =~ /^0+$/
     )
 
@@ -122,9 +122,9 @@ decimal, decimal_num: {
        Range validation
        --------------------------------------------------------------- *)
 
-    (* in_range — true when d falls within the given numeric range. *)
-    (d : @decimal) in_range: <- (
-        -> r: §func_fixed_num_range
+    (* in_range â€” true when d falls within the given numeric range. *)
+    (d : decimal.@type) in_range: <- (
+        -> r: Â§func_fixed_num_range
         <- d >< r
     )
 
@@ -133,26 +133,26 @@ decimal, decimal_num: {
        Rounding and truncation
        --------------------------------------------------------------- *)
 
-    (* floor — largest integer <= d, returned as an integer. *)
-    (d : @decimal) floor: <- (
-        <- DEC_FLOOR<d>
+    (* floor â€” largest integer <= d, returned as an integer. *)
+    (d : decimal.@type) floor: <- (
+        <- __ps_proxy DEC_FLOOR <d>
     )
 
-    (* ceil — smallest integer >= d, returned as an integer. *)
-    (d : @decimal) ceil: <- (
-        <- DEC_CEIL<d>
+    (* ceil â€” smallest integer >= d, returned as an integer. *)
+    (d : decimal.@type) ceil: <- (
+        <- __ps_proxy DEC_CEIL <d>
     )
 
-    (* round — round to the given number of decimal places. *)
-    (d : @decimal) round: <- (
+    (* round â€” round to the given number of decimal places. *)
+    (d : decimal.@type) round: <- (
         -> places: integer
-        <- DEC_ROUND<d, places>
+        <- __ps_proxy DEC_ROUND <d, places>
     )
 
-    (* trunc — truncate (towards zero) to the given number of decimal places. *)
-    (d : @decimal) trunc: <- (
+    (* trunc â€” truncate (towards zero) to the given number of decimal places. *)
+    (d : decimal.@type) trunc: <- (
         -> places: integer
-        <- DEC_TRUNC<d, places>
+        <- __ps_proxy DEC_TRUNC <d, places>
     )
 
 
@@ -160,16 +160,16 @@ decimal, decimal_num: {
        String conversion
        --------------------------------------------------------------- *)
 
-    (* to_string — decimal string representation.
+    (* to_string â€” decimal string representation.
        Positive values are returned without a leading "+". *)
-    (d : @decimal) to_string: <- (
-        whole_str: CAST string<d.data.whole>
+    (d : decimal.@type) to_string: <- (
+        whole_str: __ps_proxy CAST string <d.data.whole>
         ( d.data.sign == '-' ) & <- '-' + whole_str + '.' + d.data.frac
         <- whole_str + '.' + d.data.frac
     )
 
-    (* to_string_fixed — fixed number of decimal places, zero-padded or rounded. *)
-    (d : @decimal) to_string_fixed: <- (
+    (* to_string_fixed â€” fixed number of decimal places, zero-padded or rounded. *)
+    (d : decimal.@type) to_string_fixed: <- (
         -> places: integer
         rounded: d.round(places)
         <- rounded.to_string()
@@ -180,8 +180,8 @@ decimal, decimal_num: {
        JSON serialisation
        --------------------------------------------------------------- *)
 
-    (* to_json — JSON representation (unquoted decimal literal). *)
-    (d : @decimal) to_json: <- (
+    (* to_json â€” JSON representation (unquoted decimal literal). *)
+    (d : decimal.@type) to_json: <- (
         <- d.to_string()
     )
-}
+

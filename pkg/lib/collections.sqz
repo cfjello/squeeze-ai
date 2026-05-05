@@ -6,31 +6,31 @@
    lazy iterators.  See spec/15_collections.sqg for the full
    design rationale.
 
-   All functions use ">> col: @?" — the function receives the
-   @iterators object and is called ONCE.  The inner loop block
+   All functions use ">> col: @?" â€” the function receives the
+   iterators.@type object and is called ONCE.  The inner loop block
    uses "-> elem: @?" to receive each element directly from the
    iterator (ITER_NEXT<it> returns the element, not iterator_record).
 
-   TRANSFORMS (lazy — yield downstream via postfix "elem >>"):
+   TRANSFORMS (lazy â€” yield downstream via postfix "elem >>"):
      map, filter, take, drop, zip
 
-   AGGREGATES (eager — consume iterator, return scalar or record):
+   AGGREGATES (eager â€” consume iterator, return scalar or record):
      reduce, join, first, last, count, sum, min, max
 
-   MATERIALISER (eager — consume iterator, return @array):
+   MATERIALISER (eager â€” consume iterator, return array.@type):
      collect
    *)
 
 collections: {
     names, n, 1..1: ["collections"]
     (* ============================================================
-    TRANSFORMS — lazy, yield downstream via postfix ">>"
+    TRANSFORMS â€” lazy, yield downstream via postfix ">>"
     ============================================================ *)
 
     (*
     map(col, f)
     Apply f to every element of col; yield each result downstream.
-    Output @type is determined by the return type of f.
+    Output type.@type is determined by the return type of f.
     *)
     map : <- {
         >> col: @?
@@ -44,7 +44,7 @@ collections: {
     (*
     filter(col, pred)
     Yield each element of col for which pred(elem) is true.
-    Output @type is identical to input @type.
+    Output type.@type is identical to input type.@type.
     *)
     filter : <- {
         >> col:  @?
@@ -58,7 +58,7 @@ collections: {
     (*
     take(col, n)
     Yield the first n elements of col then stop.
-    Output @type is identical to input @type.
+    Output type.@type is identical to input type.@type.
     *)
     take : <- {
         >> col: @?
@@ -75,7 +75,7 @@ collections: {
     (*
     drop(col, n)
     Skip the first n elements, then yield the rest.
-    Output @type is identical to input @type.
+    Output type.@type is identical to input type.@type.
     *)
     drop : <- {
         >> col: @?
@@ -99,7 +99,7 @@ collections: {
         -> col_b: @?
         col_a >> {
             -> elem_a: @?
-            elem_b = ITER_NEXT<col_b>
+            elem_b = __ps_proxy ITER_NEXT <col_b>
             ( elem_b == null ) & <- false
             [ _1: elem_a, _2: elem_b ] >>
         }
@@ -107,13 +107,13 @@ collections: {
 
 
     (* ============================================================
-    AGGREGATES — eager, consume iterator, return scalar or record
+    AGGREGATES â€” eager, consume iterator, return scalar or record
     ============================================================ *)
 
     (*
     reduce(col, init, f)
     Left-fold col using f, starting from init.
-    Output @type == init.@type.
+    Output type.@type == init.type.@type.
     init is mandatory.
     *)
     reduce : <- {
@@ -190,7 +190,7 @@ collections: {
     (*
     sum(col)
     Sum numeric elements of col.
-    Input must be a numeric @type.
+    Input must be a numeric type.@type.
     *)
     sum : <- {
         >> col: @?
@@ -205,7 +205,7 @@ collections: {
     (*
     min(col)
     Return the minimum element of col.
-    Input must be an ordered @type.
+    Input must be an ordered type.@type.
     *)
     min : <- {
         >> col: @?
@@ -220,7 +220,7 @@ collections: {
     (*
     max(col)
     Return the maximum element of col.
-    Input must be an ordered @type.
+    Input must be an ordered type.@type.
     *)
     max : <- {
         >> col: @?
@@ -234,12 +234,12 @@ collections: {
 
 
     (* ============================================================
-    MATERIALISER — consume a lazy stream into an @array
+    MATERIALISER â€” consume a lazy stream into an array.@type
     ============================================================ *)
 
     (*
     collect(col)
-    Drain col into a new @array.
+    Drain col into a new array.@type.
     Use at the end of a lazy pipeline to materialise the result:
         col >> filter(pred) >> map(f) >> collect()
     *)

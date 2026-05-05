@@ -98,34 +98,12 @@ detail.  Surface it as a proposed spec change first.
 
 ### SIR-4 — Never pre-lex; all token classification happens at parse time
 
-The lexer's sole responsibility is to produce a flat, context-free token stream
-(identifiers, digits, operators, strings, regexps, NL, EOF).  It must **never**
-classify a token into a domain-specific category that belongs to a grammar rule.
-All such classification happens inside the `ParseXxx()` method for that rule.
+You are not allowed to create a separate pre-lexing pass that classifies tokens into categories or types before parsing.  All token classification must be done in the context of the grammar rules:
 
-**What this forbids in the lexer:**
+1. For "non-terminal tokens" a parser rule function must call another grammer rule function.
+2. For "terminal tokens" the parser must call the specific regular expression or text-match.
 
-- Emitting distinct token types for duration units (`ms`, `s`, `m`, `h`, `d`, `w`)
-  — they lex as `V17_IDENT` and are matched by value inside `ParseDurationUnit`.
-- Emitting distinct token types for boolean keywords (`true`, `false`) that differ
-  from a general identifier — if `true`/`false` are keywords, they must be handled
-  uniformly and documented as keywords in the keyword map, not silently reclassified
-  mid-stream.
-- Emitting a `V17_CHAR` token type derived from the `char` grammar rule — the
-  `char` rule is implemented entirely as `ParseChar()` using character-level lexer
-  primitives (`ScanCharContent`), not by pre-classifying single-quoted characters
-  at lex time as a distinct type.
-- Building any lookahead, context window, or stateful classification inside the
-  lexer to distinguish tokens that the grammar separates via rule structure.
-
-**Corollary**: if a grammar rule's first token is ambiguous at the lexer level
-(same surface form as another rule), the disambiguiation belongs in the parser
-(via `savePos`/`restorePos` or first-token lookahead), never in the lexer.
-
-**Violation test**: if removing a lexer classification and replacing it with a
-value match in the relevant `ParseXxx()` method changes parse behaviour, that
-is a sign a grammar rule was being used to patch a missing spec distinction.
-Report the ambiguity to the user instead.
+There can be no exceptions to these 2 rules, because you are dealing with a context sensitive grammer. If you diviate, the parser will not work. So pre-lexing is strictly forbitten, only rule function by rule function and lokkup of specific match patterns are allowed.
 
 ---
 
@@ -355,7 +333,7 @@ directive (a semantic constraint not expressible with existing ones),
 
 ## Step 3 — Find all MERGE / EXTEND for the rule
 
-MERGE and EXTEND in later spec files silently add alternatives to a rule defined
+MERGE and EXTEND in later spec files silently extends a rule defined
 in an earlier file.  Always search before implementing a dispatcher.
 
 ```

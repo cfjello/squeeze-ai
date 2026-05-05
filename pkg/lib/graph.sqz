@@ -2,7 +2,7 @@
    pkg/lib/graph.sqz  --  Squeeze V13 Graph Type
    ============================================================
 
-   Defines the @graph type and its methods.
+   Defines the graph.@type type and its methods.
    A graph is a directed graph of uniquely-keyed nodes and
    labelled or unlabelled edges.  Unlike trees, graphs support
    cycles, multiple parents, and cross-references between nodes.
@@ -10,43 +10,43 @@
    All methods return new values; none mutate in place.
 
    Internal representation:
-     nodes — @array of { key: unique_key, value: @? }
-     edges — @array of { from: unique_key, to: unique_key, label?: string }
+     nodes â€” array.@type of { key: unique_key, value: @? }
+     edges â€” array.@type of { from: unique_key, to: unique_key, label?: string }
 
    Edge label is optional; an edge without a label has label: null.
 
    Intrinsics used (UPPERCASE builtins):
-     GRAPH_NODE_COUNT<g>             — total number of nodes
-     GRAPH_EDGE_COUNT<g>             — total number of edges
-     GRAPH_HAS_NODE<g, key>          — boolean: node with key exists
-     GRAPH_HAS_EDGE<g, from, to>     — boolean: directed edge exists
-     GRAPH_GET_NODE<g, key>          — full node record, or null
-     GRAPH_GET_KEYS<g>               — @array of all node keys
-     GRAPH_GET_VALUES<g>             — @array of all node values
-     GRAPH_EDGES_FROM<g, key>        — @array of edges where from == key
-     GRAPH_EDGES_TO<g, key>          — @array of edges where to == key
-     GRAPH_NEIGHBOURS<g, key>        — @array of keys reachable from key
-     GRAPH_PREDECESSORS<g, key>      — @array of keys pointing to key
-     GRAPH_EDGE_LABEL<g, from, to>   — label string or null
-     GRAPH_OUT_DEGREE<g, key>        — count of outgoing edges
-     GRAPH_IN_DEGREE<g, key>         — count of incoming edges
-     GRAPH_ROOTS<g>                  — @array of keys with in_degree == 0
-     GRAPH_LEAVES<g>                 — @array of keys with out_degree == 0
-     GRAPH_IS_ACYCLIC<g>             — boolean: no cycles (DAG test)
-     GRAPH_IS_LABELLED<g>            — boolean: every edge has a label
-     GRAPH_REACHABLE<g, key>         — @array of keys reachable from key (BFS)
-     GRAPH_SHORTEST_PATH<g, f, t>    — @array of keys on shortest path, or []
-     GRAPH_TOPO_ORDER<g>             — @array of keys in topological order, or null
-     GRAPH_WITH_NODE<g, node>        — new graph data: node added
-     GRAPH_WITHOUT_NODE<g, key>      — new graph data: node + its edges removed
-     GRAPH_WITH_EDGE<g, edge>        — new graph data: edge added
-     GRAPH_WITHOUT_EDGE<g, from, to> — new graph data: specific edge removed
-     GRAPH_MERGE<g1, g2>             — new graph data: union of nodes + edges
-     GRAPH_TO_JSON<g>                — JSON representation
-     GRAPH_TO_STRING<g>              — text adjacency-list representation
+     GRAPH_NODE_COUNT<g>             â€” total number of nodes
+     GRAPH_EDGE_COUNT<g>             â€” total number of edges
+     GRAPH_HAS_NODE<g, key>          â€” boolean: node with key exists
+     GRAPH_HAS_EDGE<g, from, to>     â€” boolean: directed edge exists
+     GRAPH_GET_NODE<g, key>          â€” full node record, or null
+     GRAPH_GET_KEYS<g>               â€” array.@type of all node keys
+     GRAPH_GET_VALUES<g>             â€” array.@type of all node values
+     GRAPH_EDGES_FROM<g, key>        â€” array.@type of edges where from == key
+     GRAPH_EDGES_TO<g, key>          â€” array.@type of edges where to == key
+     GRAPH_NEIGHBOURS<g, key>        â€” array.@type of keys reachable from key
+     GRAPH_PREDECESSORS<g, key>      â€” array.@type of keys pointing to key
+     GRAPH_EDGE_LABEL<g, from, to>   â€” label string or null
+     GRAPH_OUT_DEGREE<g, key>        â€” count of outgoing edges
+     GRAPH_IN_DEGREE<g, key>         â€” count of incoming edges
+     GRAPH_ROOTS<g>                  â€” array.@type of keys with in_degree == 0
+     GRAPH_LEAVES<g>                 â€” array.@type of keys with out_degree == 0
+     GRAPH_IS_ACYCLIC<g>             â€” boolean: no cycles (DAG test)
+     GRAPH_IS_LABELLED<g>            â€” boolean: every edge has a label
+     GRAPH_REACHABLE<g, key>         â€” array.@type of keys reachable from key (BFS)
+     GRAPH_SHORTEST_PATH<g, f, t>    â€” array.@type of keys on shortest path, or []
+     GRAPH_TOPO_ORDER<g>             â€” array.@type of keys in topological order, or null
+     GRAPH_WITH_NODE<g, node>        â€” new graph data: node added
+     GRAPH_WITHOUT_NODE<g, key>      â€” new graph data: node + its edges removed
+     GRAPH_WITH_EDGE<g, edge>        â€” new graph data: edge added
+     GRAPH_WITHOUT_EDGE<g, from, to> â€” new graph data: specific edge removed
+     GRAPH_MERGE<g1, g2>             â€” new graph data: union of nodes + edges
+     GRAPH_TO_JSON<g>                â€” JSON representation
+     GRAPH_TO_STRING<g>              â€” text adjacency-list representation
    *)
 
-(col : @std.collections)  graph, graph_final: {
+(col : std.collections.type.@type)  graph, graph_final: {
     names, n, 1..m: ["graph", "graph_final"]
     map:     col.map
     filter:  col.filter
@@ -59,9 +59,9 @@
         ver,   v:       "v0.0"
 
         init: <- (
-            -> raw: §graph_final
-            <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
-                 card:  LHS_CALLER<§assign_lhs.cardinality>,
+            -> raw: Â§graph_final
+            <- [ names: __ps_call LHS Â§assign_lhs.ident_name,
+                 card:  __ps_call LHS Â§assign_lhs.cardinality,
                  type:  $,
                  data:  raw ]
         )
@@ -72,42 +72,42 @@
        Inspection
        --------------------------------------------------------------- *)
 
-    (* node_count — total number of nodes in the graph. *)
-    (g : @graph) node_count: <- (
-        <- GRAPH_NODE_COUNT<g>
+    (* node_count â€” total number of nodes in the graph. *)
+    (g : graph.@type) node_count: <- (
+        <- __ps_proxy GRAPH_NODE_COUNT <g>
     )
 
-    (* edge_count — total number of directed edges in the graph. *)
-    (g : @graph) edge_count: <- (
-        <- GRAPH_EDGE_COUNT<g>
+    (* edge_count â€” total number of directed edges in the graph. *)
+    (g : graph.@type) edge_count: <- (
+        <- __ps_proxy GRAPH_EDGE_COUNT <g>
     )
 
-    (* is_empty — true when the graph has no nodes. *)
-    (g : @graph) is_empty: <- (
-        <- GRAPH_NODE_COUNT<g> == 0
+    (* is_empty â€” true when the graph has no nodes. *)
+    (g : graph.@type) is_empty: <- (
+        <- __ps_proxy GRAPH_NODE_COUNT <g> == 0
     )
 
-    (* is_labelled — true when every edge carries a non-null label. *)
-    (g : @graph) is_labelled: <- (
-        <- GRAPH_IS_LABELLED<g>
+    (* is_labelled â€” true when every edge carries a non-null label. *)
+    (g : graph.@type) is_labelled: <- (
+        <- __ps_proxy GRAPH_IS_LABELLED <g>
     )
 
-    (* is_acyclic — true when the graph contains no directed cycles (DAG). *)
-    (g : @graph) is_acyclic: <- (
-        <- GRAPH_IS_ACYCLIC<g>
+    (* is_acyclic â€” true when the graph contains no directed cycles (DAG). *)
+    (g : graph.@type) is_acyclic: <- (
+        <- __ps_proxy GRAPH_IS_ACYCLIC <g>
     )
 
-    (* has_node — true if a node with key exists in the graph. *)
-    (g : @graph) has_node: <- (
+    (* has_node â€” true if a node with key exists in the graph. *)
+    (g : graph.@type) has_node: <- (
         -> key: @?
-        <- GRAPH_HAS_NODE<g, key>
+        <- __ps_proxy GRAPH_HAS_NODE <g, key>
     )
 
-    (* has_edge — true if a directed edge from → to exists. *)
-    (g : @graph) has_edge: <- (
+    (* has_edge â€” true if a directed edge from â†’ to exists. *)
+    (g : graph.@type) has_edge: <- (
         -> from: @?
         -> to:   @?
-        <- GRAPH_HAS_EDGE<g, from, to>
+        <- __ps_proxy GRAPH_HAS_EDGE <g, from, to>
     )
 
 
@@ -115,27 +115,27 @@
        Node access
        --------------------------------------------------------------- *)
 
-    (* get_node — full node record { key, value } for key, or null. *)
-    (g : @graph) get_node: <- (
+    (* get_node â€” full node record { key, value } for key, or null. *)
+    (g : graph.@type) get_node: <- (
         -> key: @?
-        <- GRAPH_GET_NODE<g, key>
+        <- __ps_proxy GRAPH_GET_NODE <g, key>
     )
 
-    (* get_value — value of the node identified by key, or null. *)
-    (g : @graph) get_value: <- (
+    (* get_value â€” value of the node identified by key, or null. *)
+    (g : graph.@type) get_value: <- (
         -> key: @?
-        node = GRAPH_GET_NODE<g, key>
+        node = __ps_proxy GRAPH_GET_NODE <g, key>
         <- ( node == null ) & null ^ node.value
     )
 
-    (* get_keys — @array of all node keys. *)
-    (g : @graph) get_keys: <- (
-        <- [ type: $, data: GRAPH_GET_KEYS<g> ]
+    (* get_keys â€” array.@type of all node keys. *)
+    (g : graph.@type) get_keys: <- (
+        <- [ type: $, data: __ps_proxy GRAPH_GET_KEYS <g> ]
     )
 
-    (* get_values — @array of all node values, in key-insertion order. *)
-    (g : @graph) get_values: <- (
-        <- [ type: $, data: GRAPH_GET_VALUES<g> ]
+    (* get_values â€” array.@type of all node values, in key-insertion order. *)
+    (g : graph.@type) get_values: <- (
+        <- [ type: $, data: __ps_proxy GRAPH_GET_VALUES <g> ]
     )
 
 
@@ -143,35 +143,35 @@
        Edge access
        --------------------------------------------------------------- *)
 
-    (* edges_from — @array of edge records { from, to, label } where from == key. *)
-    (g : @graph) edges_from: <- (
+    (* edges_from â€” array.@type of edge records { from, to, label } where from == key. *)
+    (g : graph.@type) edges_from: <- (
         -> key: @?
-        <- [ type: $, data: GRAPH_EDGES_FROM<g, key> ]
+        <- [ type: $, data: __ps_proxy GRAPH_EDGES_FROM <g, key> ]
     )
 
-    (* edges_to — @array of edge records { from, to, label } where to == key. *)
-    (g : @graph) edges_to: <- (
+    (* edges_to â€” array.@type of edge records { from, to, label } where to == key. *)
+    (g : graph.@type) edges_to: <- (
         -> key: @?
-        <- [ type: $, data: GRAPH_EDGES_TO<g, key> ]
+        <- [ type: $, data: __ps_proxy GRAPH_EDGES_TO <g, key> ]
     )
 
-    (* neighbours — @array of keys directly reachable from key (outgoing targets). *)
-    (g : @graph) neighbours: <- (
+    (* neighbours â€” array.@type of keys directly reachable from key (outgoing targets). *)
+    (g : graph.@type) neighbours: <- (
         -> key: @?
-        <- [ type: $, data: GRAPH_NEIGHBOURS<g, key> ]
+        <- [ type: $, data: __ps_proxy GRAPH_NEIGHBOURS <g, key> ]
     )
 
-    (* predecessors — @array of keys that have an edge pointing to key (incoming sources). *)
-    (g : @graph) predecessors: <- (
+    (* predecessors â€” array.@type of keys that have an edge pointing to key (incoming sources). *)
+    (g : graph.@type) predecessors: <- (
         -> key: @?
-        <- [ type: $, data: GRAPH_PREDECESSORS<g, key> ]
+        <- [ type: $, data: __ps_proxy GRAPH_PREDECESSORS <g, key> ]
     )
 
-    (* edge_label — label of the edge from → to, or null if unlabelled or absent. *)
-    (g : @graph) edge_label: <- (
+    (* edge_label â€” label of the edge from â†’ to, or null if unlabelled or absent. *)
+    (g : graph.@type) edge_label: <- (
         -> from: @?
         -> to:   @?
-        <- GRAPH_EDGE_LABEL<g, from, to>
+        <- __ps_proxy GRAPH_EDGE_LABEL <g, from, to>
     )
 
 
@@ -179,28 +179,28 @@
        Degree and structural roles
        --------------------------------------------------------------- *)
 
-    (* out_degree — number of outgoing edges from key. *)
-    (g : @graph) out_degree: <- (
+    (* out_degree â€” number of outgoing edges from key. *)
+    (g : graph.@type) out_degree: <- (
         -> key: @?
-        <- GRAPH_OUT_DEGREE<g, key>
+        <- __ps_proxy GRAPH_OUT_DEGREE <g, key>
     )
 
-    (* in_degree — number of incoming edges to key. *)
-    (g : @graph) in_degree: <- (
+    (* in_degree â€” number of incoming edges to key. *)
+    (g : graph.@type) in_degree: <- (
         -> key: @?
-        <- GRAPH_IN_DEGREE<g, key>
+        <- __ps_proxy GRAPH_IN_DEGREE <g, key>
     )
 
-    (* roots — @array of keys with in_degree == 0 (no incoming edges).
+    (* roots â€” array.@type of keys with in_degree == 0 (no incoming edges).
        In a DAG these are the natural starting points. *)
-    (g : @graph) roots: <- (
-        <- [ type: $, data: GRAPH_ROOTS<g> ]
+    (g : graph.@type) roots: <- (
+        <- [ type: $, data: __ps_proxy GRAPH_ROOTS <g> ]
     )
 
-    (* leaves — @array of keys with out_degree == 0 (no outgoing edges).
+    (* leaves â€” array.@type of keys with out_degree == 0 (no outgoing edges).
        In a DAG these are the natural terminal points. *)
-    (g : @graph) leaves: <- (
-        <- [ type: $, data: GRAPH_LEAVES<g> ]
+    (g : graph.@type) leaves: <- (
+        <- [ type: $, data: __ps_proxy GRAPH_LEAVES <g> ]
     )
 
 
@@ -208,25 +208,25 @@
        Traversal and path finding
        --------------------------------------------------------------- *)
 
-    (* reachable_from — @array of all keys reachable from key in BFS order,
+    (* reachable_from â€” array.@type of all keys reachable from key in BFS order,
        including key itself as the first element. *)
-    (g : @graph) reachable_from: <- (
+    (g : graph.@type) reachable_from: <- (
         -> key: @?
-        <- [ type: $, data: GRAPH_REACHABLE<g, key> ]
+        <- [ type: $, data: __ps_proxy GRAPH_REACHABLE <g, key> ]
     )
 
-    (* shortest_path — @array of keys on the shortest directed path from → to
+    (* shortest_path â€” array.@type of keys on the shortest directed path from â†’ to
        (BFS hop count).  Returns an empty array when to is unreachable from from. *)
-    (g : @graph) shortest_path: <- (
+    (g : graph.@type) shortest_path: <- (
         -> from: @?
         -> to:   @?
-        <- [ type: $, data: GRAPH_SHORTEST_PATH<g, from, to> ]
+        <- [ type: $, data: __ps_proxy GRAPH_SHORTEST_PATH <g, from, to> ]
     )
 
-    (* topological_order — @array of all keys in topological order.
+    (* topological_order â€” array.@type of all keys in topological order.
        Returns null when the graph contains a cycle. *)
-    (g : @graph) topological_order: <- (
-        <- ( GRAPH_IS_ACYCLIC<g> ) & [ type: $, data: GRAPH_TOPO_ORDER<g> ] ^ null
+    (g : graph.@type) topological_order: <- (
+        <- ( __ps_proxy GRAPH_IS_ACYCLIC <g> ) & [ type: $, data: __ps_proxy GRAPH_TOPO_ORDER <g> ] ^ null
     )
 
 
@@ -234,40 +234,40 @@
        Functional mutation
        --------------------------------------------------------------- *)
 
-    (* with_node — new graph with node { key, value } added.
+    (* with_node â€” new graph with node { key, value } added.
        The runtime raises an error when the key already exists. *)
-    (g : @graph) with_node: <- (
+    (g : graph.@type) with_node: <- (
         -> node: @?
-        <- [ type: $, data: GRAPH_WITH_NODE<g, node> ]
+        <- [ type: $, data: __ps_proxy GRAPH_WITH_NODE <g, node> ]
     )
 
-    (* without_node — new graph with the node identified by key removed,
+    (* without_node â€” new graph with the node identified by key removed,
        along with every edge whose from or to references that key. *)
-    (g : @graph) without_node: <- (
+    (g : graph.@type) without_node: <- (
         -> key: @?
-        <- [ type: $, data: GRAPH_WITHOUT_NODE<g, key> ]
+        <- [ type: $, data: __ps_proxy GRAPH_WITHOUT_NODE <g, key> ]
     )
 
-    (* with_edge — new graph with edge { from, to, label? } added.
+    (* with_edge â€” new graph with edge { from, to, label? } added.
        The from and to keys must already exist in the graph. *)
-    (g : @graph) with_edge: <- (
+    (g : graph.@type) with_edge: <- (
         -> edge: @?
-        <- [ type: $, data: GRAPH_WITH_EDGE<g, edge> ]
+        <- [ type: $, data: __ps_proxy GRAPH_WITH_EDGE <g, edge> ]
     )
 
-    (* without_edge — new graph with the directed edge from → to removed.
+    (* without_edge â€” new graph with the directed edge from â†’ to removed.
        Returns the graph unchanged when the edge does not exist. *)
-    (g : @graph) without_edge: <- (
+    (g : graph.@type) without_edge: <- (
         -> from: @?
         -> to:   @?
-        <- [ type: $, data: GRAPH_WITHOUT_EDGE<g, from, to> ]
+        <- [ type: $, data: __ps_proxy GRAPH_WITHOUT_EDGE <g, from, to> ]
     )
 
-    (* merge — new graph combining all nodes and edges from both graphs.
+    (* merge â€” new graph combining all nodes and edges from both graphs.
        The runtime raises an error on duplicate node keys. *)
-    (g : @graph) merge: <- (
-        -> other: @graph
-        <- [ type: $, data: GRAPH_MERGE<g, other> ]
+    (g : graph.@type) merge: <- (
+        -> other: graph.@type
+        <- [ type: $, data: __ps_proxy GRAPH_MERGE <g, other> ]
     )
 
 
@@ -275,13 +275,13 @@
        Conversion
        --------------------------------------------------------------- *)
 
-    (* to_json — JSON object with "nodes" and "edges" arrays. *)
-    (g : @graph) to_json: <- (
-        <- GRAPH_TO_JSON<g>
+    (* to_json â€” JSON object with "nodes" and "edges" arrays. *)
+    (g : graph.@type) to_json: <- (
+        <- __ps_proxy GRAPH_TO_JSON <g>
     )
 
-    (* to_string — text adjacency-list: one line per node listing its neighbours. *)
-    (g : @graph) to_string: <- (
-        <- GRAPH_TO_STRING<g>
+    (* to_string â€” text adjacency-list: one line per node listing its neighbours. *)
+    (g : graph.@type) to_string: <- (
+        <- __ps_proxy GRAPH_TO_STRING <g>
     )
 }

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"regexp"
 	"strconv"
 	"strings"
 )
@@ -43,11 +42,11 @@ type V17CommentBeginNode struct{ V17BaseNode }
 func (p *V17Parser) ParseCommentBegin() (node *V17CommentBeginNode, err error) {
 	done := p.debugEnter("comment_begin")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	if _, err = p.expect(V17_COMMENT_BEGIN); err != nil {
+	tok, err := p.matchLit("(*")
+	if err != nil {
 		return nil, err
 	}
-	return &V17CommentBeginNode{V17BaseNode{line, col}}, nil
+	return &V17CommentBeginNode{V17BaseNode{tok.Line, tok.Col}}, nil
 }
 
 // V17CommentEndNode  comment_end = "*)"
@@ -57,11 +56,11 @@ type V17CommentEndNode struct{ V17BaseNode }
 func (p *V17Parser) ParseCommentEnd() (node *V17CommentEndNode, err error) {
 	done := p.debugEnter("comment_end")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	if _, err = p.expect(V17_COMMENT_END); err != nil {
+	tok, err := p.matchLit("*)")
+	if err != nil {
 		return nil, err
 	}
-	return &V17CommentEndNode{V17BaseNode{line, col}}, nil
+	return &V17CommentEndNode{V17BaseNode{tok.Line, tok.Col}}, nil
 }
 
 // V17CommentTxtNode  comment_txt = /(?:(?!\(\*|\*\))[\s\S])*/
@@ -71,23 +70,17 @@ type V17CommentTxtNode struct {
 	Text string
 }
 
-// ParseCommentTxt parses comment_txt — all tokens up to the next "(*" or "*)".
-// Since the lexer has already tokenised the interior, we collect token values
-// until we see V17_COMMENT_BEGIN or V17_COMMENT_END (or EOF).
+// ParseCommentTxt parses comment_txt — all characters up to the next "(*" or "*)",
+// accepting any Unicode.  Uses the hand-coded matchCommentTxt helper (Go RE2
+// lacks negative-lookahead so the grammar regex cannot be compiled directly).
 func (p *V17Parser) ParseCommentTxt() (node *V17CommentTxtNode, err error) {
 	done := p.debugEnter("comment_txt")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	var sb strings.Builder
-	for {
-		tok := p.cur()
-		if tok.Type == V17_COMMENT_BEGIN || tok.Type == V17_COMMENT_END || tok.Type == V17_EOF {
-			break
-		}
-		sb.WriteString(tok.Value)
-		p.advance()
+	tok, err := p.matchCommentTxt()
+	if err != nil {
+		return nil, err
 	}
-	return &V17CommentTxtNode{V17BaseNode{line, col}, sb.String()}, nil
+	return &V17CommentTxtNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17CommentNode  comment = comment_begin comment_txt { comment } comment_end
@@ -101,7 +94,7 @@ type V17CommentNode struct {
 func (p *V17Parser) ParseComment() (node *V17CommentNode, err error) {
 	done := p.debugEnter("comment")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	if _, err = p.ParseCommentBegin(); err != nil {
 		return nil, err
@@ -113,7 +106,7 @@ func (p *V17Parser) ParseComment() (node *V17CommentNode, err error) {
 	n := &V17CommentNode{V17BaseNode{line, col}, txt, nil}
 
 	// { comment } — consume any nested (* ... *) blocks
-	for p.cur().Type == V17_COMMENT_BEGIN {
+	for p.peekLit("(*") {
 		nested, nerr := p.ParseComment()
 		if nerr != nil {
 			return nil, nerr
@@ -140,19 +133,21 @@ type V17CommentTbdStubNode struct{ V17BaseNode }
 func (p *V17Parser) ParseCommentTbdStub() (node *V17CommentTbdStubNode, err error) {
 	done := p.debugEnter("comment_TBD_stub")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
 	saved := p.savePos()
 
-	if _, err = p.expect(V17_COMMENT_BEGIN); err != nil {
+	var tok V17Token
+	tok, err = p.matchLit("(*")
+	if err != nil {
 		p.restorePos(saved)
 		return nil, err
 	}
+	line, col := tok.Line, tok.Col
 	txt, err := p.ParseCommentTxt()
 	if err != nil || strings.TrimSpace(txt.Text) != "TBD_STUB" {
 		p.restorePos(saved)
 		return nil, p.errAt("comment_TBD_stub: expected \" TBD_STUB \"")
 	}
-	if _, err = p.expect(V17_COMMENT_END); err != nil {
+	if _, err = p.matchLit("*)"); err != nil {
 		p.restorePos(saved)
 		return nil, err
 	}
@@ -175,17 +170,22 @@ type V17NlNode struct {
 func (p *V17Parser) ParseNl() (node *V17NlNode, err error) {
 	done := p.debugEnter("NL")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok := p.cur()
-	if tok.Type == V17_NL {
-		p.advance()
+	line, col := p.runeLine, p.runeCol
+
+	// Try a real newline first; BOF is only used when there is no actual NL.
+	if tok, terr := p.matchRe(reNlScan); terr == nil {
+		_ = tok
 		return &V17NlNode{V17BaseNode{line, col}, false}, nil
 	}
-	if tok.Type == V17_BOF {
-		p.advance()
+
+	// BOF: start of file counts as an implicit newline boundary.
+	// Only valid at position 0 — once any input has been consumed, BOF no
+	// longer applies (preventing it from falsely satisfying mid-parse EOL checks).
+	if p.atBOF && p.runePos == 0 {
+		p.atBOF = false
 		return &V17NlNode{V17BaseNode{line, col}, true}, nil
 	}
-	return nil, p.errAt("NL: expected newline or BOF, got %s %q", tok.Type, tok.Value)
+	return nil, p.errAt("NL: expected newline")
 }
 
 // V17EolNode  EOL = NL | ";" | comment | EOF
@@ -198,35 +198,33 @@ type V17EolNode struct {
 func (p *V17Parser) ParseEol() (node *V17EolNode, err error) {
 	done := p.debugEnter("EOL")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok := p.cur()
+	line, col := p.runeLine, p.runeCol
 
-	// NL
-	if tok.Type == V17_NL || tok.Type == V17_BOF {
-		n, nerr := p.ParseNl()
-		if nerr != nil {
-			return nil, nerr
+	// NL or BOF
+	if saved := p.savePos(); true {
+		if _, nerr := p.ParseNl(); nerr == nil {
+			return &V17EolNode{V17BaseNode{line, col}, "NL"}, nil
 		}
-		_ = n
-		return &V17EolNode{V17BaseNode{line, col}, "NL"}, nil
+		p.restorePos(saved)
 	}
 	// ";"
-	if tok.Type == V17_SEMICOLON {
-		p.advance()
-		return &V17EolNode{V17BaseNode{line, col}, ";"}, nil
+	if p.peekAfterWS() == ';' {
+		if _, serr := p.matchLit(";"); serr == nil {
+			return &V17EolNode{V17BaseNode{line, col}, ";"}, nil
+		}
 	}
 	// comment
-	if tok.Type == V17_COMMENT_BEGIN {
+	if p.peekLit("(*") {
 		if _, cerr := p.ParseComment(); cerr != nil {
 			return nil, cerr
 		}
 		return &V17EolNode{V17BaseNode{line, col}, "comment"}, nil
 	}
 	// EOF
-	if tok.Type == V17_EOF {
+	if p.runePos >= len(p.input) {
 		return &V17EolNode{V17BaseNode{line, col}, "EOF"}, nil
 	}
-	return nil, p.errAt("EOL: expected newline, ';', comment, or EOF, got %s %q", tok.Type, tok.Value)
+	return nil, p.errAt("EOL: expected newline, ';', comment, or EOF")
 }
 
 // =============================================================================
@@ -248,12 +246,11 @@ type V17DigitsNode struct {
 func (p *V17Parser) ParseDigits() (node *V17DigitsNode, err error) {
 	done := p.debugEnter("digits")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok, err := p.expect(V17_DIGITS)
+	tok, err := p.matchDigits()
 	if err != nil {
 		return nil, err
 	}
-	return &V17DigitsNode{V17BaseNode{line, col}, tok.Value}, nil
+	return &V17DigitsNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17Digits2Node  digits2 = /[0-9]{1,2}/
@@ -266,13 +263,11 @@ type V17Digits2Node struct {
 func (p *V17Parser) ParseDigits2() (node *V17Digits2Node, err error) {
 	done := p.debugEnter("digits2")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok := p.cur()
-	if tok.Type != V17_DIGITS || !reDigits2.MatchString(tok.Value) {
-		return nil, p.errAt("digits2: expected 1-2 digit number, got %s %q", tok.Type, tok.Value)
+	tok, err := p.matchDigitsN(1, 2)
+	if err != nil {
+		return nil, p.errAt("digits2: expected 1-2 digit number: %v", err)
 	}
-	p.advance()
-	return &V17Digits2Node{V17BaseNode{line, col}, tok.Value}, nil
+	return &V17Digits2Node{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17Digits3Node  digits3 = /[0-9]{1,3}/
@@ -285,13 +280,11 @@ type V17Digits3Node struct {
 func (p *V17Parser) ParseDigits3() (node *V17Digits3Node, err error) {
 	done := p.debugEnter("digits3")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok := p.cur()
-	if tok.Type != V17_DIGITS || !reDigits3.MatchString(tok.Value) {
-		return nil, p.errAt("digits3: expected 1-3 digit number, got %s %q", tok.Type, tok.Value)
+	tok, err := p.matchDigitsN(1, 3)
+	if err != nil {
+		return nil, p.errAt("digits3: expected 1-3 digit number: %v", err)
 	}
-	p.advance()
-	return &V17Digits3Node{V17BaseNode{line, col}, tok.Value}, nil
+	return &V17Digits3Node{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17Digits4Node  digits4 = /[0-9]{4}/
@@ -304,13 +297,11 @@ type V17Digits4Node struct {
 func (p *V17Parser) ParseDigits4() (node *V17Digits4Node, err error) {
 	done := p.debugEnter("digits4")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok := p.cur()
-	if tok.Type != V17_DIGITS || !reDigits4.MatchString(tok.Value) {
-		return nil, p.errAt("digits4: expected exactly 4 digits, got %s %q", tok.Type, tok.Value)
+	tok, err := p.matchDigitsN(4, 4)
+	if err != nil {
+		return nil, p.errAt("digits4: expected exactly 4 digits: %v", err)
 	}
-	p.advance()
-	return &V17Digits4Node{V17BaseNode{line, col}, tok.Value}, nil
+	return &V17Digits4Node{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17SignPrefixNode  sign_prefix = [ "+" | "-" ]
@@ -323,15 +314,15 @@ type V17SignPrefixNode struct {
 func (p *V17Parser) ParseSignPrefix() (node *V17SignPrefixNode, err error) {
 	done := p.debugEnter("sign_prefix")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok := p.cur()
-	if tok.Type == V17_PLUS {
-		p.advance()
-		return &V17SignPrefixNode{V17BaseNode{line, col}, "+"}, nil
+	line, col := p.runeLine, p.runeCol
+	ch := p.peekAfterWS()
+	if ch == '+' {
+		tok, _ := p.matchLit("+")
+		return &V17SignPrefixNode{V17BaseNode{tok.Line, tok.Col}, "+"}, nil
 	}
-	if tok.Type == V17_MINUS {
-		p.advance()
-		return &V17SignPrefixNode{V17BaseNode{line, col}, "-"}, nil
+	if ch == '-' {
+		tok, _ := p.matchLit("-")
+		return &V17SignPrefixNode{V17BaseNode{tok.Line, tok.Col}, "-"}, nil
 	}
 	// Optional — absent is valid
 	return &V17SignPrefixNode{V17BaseNode{line, col}, ""}, nil
@@ -357,7 +348,7 @@ type V17IntegerNode struct {
 func (p *V17Parser) ParseInteger() (node *V17IntegerNode, err error) {
 	done := p.debugEnter("integer")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	sign, err := p.ParseSignPrefix()
 	if err != nil {
 		return nil, err
@@ -381,7 +372,7 @@ type V17DecimalNode struct {
 func (p *V17Parser) ParseDecimal() (node *V17DecimalNode, err error) {
 	done := p.debugEnter("decimal")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	saved := p.savePos()
 
 	sign, err := p.ParseSignPrefix()
@@ -394,7 +385,7 @@ func (p *V17Parser) ParseDecimal() (node *V17DecimalNode, err error) {
 		p.restorePos(saved)
 		return nil, err
 	}
-	if _, err = p.expect(V17_DOT); err != nil {
+	if _, err = p.matchLit("."); err != nil {
 		p.restorePos(saved)
 		return nil, err
 	}
@@ -417,7 +408,7 @@ type V17NumericConstNode struct {
 func (p *V17Parser) ParseNumericConst() (node *V17NumericConstNode, err error) {
 	done := p.debugEnter("numeric_const")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	// Try decimal first — requires "." so unambiguous
 	saved := p.savePos()
@@ -443,11 +434,11 @@ type V17NanNode struct{ V17BaseNode }
 func (p *V17Parser) ParseNan() (node *V17NanNode, err error) {
 	done := p.debugEnter("nan")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	if _, err = p.expect(V17_NAN); err != nil {
-		return nil, err
+	tok, err := p.matchKeyword("NaN")
+	if err != nil {
+		return nil, p.errAt("nan: expected 'NaN'")
 	}
-	return &V17NanNode{V17BaseNode{line, col}}, nil
+	return &V17NanNode{V17BaseNode{tok.Line, tok.Col}}, nil
 }
 
 // V17InfinityNode  infinity = "Infinity"
@@ -457,11 +448,11 @@ type V17InfinityNode struct{ V17BaseNode }
 func (p *V17Parser) ParseInfinity() (node *V17InfinityNode, err error) {
 	done := p.debugEnter("infinity")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	if _, err = p.expect(V17_INFINITY); err != nil {
-		return nil, err
+	tok, err := p.matchKeyword("Infinity")
+	if err != nil {
+		return nil, p.errAt("infinity: expected 'Infinity'")
 	}
-	return &V17InfinityNode{V17BaseNode{line, col}}, nil
+	return &V17InfinityNode{V17BaseNode{tok.Line, tok.Col}}, nil
 }
 
 // =============================================================================
@@ -485,7 +476,7 @@ type V17UintNode struct {
 
 // parseUintRange is a private helper that parses digits and range-checks them.
 func (p *V17Parser) parseUintRange(typeName string, min, max *big.Int) (*V17UintNode, error) {
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	dig, err := p.ParseDigits()
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", typeName, err)
@@ -571,10 +562,10 @@ type V17FloatNode struct {
 // parseFloatInner parses decimal | nan | infinity and type-checks the decimal
 // value fits in the named Go float type.
 func (p *V17Parser) parseFloatInner(typeName string) (*V17FloatNode, error) {
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	// nan
-	if p.cur().Type == V17_NAN {
+	if p.peekLit("NaN") {
 		n, err := p.ParseNan()
 		if err != nil {
 			return nil, err
@@ -582,7 +573,7 @@ func (p *V17Parser) parseFloatInner(typeName string) (*V17FloatNode, error) {
 		return &V17FloatNode{V17BaseNode{line, col}, typeName, nil, n, nil}, nil
 	}
 	// infinity
-	if p.cur().Type == V17_INFINITY {
+	if p.peekLit("Infinity") || p.peekLit("+Infinity") || p.peekLit("-Infinity") {
 		inf, err := p.ParseInfinity()
 		if err != nil {
 			return nil, err
@@ -667,7 +658,7 @@ var (
 
 // parseDecimalType is a private helper for decimal8…decimal128.
 func (p *V17Parser) parseDecimalType(typeName string, min, max *big.Int) (*V17DecimalTypeNode, error) {
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	saved := p.savePos()
 
 	intNode, err := p.ParseInteger()
@@ -687,7 +678,7 @@ func (p *V17Parser) parseDecimalType(typeName string, min, max *big.Int) (*V17De
 		return nil, fmt.Errorf("%s: integer part %s out of range [%s..%s] at L%d:C%d",
 			typeName, val, min, max, line, col)
 	}
-	if _, err = p.expect(V17_DOT); err != nil {
+	if _, err = p.matchLit("."); err != nil {
 		p.restorePos(saved)
 		return nil, fmt.Errorf("%s: expected '.': %w", typeName, err)
 	}
@@ -744,7 +735,7 @@ type V17DecimalNumNode struct {
 func (p *V17Parser) ParseDecimalNum() (node *V17DecimalNumNode, err error) {
 	done := p.debugEnter("decimal_num")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	for _, try := range []func() (*V17DecimalTypeNode, error){
 		p.ParseDecimal8, p.ParseDecimal16, p.ParseDecimal32,
@@ -785,7 +776,7 @@ type V17DateYearNode struct {
 func (p *V17Parser) ParseDateYear() (node *V17DateYearNode, err error) {
 	done := p.debugEnter("date_year")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	d, err := p.ParseDigits4()
 	if err != nil {
 		return nil, err
@@ -795,7 +786,7 @@ func (p *V17Parser) ParseDateYear() (node *V17DateYearNode, err error) {
 
 // parseDateComponent is a private helper: parse digits2/digits3 then RANGE-check.
 func (p *V17Parser) parseDateComponent(name string, parseDigits func() (string, error), min, max int) (string, int, int, error) {
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	val, err := parseDigits()
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("%s: %w", name, err)
@@ -817,7 +808,7 @@ type V17DateMonthNode struct {
 func (p *V17Parser) ParseDateMonth() (node *V17DateMonthNode, err error) {
 	done := p.debugEnter("date_month")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	d2, err := p.ParseDigits2()
 	if err != nil {
 		return nil, err
@@ -839,7 +830,7 @@ type V17DateDayNode struct {
 func (p *V17Parser) ParseDateDay() (node *V17DateDayNode, err error) {
 	done := p.debugEnter("date_day")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	d2, err := p.ParseDigits2()
 	if err != nil {
 		return nil, err
@@ -861,7 +852,7 @@ type V17TimeHourNode struct {
 func (p *V17Parser) ParseTimeHour() (node *V17TimeHourNode, err error) {
 	done := p.debugEnter("time_hour")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	d2, err := p.ParseDigits2()
 	if err != nil {
 		return nil, err
@@ -883,7 +874,7 @@ type V17TimeMinuteNode struct {
 func (p *V17Parser) ParseTimeMinute() (node *V17TimeMinuteNode, err error) {
 	done := p.debugEnter("time_minute")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	d2, err := p.ParseDigits2()
 	if err != nil {
 		return nil, err
@@ -905,7 +896,7 @@ type V17TimeSecondNode struct {
 func (p *V17Parser) ParseTimeSecond() (node *V17TimeSecondNode, err error) {
 	done := p.debugEnter("time_second")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	d2, err := p.ParseDigits2()
 	if err != nil {
 		return nil, err
@@ -927,7 +918,7 @@ type V17TimeMillisNode struct {
 func (p *V17Parser) ParseTimeMillis() (node *V17TimeMillisNode, err error) {
 	done := p.debugEnter("time_millis")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	d3, err := p.ParseDigits3()
 	if err != nil {
 		return nil, err
@@ -951,7 +942,7 @@ type V17DateNode struct {
 func (p *V17Parser) ParseDate() (node *V17DateNode, err error) {
 	done := p.debugEnter("date")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	year, err := p.ParseDateYear()
 	if err != nil {
@@ -962,8 +953,8 @@ func (p *V17Parser) ParseDate() (node *V17DateNode, err error) {
 	// [ ["-"] date_month [ ["-"] date_day ] ]
 	saved := p.savePos()
 	// optional "-"
-	if p.cur().Type == V17_MINUS {
-		p.advance()
+	if p.peekAfterWS() == '-' {
+		p.matchLit("-") //nolint:errcheck
 	}
 	month, merr := p.ParseDateMonth()
 	if merr != nil {
@@ -973,8 +964,8 @@ func (p *V17Parser) ParseDate() (node *V17DateNode, err error) {
 	n.Month = month
 
 	saved2 := p.savePos()
-	if p.cur().Type == V17_MINUS {
-		p.advance()
+	if p.peekAfterWS() == '-' {
+		p.matchLit("-") //nolint:errcheck
 	}
 	day, derr := p.ParseDateDay()
 	if derr != nil {
@@ -998,7 +989,7 @@ type V17TimeNode struct {
 func (p *V17Parser) ParseTime() (node *V17TimeNode, err error) {
 	done := p.debugEnter("time")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	hour, err := p.ParseTimeHour()
 	if err != nil {
@@ -1007,9 +998,10 @@ func (p *V17Parser) ParseTime() (node *V17TimeNode, err error) {
 	n := &V17TimeNode{V17BaseNode{line, col}, hour, nil, nil, nil}
 
 	saved := p.savePos()
-	if p.cur().Type == V17_COLON {
-		p.advance()
-	} else if p.cur().Type == V17_DIGITS {
+	ch := p.peekAfterWS()
+	if ch == ':' {
+		p.matchLit(":") //nolint:errcheck
+	} else if ch >= '0' && ch <= '9' {
 		// no separator — try to parse minute directly
 	} else {
 		return n, nil
@@ -1023,31 +1015,25 @@ func (p *V17Parser) ParseTime() (node *V17TimeNode, err error) {
 
 	saved2 := p.savePos()
 	// optional ":" separator
-	hasSep := false
-	if p.cur().Type == V17_COLON {
-		p.advance()
-		hasSep = true
+	if p.peekAfterWS() == ':' {
+		p.matchLit(":") //nolint:errcheck
 	}
 	sec, serr := p.ParseTimeSecond()
 	if serr != nil {
 		p.restorePos(saved2)
 		return n, nil
 	}
-	_ = hasSep
 	n.Second = sec
 
 	saved3 := p.savePos()
-	hasDot := false
-	if p.cur().Type == V17_DOT {
-		p.advance()
-		hasDot = true
+	if p.peekAfterWS() == '.' {
+		p.matchLit(".") //nolint:errcheck
 	}
 	ms, mserr := p.ParseTimeMillis()
 	if mserr != nil {
 		p.restorePos(saved3)
 		return n, nil
 	}
-	_ = hasDot
 	n.Millis = ms
 	return n, nil
 }
@@ -1063,7 +1049,7 @@ type V17DateTimeNode struct {
 func (p *V17Parser) ParseDateTime() (node *V17DateTimeNode, err error) {
 	done := p.debugEnter("date_time")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	// Try date first
 	saved := p.savePos()
@@ -1102,7 +1088,7 @@ type V17TimeStampNode struct {
 func (p *V17Parser) ParseTimeStamp() (node *V17TimeStampNode, err error) {
 	done := p.debugEnter("time_stamp")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	saved := p.savePos()
 
 	date, derr := p.ParseDate()
@@ -1180,17 +1166,16 @@ func parseDurationFromCompoundIdent(firstDigits, identVal string) ([]V17Duration
 }
 
 // ParseDurationUnit parses duration_unit = "ms" | "s" | "m" | "h" | "d" | "w".
-// Matches V17_IDENT token by value (SIR-4: no pre-lexing of duration units).
 func (p *V17Parser) ParseDurationUnit() (node *V17DurationUnitNode, err error) {
 	done := p.debugEnter("duration_unit")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok := p.cur()
-	if tok.Type != V17_IDENT || !v17durationUnits[tok.Value] {
-		return nil, p.errAt("duration_unit: expected ms|s|m|h|d|w, got %s %q", tok.Type, tok.Value)
+	saved := p.savePos()
+	tok, terr := p.matchRe(reIdentScan)
+	if terr != nil || !v17durationUnits[tok.Value] {
+		p.restorePos(saved)
+		return nil, p.errAt("duration_unit: expected ms|s|m|h|d|w")
 	}
-	p.advance()
-	return &V17DurationUnitNode{V17BaseNode{line, col}, tok.Value}, nil
+	return &V17DurationUnitNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17DurationNode  duration = digits duration_unit { digits duration_unit }
@@ -1211,7 +1196,7 @@ type V17DurationPart struct {
 func (p *V17Parser) ParseDuration() (node *V17DurationNode, err error) {
 	done := p.debugEnter("duration")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	dig, err := p.ParseDigits()
 	if err != nil {
@@ -1219,16 +1204,22 @@ func (p *V17Parser) ParseDuration() (node *V17DurationNode, err error) {
 	}
 
 	// Check for compound ident e.g. IDENT("h30m")
-	if p.cur().Type == V17_IDENT {
-		identTok := p.cur()
-		if !v17durationUnits[identTok.Value] {
-			// Might be a compound like "h30m" — try string parsing
-			parts, ok := parseDurationFromCompoundIdent(dig.Value, identTok.Value)
-			if !ok {
-				return nil, p.errAt("duration: invalid unit or compound %q", identTok.Value)
+	// Try to match an ident after the digits and check if it's a valid unit
+	if saved2 := p.savePos(); true {
+		if identTok, ierr := p.matchRe(reIdentScan); ierr == nil {
+			if !v17durationUnits[identTok.Value] {
+				// Might be a compound like "h30m" — try string parsing
+				parts, ok := parseDurationFromCompoundIdent(dig.Value, identTok.Value)
+				if !ok {
+					p.restorePos(saved2)
+					return nil, p.errAt("duration: invalid unit or compound %q", identTok.Value)
+				}
+				return &V17DurationNode{V17BaseNode{line, col}, parts}, nil
 			}
-			p.advance() // consume the compound ident
-			return &V17DurationNode{V17BaseNode{line, col}, parts}, nil
+			// valid single unit — still consumed, return it
+			return &V17DurationNode{V17BaseNode{line, col}, []V17DurationPart{{dig.Value, identTok.Value}}}, nil
+		} else {
+			p.restorePos(saved2)
 		}
 	}
 
@@ -1277,15 +1268,14 @@ type V17SingleQuotedNode struct {
 func (p *V17Parser) ParseSingleQuoted() (node *V17SingleQuotedNode, err error) {
 	done := p.debugEnter("single_quoted")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok, err := p.expect(V17_STRING_SQ)
+	tok, err := p.matchSingleQuoted()
 	if err != nil {
 		return nil, err
 	}
 	if tok.Value == "" {
 		return nil, p.errAt("single_quoted: empty string not allowed")
 	}
-	return &V17SingleQuotedNode{V17BaseNode{line, col}, tok.Value}, nil
+	return &V17SingleQuotedNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17DoubleQuotedNode  double_quoted = '"' … '"'
@@ -1298,15 +1288,14 @@ type V17DoubleQuotedNode struct {
 func (p *V17Parser) ParseDoubleQuoted() (node *V17DoubleQuotedNode, err error) {
 	done := p.debugEnter("double_quoted")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok, err := p.expect(V17_STRING_DQ)
+	tok, err := p.matchDoubleQuoted()
 	if err != nil {
 		return nil, err
 	}
 	if tok.Value == "" {
 		return nil, p.errAt("double_quoted: empty string not allowed")
 	}
-	return &V17DoubleQuotedNode{V17BaseNode{line, col}, tok.Value}, nil
+	return &V17DoubleQuotedNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17StringQuotedNode  string_quoted = single_quoted | double_quoted
@@ -1319,23 +1308,24 @@ type V17StringQuotedNode struct {
 func (p *V17Parser) ParseStringQuoted() (node *V17StringQuotedNode, err error) {
 	done := p.debugEnter("string_quoted")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
 
-	if p.cur().Type == V17_STRING_SQ {
+	ch := p.peekAfterWS()
+	line, col := p.runeLine, p.runeCol
+	if ch == '\'' {
 		n, nerr := p.ParseSingleQuoted()
 		if nerr != nil {
 			return nil, nerr
 		}
 		return &V17StringQuotedNode{V17BaseNode{line, col}, n}, nil
 	}
-	if p.cur().Type == V17_STRING_DQ {
+	if ch == '"' {
 		n, nerr := p.ParseDoubleQuoted()
 		if nerr != nil {
 			return nil, nerr
 		}
 		return &V17StringQuotedNode{V17BaseNode{line, col}, n}, nil
 	}
-	return nil, p.errAt("string_quoted: expected single or double quoted string, got %s", p.cur().Type)
+	return nil, p.errAt("string_quoted: expected single or double quoted string")
 }
 
 // V17TmplTextNode  tmpl_text = /(?:(?!§\(|`)[\s\S])*/
@@ -1363,16 +1353,12 @@ type V17TmplQuotedNode struct {
 func (p *V17Parser) ParseTmplQuoted() (node *V17TmplQuotedNode, err error) {
 	done := p.debugEnter("tmpl_quoted")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok, err := p.expect(V17_STRING_TQ)
+	tok, err := p.matchTemplateQuoted()
 	if err != nil {
 		return nil, err
 	}
-	txt, err := p.ParseTmplText(tok.Value, line, col)
-	if err != nil {
-		return nil, err
-	}
-	return &V17TmplQuotedNode{V17BaseNode{line, col}, txt}, nil
+	txt, _ := p.ParseTmplText(tok.Value, tok.Line, tok.Col)
+	return &V17TmplQuotedNode{V17BaseNode{tok.Line, tok.Col}, txt}, nil
 }
 
 // V17StringNode  string = single_quoted | double_quoted | tmpl_quoted
@@ -1385,29 +1371,31 @@ type V17StringNode struct {
 func (p *V17Parser) ParseString() (node *V17StringNode, err error) {
 	done := p.debugEnter("string")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
 
-	switch p.cur().Type {
-	case V17_STRING_SQ:
+	ch := p.peekAfterWS()
+	line, col := p.runeLine, p.runeCol
+	if ch == '\'' {
 		n, nerr := p.ParseSingleQuoted()
 		if nerr != nil {
 			return nil, nerr
 		}
 		return &V17StringNode{V17BaseNode{line, col}, n}, nil
-	case V17_STRING_DQ:
+	}
+	if ch == '"' {
 		n, nerr := p.ParseDoubleQuoted()
 		if nerr != nil {
 			return nil, nerr
 		}
 		return &V17StringNode{V17BaseNode{line, col}, n}, nil
-	case V17_STRING_TQ:
+	}
+	if ch == '`' {
 		n, nerr := p.ParseTmplQuoted()
 		if nerr != nil {
 			return nil, nerr
 		}
 		return &V17StringNode{V17BaseNode{line, col}, n}, nil
 	}
-	return nil, p.errAt("string: expected quoted string, got %s", p.cur().Type)
+	return nil, p.errAt("string: expected quoted string")
 }
 
 // =============================================================================
@@ -1428,17 +1416,15 @@ var v17regexpFlagSet = map[string]bool{
 	"y": true, "x": true, "n": true, "A": true,
 }
 
-// ParseRegexpFlags parses regexp_flags — a single flag character as V17_IDENT.
+// ParseRegexpFlags parses regexp_flags — a single flag character.
 func (p *V17Parser) ParseRegexpFlags() (node *V17RegexpFlagsNode, err error) {
 	done := p.debugEnter("regexp_flags")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok := p.cur()
-	if tok.Type != V17_IDENT || len(tok.Value) != 1 || !v17regexpFlagSet[tok.Value] {
-		return nil, p.errAt("regexp_flags: expected g|i|m|s|u|y|x|n|A, got %s %q", tok.Type, tok.Value)
+	tok, terr := p.matchRe(reRegexpFlagOneScan)
+	if terr != nil {
+		return nil, p.errAt("regexp_flags: expected g|i|m|s|u|y|x|n|A")
 	}
-	p.advance()
-	return &V17RegexpFlagsNode{V17BaseNode{line, col}, tok.Value}, nil
+	return &V17RegexpFlagsNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17RegexpExprNode  regexp_expr = "/" TYPE_OF XRegExp</.*/> "/" [ regexp_flags { regexp_flags } ]
@@ -1450,17 +1436,16 @@ type V17RegexpExprNode struct {
 
 // ParseRegexpExpr parses regexp_expr.
 // TYPE_OF XRegExp is a type annotation — the parser records it on the node; no
-// extra token is consumed. The regexp pattern is already captured in V17_REGEXP.
+// extra token is consumed. The regexp pattern is captured by the rune-stream helper.
 func (p *V17Parser) ParseRegexpExpr() (node *V17RegexpExprNode, err error) {
 	done := p.debugEnter("regexp_expr")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
 
-	tok, err := p.expect(V17_REGEXP)
-	if err != nil {
-		return nil, err
+	tok, terr := p.matchRegexpLiteral()
+	if terr != nil {
+		return nil, terr
 	}
-	n := &V17RegexpExprNode{V17BaseNode{line, col}, tok.Value, nil}
+	n := &V17RegexpExprNode{V17BaseNode{tok.Line, tok.Col}, tok.Value, nil}
 
 	// [ regexp_flags { regexp_flags } ]
 	for {
@@ -1491,11 +1476,11 @@ type V17BooleanTrueNode struct{ V17BaseNode }
 func (p *V17Parser) ParseBooleanTrue() (node *V17BooleanTrueNode, err error) {
 	done := p.debugEnter("boolean_true")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	if _, err = p.expect(V17_TRUE); err != nil {
-		return nil, err
+	tok, err := p.matchKeyword("true")
+	if err != nil {
+		return nil, p.errAt("boolean_true: expected 'true'")
 	}
-	return &V17BooleanTrueNode{V17BaseNode{line, col}}, nil
+	return &V17BooleanTrueNode{V17BaseNode{tok.Line, tok.Col}}, nil
 }
 
 // V17BooleanFalseNode  boolean_false = "false"
@@ -1505,11 +1490,11 @@ type V17BooleanFalseNode struct{ V17BaseNode }
 func (p *V17Parser) ParseBooleanFalse() (node *V17BooleanFalseNode, err error) {
 	done := p.debugEnter("boolean_false")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	if _, err = p.expect(V17_FALSE); err != nil {
-		return nil, err
+	tok, err := p.matchKeyword("false")
+	if err != nil {
+		return nil, p.errAt("boolean_false: expected 'false'")
 	}
-	return &V17BooleanFalseNode{V17BaseNode{line, col}}, nil
+	return &V17BooleanFalseNode{V17BaseNode{tok.Line, tok.Col}}, nil
 }
 
 // V17BooleanNode  boolean = "true" | "false"
@@ -1522,16 +1507,14 @@ type V17BooleanNode struct {
 func (p *V17Parser) ParseBoolean() (node *V17BooleanNode, err error) {
 	done := p.debugEnter("boolean")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	if p.cur().Type == V17_TRUE {
-		p.advance()
-		return &V17BooleanNode{V17BaseNode{line, col}, true}, nil
+	if tok, kerr := p.matchKeyword("true"); kerr == nil {
+		return &V17BooleanNode{V17BaseNode{tok.Line, tok.Col}, true}, nil
 	}
-	if p.cur().Type == V17_FALSE {
-		p.advance()
-		return &V17BooleanNode{V17BaseNode{line, col}, false}, nil
+	tok, kerr := p.matchKeyword("false")
+	if kerr != nil {
+		return nil, p.errAt("boolean: expected true or false")
 	}
-	return nil, p.errAt("boolean: expected true or false, got %s", p.cur().Type)
+	return &V17BooleanNode{V17BaseNode{tok.Line, tok.Col}, false}, nil
 }
 
 // V17NullNode  null = "null"
@@ -1541,11 +1524,11 @@ type V17NullNode struct{ V17BaseNode }
 func (p *V17Parser) ParseNull() (node *V17NullNode, err error) {
 	done := p.debugEnter("null")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	if _, err = p.expect(V17_NULL); err != nil {
-		return nil, err
+	tok, err := p.matchKeyword("null")
+	if err != nil {
+		return nil, p.errAt("null: expected 'null'")
 	}
-	return &V17NullNode{V17BaseNode{line, col}}, nil
+	return &V17NullNode{V17BaseNode{tok.Line, tok.Col}}, nil
 }
 
 // V17AnyTypeNode  any_type = "@?"
@@ -1555,11 +1538,11 @@ type V17AnyTypeNode struct{ V17BaseNode }
 func (p *V17Parser) ParseAnyType() (node *V17AnyTypeNode, err error) {
 	done := p.debugEnter("any_type")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	if _, err = p.expect(V17_ANY_TYPE); err != nil {
-		return nil, err
+	tok, err := p.matchLit("@?")
+	if err != nil {
+		return nil, p.errAt("any_type: expected '@?'")
 	}
-	return &V17AnyTypeNode{V17BaseNode{line, col}}, nil
+	return &V17AnyTypeNode{V17BaseNode{tok.Line, tok.Col}}, nil
 }
 
 // =============================================================================
@@ -1584,24 +1567,32 @@ var v17cardinalityUpperKw = map[string]bool{
 func (p *V17Parser) ParseCardinality() (node *V17CardinalityNode, err error) {
 	done := p.debugEnter("cardinality")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	low, err := p.ParseDigits()
 	if err != nil {
 		return nil, err
 	}
-	if _, err = p.expect(V17_DOTDOT); err != nil {
+	if _, err = p.matchLit(".."); err != nil {
 		return nil, err
 	}
 	// upper: digits | "m" | "M" | "many" | "Many"
-	tok := p.cur()
-	if tok.Type == V17_DIGITS {
-		p.advance()
-		return &V17CardinalityNode{V17BaseNode{line, col}, low.Value, tok.Value}, nil
+	ch := p.peekAfterWS()
+	if ch >= '0' && ch <= '9' {
+		dig, derr := p.ParseDigits()
+		if derr != nil {
+			return nil, p.errAt("cardinality: expected digits after '..'")
+		}
+		return &V17CardinalityNode{V17BaseNode{line, col}, low.Value, dig.Value}, nil
 	}
-	if (tok.Type == V17_IDENT || tok.Type == V17_MANY) && v17cardinalityUpperKw[tok.Value] {
-		p.advance()
-		return &V17CardinalityNode{V17BaseNode{line, col}, low.Value, tok.Value}, nil
+	if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+		saved2 := p.savePos()
+		kwTok, kwerr := p.matchRe(reIdentScan)
+		if kwerr != nil || !v17cardinalityUpperKw[kwTok.Value] {
+			p.restorePos(saved2)
+			return nil, p.errAt("cardinality: expected digits or many/Many/m/M after '..'")
+		}
+		return &V17CardinalityNode{V17BaseNode{line, col}, low.Value, kwTok.Value}, nil
 	}
 	return nil, p.errAt("cardinality: expected digits or many/Many/m/M after '..'")
 }
@@ -1617,13 +1608,13 @@ type V17RangeNode struct {
 func (p *V17Parser) ParseRange() (node *V17RangeNode, err error) {
 	done := p.debugEnter("range")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	low, err := p.ParseInteger()
 	if err != nil {
 		return nil, err
 	}
-	if _, err = p.expect(V17_DOTDOT); err != nil {
+	if _, err = p.matchLit(".."); err != nil {
 		return nil, err
 	}
 	high, err := p.ParseInteger()
@@ -1652,73 +1643,70 @@ type V17HexSegNode struct {
 	Value    string
 }
 
-// parseHexSeg is a private helper: match current token against re, consume, return node.
-func (p *V17Parser) parseHexSeg(ruleName string, re *regexp.Regexp) (*V17HexSegNode, error) {
-	line, col := p.cur().Line, p.cur().Col
-	tok, n, ok := p.matchHexToken(re)
-	if !ok {
-		return nil, p.errAt("%s: expected hex value matching %s, got %s %q", ruleName, re.String(), tok.Type, tok.Value)
+// parseHexSegRS is the rune-stream replacement for parseHexSeg.
+// It uses matchHexExact(n) instead of the token-API matchHexToken helper.
+func (p *V17Parser) parseHexSegRS(ruleName string, n int) (*V17HexSegNode, error) {
+	tok, err := p.matchHexExact(n)
+	if err != nil {
+		return nil, p.errAt("%s: expected %d hex digits: %v", ruleName, n, err)
 	}
-	for i := 0; i < n; i++ {
-		p.advance()
-	}
-	return &V17HexSegNode{V17BaseNode{line, col}, ruleName, tok.Value}, nil
+	return &V17HexSegNode{V17BaseNode{tok.Line, tok.Col}, ruleName, tok.Value}, nil
 }
 
 // ParseHexSeg2 parses hex_seg2 = /[0-9a-fA-F]{2}/.
 func (p *V17Parser) ParseHexSeg2() (node *V17HexSegNode, err error) {
 	done := p.debugEnter("hex_seg2")
 	defer func() { done(err == nil) }()
-	return p.parseHexSeg("hex_seg2", reHex2)
+	return p.parseHexSegRS("hex_seg2", 2)
 }
 
 // ParseHexSeg4 parses hex_seg4 = /[0-9a-fA-F]{4}/.
 func (p *V17Parser) ParseHexSeg4() (node *V17HexSegNode, err error) {
 	done := p.debugEnter("hex_seg4")
 	defer func() { done(err == nil) }()
-	return p.parseHexSeg("hex_seg4", reHex4)
+	return p.parseHexSegRS("hex_seg4", 4)
 }
 
 // ParseHexSeg8 parses hex_seg8 = /[0-9a-fA-F]{8}/.
 func (p *V17Parser) ParseHexSeg8() (node *V17HexSegNode, err error) {
 	done := p.debugEnter("hex_seg8")
 	defer func() { done(err == nil) }()
-	return p.parseHexSeg("hex_seg8", reHex8)
+	return p.parseHexSegRS("hex_seg8", 8)
 }
 
 // ParseHexSeg12 parses hex_seg12 = /[0-9a-fA-F]{12}/.
 func (p *V17Parser) ParseHexSeg12() (node *V17HexSegNode, err error) {
 	done := p.debugEnter("hex_seg12")
 	defer func() { done(err == nil) }()
-	return p.parseHexSeg("hex_seg12", reHex12)
+	return p.parseHexSegRS("hex_seg12", 12)
 }
 
 // ParseHexSeg32 parses hex_seg32 = /[0-9a-fA-F]{32}/.
 func (p *V17Parser) ParseHexSeg32() (node *V17HexSegNode, err error) {
 	done := p.debugEnter("hex_seg32")
 	defer func() { done(err == nil) }()
-	return p.parseHexSeg("hex_seg32", reHex32)
+	return p.parseHexSegRS("hex_seg32", 32)
 }
 
 // ParseHexSeg40 parses hex_seg40 = /[0-9a-fA-F]{40}/.
 func (p *V17Parser) ParseHexSeg40() (node *V17HexSegNode, err error) {
 	done := p.debugEnter("hex_seg40")
 	defer func() { done(err == nil) }()
-	return p.parseHexSeg("hex_seg40", reHex40)
+	return p.parseHexSegRS("hex_seg40", 40)
 }
 
 // ParseHexSeg64 parses hex_seg64 = /[0-9a-fA-F]{64}/.
 func (p *V17Parser) ParseHexSeg64() (node *V17HexSegNode, err error) {
 	done := p.debugEnter("hex_seg64")
 	defer func() { done(err == nil) }()
-	return p.parseHexSeg("hex_seg64", reHex64)
+	return p.parseHexSegRS("hex_seg64", 64)
 }
 
 // ParseHexSeg128 parses hex_seg128 = /[0-9a-fA-F]{128}/.
 func (p *V17Parser) ParseHexSeg128() (node *V17HexSegNode, err error) {
 	done := p.debugEnter("hex_seg128")
 	defer func() { done(err == nil) }()
-	return p.parseHexSeg("hex_seg128", reHex128)
+	return p.parseHexSegRS("hex_seg128", 128)
 }
 
 // =============================================================================
@@ -1739,7 +1727,7 @@ type V17UuidNode struct {
 func (p *V17Parser) ParseUuid() (node *V17UuidNode, err error) {
 	done := p.debugEnter("uuid")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	saved := p.savePos()
 
 	s8, err := p.ParseHexSeg8()
@@ -1747,7 +1735,7 @@ func (p *V17Parser) ParseUuid() (node *V17UuidNode, err error) {
 		p.restorePos(saved)
 		return nil, err
 	}
-	if _, err = p.expect(V17_MINUS); err != nil {
+	if _, err = p.matchLit("-"); err != nil {
 		p.restorePos(saved)
 		return nil, err
 	}
@@ -1756,7 +1744,7 @@ func (p *V17Parser) ParseUuid() (node *V17UuidNode, err error) {
 		p.restorePos(saved)
 		return nil, err
 	}
-	if _, err = p.expect(V17_MINUS); err != nil {
+	if _, err = p.matchLit("-"); err != nil {
 		p.restorePos(saved)
 		return nil, err
 	}
@@ -1765,7 +1753,7 @@ func (p *V17Parser) ParseUuid() (node *V17UuidNode, err error) {
 		p.restorePos(saved)
 		return nil, err
 	}
-	if _, err = p.expect(V17_MINUS); err != nil {
+	if _, err = p.matchLit("-"); err != nil {
 		p.restorePos(saved)
 		return nil, err
 	}
@@ -1774,7 +1762,7 @@ func (p *V17Parser) ParseUuid() (node *V17UuidNode, err error) {
 		p.restorePos(saved)
 		return nil, err
 	}
-	if _, err = p.expect(V17_MINUS); err != nil {
+	if _, err = p.matchLit("-"); err != nil {
 		p.restorePos(saved)
 		return nil, err
 	}
@@ -1798,15 +1786,11 @@ type V17UuidV7VerNode struct {
 func (p *V17Parser) ParseUuidV7Ver() (node *V17UuidV7VerNode, err error) {
 	done := p.debugEnter("uuid_v7_ver")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok, n, ok := p.matchHexToken(reUuidV7Ver)
-	if !ok {
+	tok, terr := p.matchRe(reUuidV7VerScan)
+	if terr != nil {
 		return nil, p.errAt("uuid_v7_ver: expected 4-char hex starting with 7")
 	}
-	for i := 0; i < n; i++ {
-		p.advance()
-	}
-	return &V17UuidV7VerNode{V17BaseNode{line, col}, tok.Value}, nil
+	return &V17UuidV7VerNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17UuidV7VarNode  uuid_v7_var = /[89aAbB][0-9a-fA-F]{3}/
@@ -1819,15 +1803,11 @@ type V17UuidV7VarNode struct {
 func (p *V17Parser) ParseUuidV7Var() (node *V17UuidV7VarNode, err error) {
 	done := p.debugEnter("uuid_v7_var")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok, n, ok := p.matchHexToken(reUuidV7Var)
-	if !ok {
+	tok, terr := p.matchRe(reUuidV7VarScan)
+	if terr != nil {
 		return nil, p.errAt("uuid_v7_var: expected 4-char hex starting with 8|9|a|b")
 	}
-	for i := 0; i < n; i++ {
-		p.advance()
-	}
-	return &V17UuidV7VarNode{V17BaseNode{line, col}, tok.Value}, nil
+	return &V17UuidV7VarNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17UuidV7Node  uuid_v7 = hex_seg8 "-" hex_seg4 "-" uuid_v7_ver "-" uuid_v7_var "-" hex_seg12
@@ -1840,7 +1820,7 @@ type V17UuidV7Node struct {
 func (p *V17Parser) ParseUuidV7() (node *V17UuidV7Node, err error) {
 	done := p.debugEnter("uuid_v7")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	saved := p.savePos()
 
 	s8, err := p.ParseHexSeg8()
@@ -1848,7 +1828,7 @@ func (p *V17Parser) ParseUuidV7() (node *V17UuidV7Node, err error) {
 		p.restorePos(saved)
 		return nil, err
 	}
-	if _, err = p.expect(V17_MINUS); err != nil {
+	if _, err = p.matchLit("-"); err != nil {
 		p.restorePos(saved)
 		return nil, err
 	}
@@ -1857,7 +1837,7 @@ func (p *V17Parser) ParseUuidV7() (node *V17UuidV7Node, err error) {
 		p.restorePos(saved)
 		return nil, err
 	}
-	if _, err = p.expect(V17_MINUS); err != nil {
+	if _, err = p.matchLit("-"); err != nil {
 		p.restorePos(saved)
 		return nil, err
 	}
@@ -1866,7 +1846,7 @@ func (p *V17Parser) ParseUuidV7() (node *V17UuidV7Node, err error) {
 		p.restorePos(saved)
 		return nil, err
 	}
-	if _, err = p.expect(V17_MINUS); err != nil {
+	if _, err = p.matchLit("-"); err != nil {
 		p.restorePos(saved)
 		return nil, err
 	}
@@ -1875,7 +1855,7 @@ func (p *V17Parser) ParseUuidV7() (node *V17UuidV7Node, err error) {
 		p.restorePos(saved)
 		return nil, err
 	}
-	if _, err = p.expect(V17_MINUS); err != nil {
+	if _, err = p.matchLit("-"); err != nil {
 		p.restorePos(saved)
 		return nil, err
 	}
@@ -1909,7 +1889,7 @@ type V17HashKeyNode struct {
 func (p *V17Parser) ParseHashMd5() (node *V17HashKeyNode, err error) {
 	done := p.debugEnter("hash_md5")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	seg, err := p.ParseHexSeg32()
 	if err != nil {
 		return nil, err
@@ -1921,7 +1901,7 @@ func (p *V17Parser) ParseHashMd5() (node *V17HashKeyNode, err error) {
 func (p *V17Parser) ParseHashSha1() (node *V17HashKeyNode, err error) {
 	done := p.debugEnter("hash_sha1")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	seg, err := p.ParseHexSeg40()
 	if err != nil {
 		return nil, err
@@ -1933,7 +1913,7 @@ func (p *V17Parser) ParseHashSha1() (node *V17HashKeyNode, err error) {
 func (p *V17Parser) ParseHashSha256() (node *V17HashKeyNode, err error) {
 	done := p.debugEnter("hash_sha256")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	seg, err := p.ParseHexSeg64()
 	if err != nil {
 		return nil, err
@@ -1945,7 +1925,7 @@ func (p *V17Parser) ParseHashSha256() (node *V17HashKeyNode, err error) {
 func (p *V17Parser) ParseHashSha512() (node *V17HashKeyNode, err error) {
 	done := p.debugEnter("hash_sha512")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	seg, err := p.ParseHexSeg128()
 	if err != nil {
 		return nil, err
@@ -1963,7 +1943,7 @@ type V17HashKeyUnionNode struct {
 func (p *V17Parser) ParseHashKey() (node *V17HashKeyUnionNode, err error) {
 	done := p.debugEnter("hash_key")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	for _, try := range []func() (*V17HashKeyNode, error){
 		p.ParseHashMd5, p.ParseHashSha1, p.ParseHashSha256, p.ParseHashSha512,
@@ -1994,26 +1974,11 @@ type V17UlidNode struct {
 func (p *V17Parser) ParseUlid() (node *V17UlidNode, err error) {
 	done := p.debugEnter("ulid")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok := p.cur()
-	// Single-token match (starts with letter).
-	if (tok.Type == V17_IDENT || tok.Type == V17_DIGITS) && reUlid.MatchString(tok.Value) {
-		p.advance()
-		return &V17UlidNode{V17BaseNode{line, col}, tok.Value}, nil
+	tok, terr := p.matchRe(reUlidScan)
+	if terr != nil {
+		return nil, p.errAt("ulid: expected 26-char Crockford base32 string")
 	}
-	// Two-token match: DIGITS + IDENT (ULID starts with 0-7 which the lexer tokenises as DIGITS).
-	if tok.Type == V17_DIGITS {
-		nxt := p.peek1()
-		if nxt.Type == V17_IDENT {
-			combined := tok.Value + nxt.Value
-			if reUlid.MatchString(combined) {
-				p.advance()
-				p.advance()
-				return &V17UlidNode{V17BaseNode{line, col}, combined}, nil
-			}
-		}
-	}
-	return nil, p.errAt("ulid: expected 26-char Crockford base32 string")
+	return &V17UlidNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17NanoIdNode  nano_id
@@ -2023,36 +1988,14 @@ type V17NanoIdNode struct {
 }
 
 // ParseNanoId parses nano_id.
-// nano_id's alphabet includes '-' which the lexer emits as V17_MINUS, so we
-// greedily consume IDENT/DIGITS/MINUS tokens until we have collected 21 chars.
 func (p *V17Parser) ParseNanoId() (node *V17NanoIdNode, err error) {
 	done := p.debugEnter("nano_id")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	saved := p.savePos()
-
-	var sb strings.Builder
-	for sb.Len() < 21 {
-		tok := p.cur()
-		var chunk string
-		switch tok.Type {
-		case V17_IDENT, V17_DIGITS:
-			chunk = tok.Value
-		case V17_MINUS:
-			chunk = "-"
-		}
-		if chunk == "" {
-			break
-		}
-		sb.WriteString(chunk)
-		p.advance()
-	}
-	combined := sb.String()
-	if !reNanoId.MatchString(combined) {
-		p.restorePos(saved)
+	tok, terr := p.matchRe(reNanoIdScan)
+	if terr != nil {
 		return nil, p.errAt("nano_id: expected 21-char [A-Za-z0-9_-] string")
 	}
-	return &V17NanoIdNode{V17BaseNode{line, col}, combined}, nil
+	return &V17NanoIdNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // =============================================================================
@@ -2075,7 +2018,7 @@ type V17TypedIdNode struct {
 func (p *V17Parser) ParseSnowflakeId() (node *V17TypedIdNode, err error) {
 	done := p.debugEnter("snowflake_id")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	u, err := p.ParseUint64()
 	if err != nil {
 		return nil, err
@@ -2087,7 +2030,7 @@ func (p *V17Parser) ParseSnowflakeId() (node *V17TypedIdNode, err error) {
 func (p *V17Parser) ParseSeqId16() (node *V17TypedIdNode, err error) {
 	done := p.debugEnter("seq_id16")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	u, err := p.ParseUint16()
 	if err != nil {
 		return nil, err
@@ -2099,7 +2042,7 @@ func (p *V17Parser) ParseSeqId16() (node *V17TypedIdNode, err error) {
 func (p *V17Parser) ParseSeqId32() (node *V17TypedIdNode, err error) {
 	done := p.debugEnter("seq_id32")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	u, err := p.ParseUint32()
 	if err != nil {
 		return nil, err
@@ -2111,7 +2054,7 @@ func (p *V17Parser) ParseSeqId32() (node *V17TypedIdNode, err error) {
 func (p *V17Parser) ParseSeqId64() (node *V17TypedIdNode, err error) {
 	done := p.debugEnter("seq_id64")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 	u, err := p.ParseUint64()
 	if err != nil {
 		return nil, err
@@ -2129,7 +2072,7 @@ type V17SeqIdNode struct {
 func (p *V17Parser) ParseSeqId() (node *V17SeqIdNode, err error) {
 	done := p.debugEnter("seq_id")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	for _, try := range []func() (*V17TypedIdNode, error){
 		p.ParseSeqId16, p.ParseSeqId32, p.ParseSeqId64,
@@ -2162,7 +2105,7 @@ type V17UniqueKeyNode struct {
 func (p *V17Parser) ParseUniqueKey() (node *V17UniqueKeyNode, err error) {
 	done := p.debugEnter("unique_key")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	// uuid_v7 before uuid (more specific)
 	{
@@ -2236,22 +2179,27 @@ type V17HttpUrlNode struct {
 	Value string
 }
 
-// ParseHttpUrl parses http_url — validates current token value against reHttpUrl.
+// ParseHttpUrl parses http_url — a double-quoted http(s) URL or a bare URL token.
 func (p *V17Parser) ParseHttpUrl() (node *V17HttpUrlNode, err error) {
 	done := p.debugEnter("http_url")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok := p.cur()
-	// URLs arrive as STRING_SQ/DQ or IDENT tokens
-	val := tok.Value
-	if tok.Type == V17_STRING_SQ || tok.Type == V17_STRING_DQ {
-		// strip surrounding quotes already removed by lexer (value is inner content)
+	saved := p.savePos()
+	// Try as a double-quoted string first.
+	if tok, qerr := p.matchDoubleQuoted(); qerr == nil {
+		val := tok.Value
+		if !reHttpUrl.MatchString(val) {
+			p.restorePos(saved)
+			return nil, p.errAt("http_url: value %q does not match http(s) URL pattern", val)
+		}
+		return &V17HttpUrlNode{V17BaseNode{tok.Line, tok.Col}, val}, nil
 	}
-	if !reHttpUrl.MatchString(val) {
-		return nil, p.errAt("http_url: value %q does not match http(s) URL pattern", val)
+	p.restorePos(saved)
+	// Try as a bare URL in the rune stream.
+	tok, terr := p.matchRe(reHttpUrlScan)
+	if terr != nil {
+		return nil, p.errAt("http_url: expected http(s) URL")
 	}
-	p.advance()
-	return &V17HttpUrlNode{V17BaseNode{line, col}, val}, nil
+	return &V17HttpUrlNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // V17FileUrlNode  file_url
@@ -2260,18 +2208,27 @@ type V17FileUrlNode struct {
 	Value string
 }
 
-// ParseFileUrl parses file_url — validates current token value against reFileUrl.
+// ParseFileUrl parses file_url — a double-quoted file:// URL or a bare URL token.
 func (p *V17Parser) ParseFileUrl() (node *V17FileUrlNode, err error) {
 	done := p.debugEnter("file_url")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
-	tok := p.cur()
-	val := tok.Value
-	if !reFileUrl.MatchString(val) {
-		return nil, p.errAt("file_url: value %q does not match file URL pattern", val)
+	saved := p.savePos()
+	// Try as a double-quoted string first.
+	if tok, qerr := p.matchDoubleQuoted(); qerr == nil {
+		val := tok.Value
+		if !reFileUrl.MatchString(val) {
+			p.restorePos(saved)
+			return nil, p.errAt("file_url: value %q does not match file URL pattern", val)
+		}
+		return &V17FileUrlNode{V17BaseNode{tok.Line, tok.Col}, val}, nil
 	}
-	p.advance()
-	return &V17FileUrlNode{V17BaseNode{line, col}, val}, nil
+	p.restorePos(saved)
+	// Try as a bare URL in the rune stream.
+	tok, terr := p.matchRe(reFileUrlScan)
+	if terr != nil {
+		return nil, p.errAt("file_url: expected file:// URL")
+	}
+	return &V17FileUrlNode{V17BaseNode{tok.Line, tok.Col}, tok.Value}, nil
 }
 
 // =============================================================================
@@ -2294,7 +2251,7 @@ type V17ConstantNode struct {
 func (p *V17Parser) ParseConstant() (node *V17ConstantNode, err error) {
 	done := p.debugEnter("constant")
 	defer func() { done(err == nil) }()
-	line, col := p.cur().Line, p.cur().Col
+	line, col := p.runeLine, p.runeCol
 
 	type tryFn func() (interface{}, error)
 	wrap := func(f func() (*V17NumericConstNode, error)) tryFn {
@@ -2302,16 +2259,16 @@ func (p *V17Parser) ParseConstant() (node *V17ConstantNode, err error) {
 	}
 
 	// Ordered from most-specific to most-generic first-token.
-	// regexp_expr — V17_REGEXP token (unambiguous)
-	if p.cur().Type == V17_REGEXP {
+	// regexp_expr — starts with '/'
+	if p.peekAfterWS() == '/' {
 		n, nerr := p.ParseRegexpExpr()
 		if nerr != nil {
 			return nil, nerr
 		}
 		return &V17ConstantNode{V17BaseNode{line, col}, n}, nil
 	}
-	// boolean
-	if p.cur().Type == V17_TRUE || p.cur().Type == V17_FALSE {
+	// boolean — "true" or "false"
+	if p.peekLit("true") || p.peekLit("false") {
 		n, nerr := p.ParseBoolean()
 		if nerr != nil {
 			return nil, nerr
@@ -2319,15 +2276,15 @@ func (p *V17Parser) ParseConstant() (node *V17ConstantNode, err error) {
 		return &V17ConstantNode{V17BaseNode{line, col}, n}, nil
 	}
 	// null
-	if p.cur().Type == V17_NULL {
+	if p.peekLit("null") {
 		n, nerr := p.ParseNull()
 		if nerr != nil {
 			return nil, nerr
 		}
 		return &V17ConstantNode{V17BaseNode{line, col}, n}, nil
 	}
-	// string
-	if p.cur().Type == V17_STRING_SQ || p.cur().Type == V17_STRING_DQ || p.cur().Type == V17_STRING_TQ {
+	// string — single-quoted, double-quoted, or template-quoted
+	if ch := p.peekAfterWS(); ch == '\'' || ch == '"' || ch == '`' {
 		n, nerr := p.ParseString()
 		if nerr != nil {
 			return nil, nerr
@@ -2393,6 +2350,8 @@ func (p *V17Parser) ParseConstant() (node *V17ConstantNode, err error) {
 		}
 	}
 
-	p.trackUnknown(p.cur())
-	return nil, p.errAt("constant: unrecognised token %s %q", p.cur().Type, p.cur().Value)
+	// No pattern matched
+	ch := p.peekAfterWS()
+	p.trackUnknown(V17Token{Value: string(ch), Line: p.runeLine, Col: p.runeCol})
+	return nil, p.errAt("constant: unrecognised character %q", ch)
 }

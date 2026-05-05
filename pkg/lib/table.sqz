@@ -2,46 +2,46 @@
    pkg/lib/table.sqz  --  Squeeze V13 Table Type
    ============================================================
 
-   Defines the @table type and its relational methods.
+   Defines the table.@type type and its relational methods.
    Tables are typed, key-enforced, immutable value types.
-   Every method returns a new @table; none mutate in place.
+   Every method returns a new table.@type; none mutate in place.
 
    A table has three internal parts:
-     columns     — typed column schema (name + type per column)
-     key_columns — non-empty subset of columns; must be unique_key-typed
-     rows        — positional storage; each row is a parallel array
+     columns     â€” typed column schema (name + type per column)
+     key_columns â€” non-empty subset of columns; must be unique_key-typed
+     rows        â€” positional storage; each row is a parallel array
                    of values conforming to the column schema
 
    Stream iteration:
      Table rows are iterable with >>; collection-generic operations
-     (map, filter, reduce, …) in collections.sqz work on @table
+     (map, filter, reduce, â€¦) in collections.sqz work on table.@type
      rows the same way they work on any iterator.  Do not duplicate
      those here.
 
    Intrinsics used (UPPERCASE builtins):
-     TBL_ROW_COUNT<t>              — number of rows
-     TBL_COL_COUNT<t>              — number of columns
-     TBL_COL_NAMES<t>              — column names as raw array
-     TBL_KEY_COL_NAMES<t>          — key column names as raw array
-     TBL_GET_ROW<t, key>           — row by key value → @object or null
-     TBL_GET_ROW_AT<t, index>      — row by 1-based position → @object
-     TBL_WITH_ROW<t, row>          — upsert row → new @table
-     TBL_WITHOUT_KEY<t, key>       — remove row by key → new @table
-     TBL_WITHOUT_ROW_AT<t, index>  — remove row by position → new @table
-     TBL_GET_COL<t, name>          — all values in one column → raw array
-     TBL_PROJECT<t, names>         — column subset → new @table
-     TBL_WHERE<t, pred>            — filter rows → new @table
-     TBL_ORDER_BY<t, col, asc>     — sort rows → new @table
-     TBL_MERGE<t1, t2>             — combine rows; t2 wins on key conflict
-     TBL_INNER_JOIN<t1, t2, col>   — inner join on column → new @table
-     TBL_LEFT_JOIN<t1, t2, col>    — left join on column → new @table
-     TBL_GROUP_BY<t, col>          — partition rows → @object of @tables
-     TBL_TO_ARRAY<t>               — rows as array of @object records
-     TBL_TO_JSON<t>                — JSON array of row objects
-     TBL_TO_STRING<t>              — aligned text grid
+     TBL_ROW_COUNT<t>              â€” number of rows
+     TBL_COL_COUNT<t>              â€” number of columns
+     TBL_COL_NAMES<t>              â€” column names as raw array
+     TBL_KEY_COL_NAMES<t>          â€” key column names as raw array
+     TBL_GET_ROW<t, key>           â€” row by key value â†’ object.@type or null
+     TBL_GET_ROW_AT<t, index>      â€” row by 1-based position â†’ object.@type
+     TBL_WITH_ROW<t, row>          â€” upsert row â†’ new table.@type
+     TBL_WITHOUT_KEY<t, key>       â€” remove row by key â†’ new table.@type
+     TBL_WITHOUT_ROW_AT<t, index>  â€” remove row by position â†’ new table.@type
+     TBL_GET_COL<t, name>          â€” all values in one column â†’ raw array
+     TBL_PROJECT<t, names>         â€” column subset â†’ new table.@type
+     TBL_WHERE<t, pred>            â€” filter rows â†’ new table.@type
+     TBL_ORDER_BY<t, col, asc>     â€” sort rows â†’ new table.@type
+     TBL_MERGE<t1, t2>             â€” combine rows; t2 wins on key conflict
+     TBL_INNER_JOIN<t1, t2, col>   â€” inner join on column â†’ new table.@type
+     TBL_LEFT_JOIN<t1, t2, col>    â€” left join on column â†’ new table.@type
+     TBL_GROUP_BY<t, col>          â€” partition rows â†’ object.@type of tables.@type
+     TBL_TO_ARRAY<t>               â€” rows as array of object.@type records
+     TBL_TO_JSON<t>                â€” JSON array of row objects
+     TBL_TO_STRING<t>              â€” aligned text grid
    *)
 
-(col : @std.collections)  table, table_final: {
+(col : std.collections.type.@type)  table, table_final: {
     names, n, 1..m: ["table", "table_final"]
     map:     col.map
     filter:  col.filter
@@ -55,233 +55,232 @@
     - (
         card,  c:       1..1
         type,  t:       $
-        data,  d:       [ columns: [], key_columns: [], rows: [] ]
+        data,  d:       [ columns: string[], key_columns: string[], rows: @? ]
         ver,   v:       "v0.0"
 
         init: <- (
-            -> raw: §table_final
-            <- [ names: LHS_CALLER<§assign_lhs.ident_name>,
-                 card:  LHS_CALLER<§assign_lhs.cardinality>,
+            -> raw: Â§table_final
+            <- [ names: __ps_call LHS Â§assign_lhs.ident_name,
+                 card:  __ps_call LHS Â§assign_lhs.cardinality,
                  type:  $,
                  data:  raw ]
         )
     )
+}
+
+    (* ---------------------------------------------------------------
+       1 â€” Structural inspection
+       --------------------------------------------------------------- *)
+
+    (* column_count â€” number of defined columns. *)
+    (t : table.@type) column_count: <- (
+        <- t.columns.legth
+    )
+
+    (* row_count â€” number of rows (Lua: #t). *)
+    (t : table.@type) row_count: <- (
+        <- t.rows.length
+    )
+
+    (* column_names â€” array.@type of all column name strings. *)
+    (t : table.@type) column_names: <- (
+        <- t.columns
+    )
+
+    (* key_column_names â€” array.@type of key column name strings. *)
+    (t : table.@type) key_column_names: <- (
+        <- t.key_columns
+    )
+
+    (* has_column â€” true when a column with the given name exists in the schema. *)
+    (t : table.@type) has_column: <- (
+        -> name: string.@type
+        <- t.columns.contains(name)
+    )
+
+    (* is_empty â€” true when the table has no rows. *)
+    (t : table.@type) is_empty: <- (
+        <- t.rows.length == 0
+    )
 
 
     (* ---------------------------------------------------------------
-       1 — Structural inspection
+       2 â€” Row access
        --------------------------------------------------------------- *)
 
-    (* column_count — number of defined columns. *)
-    (t : @table) column_count: <- (
-        <- TBL_COL_COUNT<t>
-    )
-
-    (* row_count — number of rows (Lua: #t). *)
-    (t : @table) row_count: <- (
-        <- TBL_ROW_COUNT<t>
-    )
-
-    (* column_names — @array of all column name strings. *)
-    (t : @table) column_names: <- (
-        <- [ type: $, data: TBL_COL_NAMES<t> ]
-    )
-
-    (* key_column_names — @array of key column name strings. *)
-    (t : @table) key_column_names: <- (
-        <- [ type: $, data: TBL_KEY_COL_NAMES<t> ]
-    )
-
-    (* has_column — true when a column with the given name exists in the schema. *)
-    (t : @table) has_column: <- (
-        -> name: @string
-        names: t.column_names()
-        <- names.contains(name)
-    )
-
-    (* is_empty — true when the table has no rows. *)
-    (t : @table) is_empty: <- (
-        <- TBL_ROW_COUNT<t> == 0
-    )
-
-
-    (* ---------------------------------------------------------------
-       2 — Row access
-       --------------------------------------------------------------- *)
-
-    (* first_row — row at index 1 as an @object, or null when empty. *)
-    (t : @table) first_row: <- (
-        ( TBL_ROW_COUNT<t> > 0 ) & <- TBL_GET_ROW_AT<t, 1>
+    (* first_row â€” row at index 1 as an object.@type, or null when empty. *)
+    (t : table.@type) first_row: <- (
+        ( __ps_proxy TBL_ROW_COUNT <t> > 0 ) & <- __ps_proxy TBL_GET_ROW_AT <t, 1>
         <- null
     )
 
-    (* last_row — row at the final index as an @object, or null when empty. *)
-    (t : @table) last_row: <- (
-        n: TBL_ROW_COUNT<t>
-        ( n > 0 ) & <- TBL_GET_ROW_AT<t, n>
+    (* last_row â€” row at the final index as an object.@type, or null when empty. *)
+    (t : table.@type) last_row: <- (
+        n: __ps_proxy TBL_ROW_COUNT <t>
+        ( n > 0 ) & <- __ps_proxy TBL_GET_ROW_AT <t, n>
         <- null
     )
 
-    (* get_row_at — row by 1-based position as an @object. *)
-    (t : @table) get_row_at: <- (
+    (* get_row_at â€” row by 1-based position as an object.@type. *)
+    (t : table.@type) get_row_at: <- (
         -> index: integer
-        <- TBL_GET_ROW_AT<t, index>
+        <- __ps_proxy TBL_GET_ROW_AT <t, index>
     )
 
-    (* get_row — row by primary key value as an @object, or null when absent.
+    (* get_row â€” row by primary key value as an object.@type, or null when absent.
        This is the hash-map lookup: uses key_columns as the typed index. *)
-    (t : @table) get_row: <- (
+    (t : table.@type) get_row: <- (
         -> key: @?
-        <- TBL_GET_ROW<t, key>
+        <- __ps_proxy TBL_GET_ROW <t, key>
     )
 
 
     (* ---------------------------------------------------------------
-       3 — Functional row mutation  (Lua: table.insert / table.remove)
-       All methods return a new @table; the original is unchanged.
+       3 â€” Functional row mutation  (Lua: table.insert / table.remove)
+       All methods return a new table.@type; the original is unchanged.
        --------------------------------------------------------------- *)
 
-    (* with_row — if a row with the same key exists, replace it;
+    (* with_row â€” if a row with the same key exists, replace it;
        otherwise append.  (Lua: table.insert) *)
-    (t : @table) with_row: <- (
-        -> row: @object
-        <- [ type: $, data: TBL_WITH_ROW<t, row> ]
+    (t : table.@type) with_row: <- (
+        -> row: object.@type
+        <- [ type: $, data: __ps_proxy TBL_WITH_ROW <t, row> ]
     )
 
-    (* without_key — new @table with the row matching key removed.
+    (* without_key â€” new table.@type with the row matching key removed.
        No-op when the key is absent.  (Lua: table.remove by key) *)
-    (t : @table) without_key: <- (
+    (t : table.@type) without_key: <- (
         -> key: @?
-        <- [ type: $, data: TBL_WITHOUT_KEY<t, key> ]
+        <- [ type: $, data: __ps_proxy TBL_WITHOUT_KEY <t, key> ]
     )
 
-    (* without_row_at — new @table with the row at the given 1-based
+    (* without_row_at â€” new table.@type with the row at the given 1-based
        position removed.  (Lua: table.remove by position) *)
-    (t : @table) without_row_at: <- (
+    (t : table.@type) without_row_at: <- (
         -> index: integer
-        <- [ type: $, data: TBL_WITHOUT_ROW_AT<t, index> ]
+        <- [ type: $, data: __ps_proxy TBL_WITHOUT_ROW_AT <t, index> ]
     )
 
 
     (* ---------------------------------------------------------------
-       4 — Column operations  (Lua: table.concat / table.unpack ideas)
+       4 â€” Column operations  (Lua: table.concat / table.unpack ideas)
        --------------------------------------------------------------- *)
 
-    (* get_column — @array of all values for the named column, in row order.
+    (* get_column â€” array.@type of all values for the named column, in row order.
        Chain with array.to_string(sep) to replicate Lua's table.concat. *)
-    (t : @table) get_column: <- (
-        -> name: @string
-        <- [ type: $, data: TBL_GET_COL<t, name> ]
+    (t : table.@type) get_column: <- (
+        -> name: string.@type
+        <- [ type: $, data: __ps_proxy TBL_GET_COL <t, name> ]
     )
 
-    (* project — new @table containing only the named columns.
+    (* project â€” new table.@type containing only the named columns.
        Key columns are always preserved even if not listed. *)
-    (t : @table) project: <- (
-        -> col_names: @array
-        <- [ type: $, data: TBL_PROJECT<t, col_names> ]
+    (t : table.@type) project: <- (
+        -> col_names: array.@type
+        <- [ type: $, data: __ps_proxy TBL_PROJECT <t, col_names> ]
     )
 
 
     (* ---------------------------------------------------------------
-       5 — Filtering and ordering  (Lua: table.sort / pairs ideas)
+       5 â€” Filtering and ordering  (Lua: table.sort / pairs ideas)
        --------------------------------------------------------------- *)
 
-    (* where — new @table of rows for which predicate returns true. *)
-    (t : @table) where: <- (
+    (* where â€” new table.@type of rows for which predicate returns true. *)
+    (t : table.@type) where: <- (
         -> predicate: @?
-        <- [ type: $, data: TBL_WHERE<t, predicate> ]
+        <- [ type: $, data: __ps_proxy TBL_WHERE <t, predicate> ]
     )
 
-    (* order_by — new @table sorted ascending by the named column.
+    (* order_by â€” new table.@type sorted ascending by the named column.
        (Lua: table.sort with ascending comparator) *)
-    (t : @table) order_by: <- (
-        -> col_name: @string
-        <- [ type: $, data: TBL_ORDER_BY<t, col_name, true> ]
+    (t : table.@type) order_by: <- (
+        -> col_name: string.@type
+        <- [ type: $, data: __ps_proxy TBL_ORDER_BY <t, col_name, true> ]
     )
 
-    (* order_by_desc — new @table sorted descending by the named column.
+    (* order_by_desc â€” new table.@type sorted descending by the named column.
        (Lua: table.sort with descending comparator) *)
-    (t : @table) order_by_desc: <- (
-        -> col_name: @string
-        <- [ type: $, data: TBL_ORDER_BY<t, col_name, false> ]
+    (t : table.@type) order_by_desc: <- (
+        -> col_name: string.@type
+        <- [ type: $, data: __ps_proxy TBL_ORDER_BY <t, col_name, false> ]
     )
 
-    (* limit — new @table with at most n rows, taken from the start. *)
-    (t : @table) limit: <- (
+    (* limit â€” new table.@type with at most n rows, taken from the start. *)
+    (t : table.@type) limit: <- (
         -> n: integer
-        row_c: TBL_ROW_COUNT<t>
+        row_c: __ps_proxy TBL_ROW_COUNT <t>
         take: n <= row_c & n ^ row_c
-        <- [ type: $, data: TBL_WITHOUT_ROW_AT<t, take> ]
+        <- [ type: $, data: __ps_proxy TBL_WITHOUT_ROW_AT <t, take> ]
     )
 
 
     (* ---------------------------------------------------------------
-       6 — Merging  (Lua: table.move idea)
+       6 â€” Merging  (Lua: table.move idea)
        --------------------------------------------------------------- *)
 
-    (* merge — new @table combining rows from both tables.
+    (* merge â€” new table.@type combining rows from both tables.
        When a key exists in both, other's row wins.
        Both tables must share the same column schema.
        (Lua: table.move into a second table) *)
-    (t : @table) merge: <- (
-        -> other: @table
-        <- [ type: $, data: TBL_MERGE<t, other> ]
+    (t : table.@type) merge: <- (
+        -> other: table.@type
+        <- [ type: $, data: __ps_proxy TBL_MERGE <t, other> ]
     )
 
 
     (* ---------------------------------------------------------------
-       7 — Joining  (relational; no direct Lua analog)
+       7 â€” Joining  (relational; no direct Lua analog)
        --------------------------------------------------------------- *)
 
-    (* inner_join — rows present in both tables, matched on on_col.
+    (* inner_join â€” rows present in both tables, matched on on_col.
        Result schema is the union of both schemas. *)
-    (t : @table) inner_join: <- (
-        -> other:  @table
-        -> on_col: @string
-        <- [ type: $, data: TBL_INNER_JOIN<t, other, on_col> ]
+    (t : table.@type) inner_join: <- (
+        -> other:  table.@type
+        -> on_col: string.@type
+        <- [ type: $, data: __ps_proxy TBL_INNER_JOIN <t, other, on_col> ]
     )
 
-    (* left_join — all rows from t; matched columns from other filled
+    (* left_join â€” all rows from t; matched columns from other filled
        where the key is present, null-padded where absent. *)
-    (t : @table) left_join: <- (
-        -> other:  @table
-        -> on_col: @string
-        <- [ type: $, data: TBL_LEFT_JOIN<t, other, on_col> ]
+    (t : table.@type) left_join: <- (
+        -> other:  table.@type
+        -> on_col: string.@type
+        <- [ type: $, data: __ps_proxy TBL_LEFT_JOIN <t, other, on_col> ]
     )
 
 
     (* ---------------------------------------------------------------
-       8 — Grouping
+       8 â€” Grouping
        --------------------------------------------------------------- *)
 
-    (* group_by — @object whose keys are the distinct values of col_name
-       and whose values are @table partitions containing matching rows. *)
-    (t : @table) group_by: <- (
-        -> col_name: @string
-        <- TBL_GROUP_BY<t, col_name>
+    (* group_by â€” object.@type whose keys are the distinct values of col_name
+       and whose values are table.@type partitions containing matching rows. *)
+    (t : table.@type) group_by: <- (
+        -> col_name: string.@type
+        <- __ps_proxy TBL_GROUP_BY <t, col_name>
     )
 
 
     (* ---------------------------------------------------------------
-       9 — Conversion  (Lua: table.unpack / tostring ideas)
+       9 â€” Conversion  (Lua: table.unpack / tostring ideas)
        --------------------------------------------------------------- *)
 
-    (* to_array — rows as an @array of @object records { col: val, … }.
-       This is the escape hatch: once you have an @array you can use
+    (* to_array â€” rows as an array.@type of object.@type records { col: val, â€¦ }.
+       This is the escape hatch: once you have an array.@type you can use
        all array.sqz and collections.sqz operations freely.
        (Lua: table.unpack) *)
-    (t : @table) to_array: <- (
-        <- [ type: $, data: TBL_TO_ARRAY<t> ]
+    (t : table.@type) to_array: <- (
+        <- [ type: $, data: __ps_proxy TBL_TO_ARRAY <t> ]
     )
 
-    (* to_json — JSON array of row objects, one object per row. *)
-    (t : @table) to_json: <- (
-        <- TBL_TO_JSON<t>
+    (* to_json â€” JSON array of row objects, one object per row. *)
+    (t : table.@type) to_json: <- (
+        <- __ps_proxy TBL_TO_JSON <t>
     )
 
-    (* to_string — human-readable aligned text grid, column headers on
+    (* to_string â€” human-readable aligned text grid, column headers on
        the first line, rows below, columns separated by " | ". *)
-    (t : @table) to_string: <- (
-        <- TBL_TO_STRING<t>
+    (t : table.@type) to_string: <- (
+        <- __ps_proxy TBL_TO_STRING <t>
     )
-}
+
